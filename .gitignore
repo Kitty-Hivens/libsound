@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# IDE
+.idea/
+*.iml
+*.iws
+out/
+.vscode/
+.fleet/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+local.properties
+*.local
+
+# Phase 0 oracle binary -- the source stays, the build product does not
+tools/pa-oracle

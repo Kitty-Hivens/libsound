@@ -1,0 +1,36 @@
+[versions]
+# Pinned so Panama bindings stay binary-compatible across the projects
+# that share them. Bump deliberately, not on every Kotlin release.
+kotlin = "2.3.21"
+slf4j  = "2.0.16"
+
+# The backends' floor: Java 22 is where `java.lang.foreign` (Project Panama)
+# was finalized as JEP 454. Earlier LTSes carry FFM only in preview, which a
+# library must not impose on its consumers.
+javaTarget = "22"
+
+# libsound-core's floor, deliberately lower. Core is types and contracts with
+# no Panama in it, so pinning it to the backends' 22 would only rule out
+# runtimes that could otherwise reuse it -- Android's ART has no
+# java.lang.foreign at all, and a port there would keep core and replace the
+# backends. One line here is what keeps that option open.
+javaCoreTarget = "17"
+
+# Test stack -- light. JUnit 5 + Kotest assertions for readable test code.
+junit  = "5.11.4"
+kotest = "5.9.1"
+
+# Maven Central publishing (signing + Central Portal upload).
+mavenPublish = "0.36.0"
+
+[libraries]
+slf4j-api    = { group = "org.slf4j", name = "slf4j-api",    version.ref = "slf4j" }
+slf4j-simple = { group = "org.slf4j", name = "slf4j-simple", version.ref = "slf4j" }
+
+junit-jupiter           = { group = "org.junit.jupiter", name = "junit-jupiter",           version.ref = "junit" }
+junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher" }
+kotest-assertions       = { group = "io.kotest", name = "kotest-assertions-core",          version.ref = "kotest" }
+
+[plugins]
+kotlin-jvm   = { id = "org.jetbrains.kotlin.jvm",     version.ref = "kotlin" }
+mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
