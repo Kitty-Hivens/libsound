@@ -63,8 +63,10 @@ jobs:
       # three artifacts share a version line, so checking core is checking all
       # of them.
       - name: Guard the version
+        env:
+          VERSION: ${{ steps.version.outputs.v }}
         run: |
-          v='${{ steps.version.outputs.v }}'
+          v="$VERSION"
           if curl -fsI -o /dev/null "https://repo1.maven.org/maven2/dev/hivens/libsound-core/$v/libsound-core-$v.pom"; then
             echo "::error::dev.hivens:libsound-core:$v is already on Central -- versions are immutable"
             exit 1
@@ -101,9 +103,10 @@ jobs:
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.v }}
         run: |
           # The in-memory key is what makes the build skip useGpgCmd; the
           # publish tasks do not survive the configuration cache.
           ./gradlew publishToMavenCentral \
-            -PappVersion='${{ steps.version.outputs.v }}' \
+            -PappVersion="$VERSION" \
             --no-configuration-cache
