@@ -72,6 +72,33 @@ class JavaSoundSinkTest {
     }
 
     @Test
+    fun `a write is paced by the device rather than buffered and returned`() {
+        // The rule the shared contract cannot check, because a fake sized for
+        // the suite would legitimately return at once. Only a real line paces.
+        JavaSoundSink().use { sink ->
+            sink.open(format)
+            val oneSecond = ByteArray(format.sampleRate * format.bytesPerFrame)
+            val startedAt = System.nanoTime()
+            sink.write(oneSecond, 0, oneSecond.size)
+            val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
+            (elapsedMillis > 500) shouldBe true
+        }
+    }
+
+    @Test
+    fun `the backend and its sinks claim the same thing`() {
+        // They disagreed: the backend reported an empty set while its sinks
+        // reported DEVICE_POSITION. A consumer reads the backend to decide what
+        // to offer, so it would have disabled sync on a backend that supports it.
+        val backend = checkNotNull(JavaSoundBackend.createOrNull())
+        backend.use {
+            JavaSoundSink().use { sink ->
+                it.capabilities shouldBe sink.capabilities
+            }
+        }
+    }
+
+    @Test
     fun `the fallback claims nothing it cannot do`() {
         JavaSoundSink().use { sink ->
             // Every absence here is deliberate and documented. A device list

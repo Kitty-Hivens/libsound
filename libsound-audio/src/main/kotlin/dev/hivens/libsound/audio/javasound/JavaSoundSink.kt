@@ -70,20 +70,7 @@ internal class JavaSoundSink(
     @Volatile
     private var flushCredit = 0L
 
-    override val capabilities: Capabilities = Capabilities.of(
-        // Honest in steady state, measured to within a percent of real time.
-        Capability.DEVICE_POSITION,
-        // Deliberately not DEVICE_ENUMERATION or DEVICE_SELECTION. The mixers
-        // JavaSound can actually select are `plughw:*`, which take the hardware
-        // exclusively and fight the sound server for it; offering a device list
-        // whose entries break playback is worse than offering none.
-        //
-        // Not STREAM_VOLUME either: MASTER_GAIN is applied to the samples by
-        // the JDK, so the desktop's mixer neither shows it nor follows it.
-        //
-        // Not STREAM_IDENTITY: the stream appears under whatever name the ALSA
-        // client gets, and nothing here can change it.
-    )
+    override val capabilities: Capabilities = CAPABILITIES
 
     override val format: AudioFormat? get() = openFormat
 
@@ -101,6 +88,11 @@ internal class JavaSoundSink(
             runCatching { old.flush() }
             runCatching { old.close() }
         }
+        // Cleared before the new line is built, not after: a failure below must
+        // not leave isOpen answering true and format handing back the previous
+        // track's shape while the field points at a closed line.
+        line = null
+        openFormat = null
         flushCredit = 0
         val javaFormat = JavaAudioFormat(
             format.sampleRate.toFloat(),
@@ -141,7 +133,27 @@ internal class JavaSoundSink(
         // the write, and the rescue works precisely because the local reference
         // keeps the object alive while the JDK returns from a closed line.
         val current = line ?: throw AudioException("write on a closed sink")
-        current.write(data, offset, length)
+        // SourceDataLine.write returns early with a PARTIAL count when the line
+        // is stopped, flushed or closed under it. Ignoring that count broke the
+        // contract's central rule in the quietest possible way: the caller
+        // believed every byte had gone out, advanced its stream position, and
+        // the audio was dropped. It also made "close unblocks a write" pass for
+        // the wrong reason -- the write returned normally instead of coming
+        // back at all.
+        var written = 0
+        while (written < length) {
+            val accepted = current.write(data, offset + written, length - written)
+            if (accepted <= 0) {
+                if (closed || line == null) throw AudioException("sink closed while writing")
+                // A stopped or flushed line accepts nothing until it runs
+                // again; keep waiting, because close is what breaks this.
+                continue
+            }
+            written += accepted
+            if (written < length && (closed || line == null)) {
+                throw AudioException("sink closed while writing")
+            }
+        }
     }
 
     override fun start() {
@@ -210,6 +222,26 @@ internal class JavaSoundSink(
     }
 
     internal companion object {
+        /**
+         * Deliberately not DEVICE_ENUMERATION or DEVICE_SELECTION: the mixers
+         * JavaSound can actually select are `plughw:*`, which take the hardware
+         * exclusively and fight the sound server for it, and a device list whose
+         * entries break playback is worse than no list.
+         *
+         * Not STREAM_VOLUME: MASTER_GAIN is applied to the samples by the JDK,
+         * so the desktop's mixer neither shows it nor follows it. Not
+         * STREAM_IDENTITY: the stream appears under whatever name the ALSA
+         * client is given and nothing here can change it.
+         *
+         * Shared with the backend so the two can never disagree -- a backend
+         * claiming less than its own sinks is what makes a consumer hide a
+         * feature that works.
+         */
+        val CAPABILITIES: Capabilities = Capabilities.of(
+            // Honest in steady state, measured to within a percent of real time.
+            Capability.DEVICE_POSITION,
+        )
+
         /**
          * 200 ms. Not a preference -- the measured floor. skinema found 100 ms
          * cleaner on an idle machine and intermittently glitchy with a build

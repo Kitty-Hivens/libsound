@@ -1,10 +1,14 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
+// No mavenPublish and no signing yet, deliberately. This module has no source
+// in it: the session contracts live in libsound-core and the MPRIS, SMTC and
+// MPNowPlayingInfoCenter backends are the next phases. Publishing an empty,
+// signed artifact whose POM advertises all three would promise a consumer
+// something they cannot obtain -- and a Central version, once taken, cannot be
+// reissued. The plugin goes back the moment there is an implementation.
 plugins {
     alias(libs.plugins.kotlin.jvm)
     `java-library`
-    alias(libs.plugins.mavenPublish)
-    signing
 }
 
 java {
@@ -34,8 +38,4 @@ dependencies {
 
 tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
-}
-
-mavenPublishing {
-    pom { description.set("Media session for libsound: MPRIS, SMTC, MPNowPlayingInfoCenter -- publish your own, read the desktop's.") }
 }

@@ -71,9 +71,28 @@ jobs:
           fi
           echo "publishing $v"
 
+      # The release build needs the same device CI has, and for a sharper
+      # reason: without a server every audio suite skips, and a skipped suite is
+      # a green tick. The first cut of this workflow ran `build` on a bare
+      # runner, so the row that decides what reaches Maven Central was the one
+      # row that asserted nothing.
+      - name: Start a sound server with a null sink
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pulseaudio pulseaudio-utils libasound2-plugins
+          export XDG_RUNTIME_DIR=/tmp/libsound-runtime
+          mkdir -p "$XDG_RUNTIME_DIR"
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=libsound_test
+          printf 'pcm.!default pulse\nctl.!default pulse\n' | sudo tee /etc/asound.conf
+          pactl info
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+
       # The tag is what ships, so it is tested here rather than on the trust
       # that main was green when it was cut.
       - name: Build + test
+        env:
+          LIBSOUND_REQUIRE: pulse,javasound
         run: ./gradlew build --stacktrace
 
       - name: Publish

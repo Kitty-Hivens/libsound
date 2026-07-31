@@ -96,7 +96,15 @@ internal object PulseAbi {
     // -- subscription --------------------------------------------------------
 
     const val SUBSCRIPTION_MASK_SINK = 0x0001
-    const val SUBSCRIPTION_MASK_SERVER = 0x0100
+
+    /**
+     * 0x0080, not 0x0100. The first cut used 0x0100, which is the deprecated
+     * `PA_SUBSCRIPTION_MASK_AUTOLOAD` -- so the server-change event was never
+     * subscribed and a default-sink switch reached no listener, while
+     * `Capability.DEVICE_EVENTS` still claimed it did. Verified against the
+     * header, not remembered.
+     */
+    const val SUBSCRIPTION_MASK_SERVER = 0x0080
 
     /** Properties the stream carries so the desktop can name and route it. */
     const val PROP_APPLICATION_NAME = "application.name"

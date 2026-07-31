@@ -10,6 +10,7 @@ import java.lang.foreign.ValueLayout
 import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The `pa_threaded_mainloop` and the `pa_context` on it: one connection to the
@@ -44,8 +45,8 @@ internal class PulseContext private constructor(
 
     private val log = LoggerFactory.getLogger("libsound.Pulse")
 
-    @Volatile
-    private var closed = false
+    /** Compare-and-set, not check-then-set: a double free of the mainloop is native and uncatchable. */
+    private val closed = AtomicBoolean(false)
 
     /** Notify callback for context and stream state changes: it only signals. */
     lateinit var notifyStub: MemorySegment
@@ -137,11 +138,16 @@ internal class PulseContext private constructor(
     fun lastError(): String = lib.strerror(errno())
 
     override fun close() {
-        if (closed) return
-        closed = true
+        if (!closed.compareAndSet(false, true)) return
         runCatching {
-            locked { lib.handle("pa_context_disconnect").invokeExact(context) as Unit }
-            lib.handle("pa_context_unref").invokeExact(context) as Unit
+            // Both calls inside the lock. libpulse requires it for anything
+            // touching an object owned by the mainloop, and unref is the one
+            // that frees the context -- doing that while the loop thread is
+            // dispatching on it is a use-after-free, not a style point.
+            locked {
+                lib.handle("pa_context_disconnect").invokeExact(context) as Unit
+                lib.handle("pa_context_unref").invokeExact(context) as Unit
+            }
         }.onFailure { log.warn("context teardown threw: {}", it.message) }
         runCatching {
             lib.handle("pa_threaded_mainloop_stop").invokeExact(mainloop) as Unit
@@ -213,8 +219,15 @@ internal class PulseContext private constructor(
                 // last for the same reason it does in close().
                 runCatching {
                     if (context.address() != 0L) {
-                        lib.handle("pa_context_disconnect").invokeExact(context) as Unit
-                        lib.handle("pa_context_unref").invokeExact(context) as Unit
+                        // Under the lock, for the same reason as close(): the
+                        // mainloop is already running by this point.
+                        lib.handle("pa_threaded_mainloop_lock").invokeExact(mainloop) as Unit
+                        try {
+                            lib.handle("pa_context_disconnect").invokeExact(context) as Unit
+                            lib.handle("pa_context_unref").invokeExact(context) as Unit
+                        } finally {
+                            lib.handle("pa_threaded_mainloop_unlock").invokeExact(mainloop) as Unit
+                        }
                     }
                 }
                 runCatching {

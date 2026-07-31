@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * An [AudioSink] over a `pa_stream` on the shared [PulseContext].
@@ -50,9 +51,37 @@ internal class PulseSink(
     @Volatile
     private var abort = false
 
-    @Volatile
-    private var closed = false
+    /**
+     * A plain flag here was a check-then-set: two threads closing the same sink
+     * -- a consumer and `PulseBackend.close()` walking its list -- both read
+     * false, both proceeded, and both reached `pa_stream_unref` on one pointer.
+     * A double unref is a double free, and `runCatching` cannot catch it because
+     * the crash is native.
+     */
+    private val closed = AtomicBoolean(false)
 
+    /** Guards the stream pointer swap so a disconnect can happen exactly once. */
+    private val streamLock = Any()
+
+    /** Last real playhead reading, held so a failed query cannot report zero. */
+    @Volatile
+    private var lastKnownFrames = 0L
+
+    /**
+     * Frames handed to the server since [open], and the ceiling on the playhead.
+     *
+     * `pa_stream_get_time` is a media *clock*, not a count of frames rendered:
+     * once the stream underruns it keeps advancing on time the device never
+     * played. Measured -- a stream fed half a second and then left alone
+     * reported well past half a second. Unclamped, a consumer's audio clock
+     * runs away during exactly the starvation where video most needs it to
+     * stall, which is the opposite of what an underrun is supposed to do to
+     * synchronisation.
+     */
+    @Volatile
+    private var framesWritten = 0L
+
+    @Volatile
     private var volumeValue = 1f
 
     /** Native scratch for the copy into `pa_stream_write`; reallocated per open. */
@@ -61,15 +90,17 @@ internal class PulseSink(
 
     override val format: AudioFormat? get() = openFormat
 
-    override val isOpen: Boolean get() = stream.address() != 0L && !closed
+    override val isOpen: Boolean get() = stream.address() != 0L && !closed.get()
 
     override fun open(format: AudioFormat) {
-        if (closed) throw AudioException("sink is closed")
+        if (closed.get()) throw AudioException("sink is closed")
         require(format.encoding == PcmEncoding.S16LE || format.encoding == PcmEncoding.F32LE) {
             "unsupported encoding ${format.encoding}"
         }
         disconnectStream()
         abort = false
+        lastKnownFrames = 0
+        framesWritten = 0
 
         val targetNanos = config.bufferNanos ?: DEFAULT_BUFFER_NANOS
         val tlength = format.bytesFor(format.framesFor(targetNanos)).toInt()
@@ -124,6 +155,10 @@ internal class PulseSink(
                     val state = lib.handle("pa_stream_get_state").invokeExact(fresh) as Int
                     if (state == PulseAbi.STREAM_READY) break
                     if (state == PulseAbi.STREAM_FAILED || state == PulseAbi.STREAM_TERMINATED) {
+                        // Disconnect before unref. A connected stream that is
+                        // only unreffed lives on in the client and in the
+                        // server's list -- one leaked sink input per failed open.
+                        lib.handle("pa_stream_disconnect").invokeExact(fresh) as Int
                         lib.handle("pa_stream_unref").invokeExact(fresh) as Unit
                         throw AudioException("stream state $state: ${pulse.lastError()}")
                     }
@@ -163,7 +198,7 @@ internal class PulseSink(
         pulse.lock()
         try {
             while (written < length) {
-                if (abort || closed) throw AudioException("sink closed while writing")
+                if (abort || closed.get()) throw AudioException("sink closed while writing")
                 val current = stream
                 if (current.address() == 0L) throw AudioException("write on a disconnected stream")
                 val state = lib.handle("pa_stream_get_state").invokeExact(current) as Int
@@ -194,6 +229,7 @@ internal class PulseSink(
                 ) as Int
                 if (rc < 0) throw AudioException("pa_stream_write: ${pulse.lastError()}")
                 written += chunk
+                framesWritten += format.framesIn(chunk)
             }
         } finally {
             pulse.unlock()
@@ -217,13 +253,21 @@ internal class PulseSink(
     override fun framePosition(): Long {
         val current = stream
         val format = openFormat ?: return 0L
-        if (current.address() == 0L) return 0L
+        if (current.address() == 0L) return lastKnownFrames
         return pulse.locked {
             Arena.ofConfined().use { call ->
                 val out = call.allocate(ValueLayout.JAVA_LONG)
                 val rc = lib.handle("pa_stream_get_time").invokeExact(current, out) as Int
-                if (rc != 0) return@locked 0L
-                format.framesFor(out.get(ValueLayout.JAVA_LONG, 0) * 1_000L)
+                // Zero would be the one answer indistinguishable from a fresh
+                // open, and a clock re-anchoring on it jumps to the start of the
+                // track. Holding the last real reading is the honest failure:
+                // the playhead stalls, which is what a stalled device looks
+                // like anyway.
+                if (rc != 0) return@locked lastKnownFrames
+                val frames = format.framesFor(out.get(ValueLayout.JAVA_LONG, 0) * 1_000L)
+                    .coerceAtMost(framesWritten)
+                lastKnownFrames = frames
+                frames
             }
         }
     }
@@ -253,8 +297,7 @@ internal class PulseSink(
     override fun volume(): Float = volumeValue
 
     override fun close() {
-        if (closed) return
-        closed = true
+        if (!closed.compareAndSet(false, true)) return
         abort = true
         // Free a producer parked in write() before tearing anything down: the
         // signal costs nothing and the alternative is joining a thread that is
@@ -279,6 +322,10 @@ internal class PulseSink(
             // A corked stream will never report writable space again, so a
             // producer parked in write() has to be told rather than left to
             // discover it at a timeout it does not have.
+            // Wakes a parked producer so it re-checks abort and closed. It does
+            // NOT free it: a corked stream reports no writable space, so the
+            // loop parks again, exactly as the contract's deadlock semantics
+            // say it should. close() is the escape, and the only one.
             if (on) pulse.signal()
         }
     }
@@ -335,9 +382,14 @@ internal class PulseSink(
     }
 
     private fun disconnectStream() {
-        val current = stream
+        // Claim the pointer before touching it. Read-then-null let two threads
+        // walk away with the same pa_stream and unref it twice.
+        val current = synchronized(streamLock) {
+            val held = stream
+            stream = MemorySegment.NULL
+            held
+        }
         if (current.address() == 0L) return
-        stream = MemorySegment.NULL
         runCatching {
             pulse.locked {
                 lib.handle("pa_stream_set_state_callback")

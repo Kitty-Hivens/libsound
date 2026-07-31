@@ -30,7 +30,12 @@ import java.util.concurrent.atomic.AtomicReference
  * whether the device had moved would be asking about a device that had
  * correctly not started yet.
  */
-@Timeout(value = 60, unit = TimeUnit.SECONDS)
+// SEPARATE_THREAD is the whole point. JUnit's default thread mode resolves to
+// SAME_THREAD, where the timeout does not interrupt anything -- it lets the
+// method run to completion and only then compares elapsed time. A write parked
+// in pa_threaded_mainloop_wait would have hung the build to the runner's own
+// limit while this annotation sat above it looking like protection.
+@Timeout(value = 60, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 public abstract class AudioSinkContract {
 
     /**
@@ -111,13 +116,26 @@ public abstract class AudioSinkContract {
         newSink().use { sink ->
             sink.open(format)
             writeHalfSecond(sink)
+            advance(sink, halfSecondFrames() / 2)
+
+            // The playhead has to be MOVING before the freeze means anything.
+            // The first cut froze a position that was still zero and then
+            // asserted it stayed zero, which every backend passes, including one
+            // that ignores stop() entirely.
+            val moving = sink.framePosition()
+            moving shouldBeGreaterThan 0L
 
             sink.stop()
             val frozen = sink.framePosition()
             advance(sink, halfSecondFrames() / 2)
             // The seek handshake freezes first and reads second; a position that
             // keeps moving here steps a mastered clock backward later.
-            sink.framePosition() shouldBe frozen
+            //
+            // A tolerance, not equality: cork is asynchronous on a real server,
+            // so a few milliseconds can still reach the speaker between stop()
+            // returning and the read below.
+            val drift = sink.framePosition() - frozen
+            (drift in 0..(format.sampleRate / 20).toLong()) shouldBe true
 
             sink.start()
             // The resume is followed by a write, because that is what a
@@ -137,16 +155,56 @@ public abstract class AudioSinkContract {
             sink.open(format)
             writeHalfSecond(sink)
             sink.stop()
+            // A baseline, so the zero below means "emptied" and not "was never
+            // filled": a sink that buffers nothing would pass the latency
+            // assertion without a flush ever doing anything.
+            sink.latencyNanos() shouldBeGreaterThan 0L
             sink.flush()
             val afterFlush = sink.framePosition()
 
+            // Latency is what actually proves the discard. A position delta
+            // cannot: whatever a flush credits to the playhead is constant
+            // afterwards, so it cancels out of any difference -- the same
+            // reason skinema's clock is immune to the JavaSound flush jump.
+            // What is buffered, on the other hand, is either gone or it is not.
+            sink.latencyNanos() shouldBe 0L
+
+            // And the device runs again afterwards, fed continuously, because
+            // one backend's playhead only advances while writes are flowing.
             sink.start()
-            advance(sink, halfSecondFrames())
-            // The discarded frames must not turn up in the position. A seek
-            // reads the playhead right after this, and counting a dropped tail
-            // lands the anchor ahead of where sound will actually resume --
-            // which is exactly what an uncompensated JavaSound flush does.
-            sink.framePosition() shouldBe afterFlush
+            val chunk = frames(format.sampleRate / 50)
+            var fed = 0L
+            repeat(25) {
+                sink.write(chunk, 0, chunk.size)
+                fed += format.sampleRate / 50
+            }
+            advance(sink, fed)
+
+            val moved = sink.framePosition() - afterFlush
+            (moved > fed * 0.4) shouldBe true
+            (moved < fed * 1.8) shouldBe true
+        }
+    }
+
+    @Test
+    public fun `the playhead never runs past what was written`() {
+        // The one assertion that separates a device-derived playhead from an
+        // arbitrary extrapolation. Without it nothing in this suite validates
+        // the DEVICE_POSITION claim: a sink reporting wall-clock time passes
+        // every other test here.
+        newSink().use { sink ->
+            sink.open(format)
+            val written = format.sampleRate / 2
+            val data = frames(written)
+            sink.write(data, 0, data.size)
+            advance(sink, written.toLong())
+            advance(sink, written.toLong())
+
+            val position = sink.framePosition()
+            (position <= written.toLong()) shouldBe true
+            // And it did get most of the way there, so a sink that always
+            // answers zero does not pass by being trivially under the bound.
+            (position > written * 0.5) shouldBe true
         }
     }
 

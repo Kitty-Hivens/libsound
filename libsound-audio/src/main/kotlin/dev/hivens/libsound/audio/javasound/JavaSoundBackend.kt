@@ -30,7 +30,16 @@ internal class JavaSoundBackend private constructor(
 
     override val name: String = "javasound"
 
-    override val capabilities: Capabilities = Capabilities.NONE
+    /**
+     * The same set its sinks report, not an empty one.
+     *
+     * A consumer reads the *backend* to decide what to offer -- that is the
+     * line the selection logs and the line a settings screen keys off. A
+     * backend claiming nothing while its sinks provide a device-derived
+     * playhead would have consumers disabling A/V sync on a backend that
+     * supports it.
+     */
+    override val capabilities: Capabilities = JavaSoundSink.CAPABILITIES
 
     private val sinks = mutableListOf<JavaSoundSink>()
 

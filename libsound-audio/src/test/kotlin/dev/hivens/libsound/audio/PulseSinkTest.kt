@@ -101,9 +101,32 @@ class PulseBackendTest {
         val backend = checkNotNull(PulseFixture.backend)
         val default = backend.defaultDevice()
         checkNotNull(default) { "a running server always has a default sink" }
-        backend.devices().map { it.id } shouldBe backend.devices().map { it.id }
-        (default.id in backend.devices().map { it.id }) shouldBe true
-        backend.devices().single { it.id == default.id }.isDefault shouldBe true
+        // One round trip, and no comparison of a value with itself -- the first
+        // cut asserted `devices().map { it.id } shouldBe devices().map { it.id }`,
+        // which no implementation can fail.
+        val devices = backend.devices()
+        (default.id in devices.map { it.id }) shouldBe true
+        devices.single { it.id == default.id }.isDefault shouldBe true
+        devices.count { it.isDefault } shouldBe 1
+    }
+
+    @Test
+    fun `a write is paced by the device rather than buffered and returned`() {
+        // The interface's central rule, and the one the shared contract cannot
+        // check: a fake with a buffer large enough for the suite would return
+        // instantly and be right to. Only a real device paces.
+        val backend = checkNotNull(PulseFixture.backend)
+        backend.createSink(PulseFixture.config()).use { sink ->
+            sink.open(format)
+            val oneSecond = ByteArray(format.sampleRate * format.bytesPerFrame)
+            val startedAt = System.nanoTime()
+            sink.write(oneSecond, 0, oneSecond.size)
+            val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
+            // The buffer is 200 ms, so a second of audio cannot be accepted in
+            // much less than 800 ms. A sink that queued it all and returned
+            // would turn a consumer's decode loop into a busy loop.
+            (elapsedMillis > 500) shouldBe true
+        }
     }
 
     @Test

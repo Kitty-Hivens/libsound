@@ -15,6 +15,7 @@ import java.lang.foreign.ValueLayout
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 
 /**
  * The PulseAudio backend, which is also the PipeWire backend: `pipewire-pulse`
@@ -44,6 +45,19 @@ internal class PulseBackend private constructor(
         Capability.DEVICE_POSITION,
     )
 
+    /**
+     * Device-change handlers run here, never on the mainloop thread.
+     *
+     * libpulse delivers the subscription callback on its own thread with the
+     * mainloop lock held, and the natural response to the event -- re-reading
+     * the device list -- calls pa_threaded_mainloop_wait. On the mainloop
+     * thread that parks the loop waiting for a signal only that loop could
+     * deliver, and audio, introspection and teardown all stop for good.
+     */
+    private val eventDispatch = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "libsound-pulse-events").apply { isDaemon = true }
+    }
+
     private val sinks = CopyOnWriteArrayList<PulseSink>()
     private val deviceListeners = CopyOnWriteArrayList<() -> Unit>()
 
@@ -60,7 +74,7 @@ internal class PulseBackend private constructor(
     private lateinit var subscribeStub: MemorySegment
 
     override fun createSink(config: SinkConfig): AudioSink {
-        val sink = PulseSink(pulse, config, capabilities)
+        val sink = PulseSink(pulse, config, SINK_CAPABILITIES)
         sinks.add(sink)
         return sink
     }
@@ -92,6 +106,7 @@ internal class PulseBackend private constructor(
         sinks.forEach { runCatching { it.close() } }
         sinks.clear()
         deviceListeners.clear()
+        eventDispatch.shutdownNow()
         pulse.close()
     }
 
@@ -145,9 +160,15 @@ internal class PulseBackend private constructor(
         // Deliberately coarse: the event says which sink changed, but every
         // consumer of this signal re-reads the whole list anyway, and a
         // per-device diff would be state to keep correct for no gain.
-        deviceListeners.forEach { handler ->
-            runCatching { handler() }.onFailure { log.warn("device listener threw: {}", it.message) }
-        }
+        val handlers = deviceListeners.toList()
+        if (handlers.isEmpty()) return
+        runCatching {
+            eventDispatch.execute {
+                handlers.forEach { handler ->
+                    runCatching { handler() }.onFailure { log.warn("device listener threw: {}", it.message) }
+                }
+            }
+        }.onFailure { log.debug("device event dropped, dispatcher is shut down") }
     }
 
     // -- internals -----------------------------------------------------------
@@ -245,6 +266,18 @@ internal class PulseBackend private constructor(
         private const val SERVER_INFO_HEAD = 64L
 
         private const val INTROSPECT_TIMEOUT_NANOS = 2_000_000_000L
+
+        /**
+         * What a *sink* can do, which is not what the backend can do. A sink
+         * cannot enumerate devices, cannot subscribe to device events, and has
+         * no way to change the device it was created against -- handing it the
+         * backend's set claimed all three.
+         */
+        private val SINK_CAPABILITIES = Capabilities.of(
+            Capability.STREAM_VOLUME,
+            Capability.STREAM_IDENTITY,
+            Capability.DEVICE_POSITION,
+        )
 
         /** Connect and return the backend, or null when there is no sound server. */
         fun connectOrNull(applicationName: String): AudioBackend? {
