@@ -18,7 +18,7 @@ javaCoreTarget = "17"
 
 # Test stack -- light. JUnit 5 + Kotest assertions for readable test code.
 junit  = "5.11.4"
-kotest = "5.9.1"
+kotest = "6.2.3"
 
 # Maven Central publishing (signing + Central Portal upload).
 mavenPublish = "0.36.0"
