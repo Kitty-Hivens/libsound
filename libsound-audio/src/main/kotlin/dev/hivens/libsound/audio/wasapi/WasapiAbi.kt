@@ -140,6 +140,9 @@ internal object WasapiAbi {
     const val PROPVARIANT_VT = 0L
     const val PROPVARIANT_VALUE = 8L
     const val PROPVARIANT_SIZE = 24L
+
+    /** { GUID fmtid; DWORD pid } -- 20 bytes, passed by value. */
+    const val PROPERTYKEY_SIZE = 20L
     const val VT_LPWSTR = 31
 
     // -- enums and flags -----------------------------------------------------

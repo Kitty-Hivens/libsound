@@ -3,6 +3,7 @@ package dev.hivens.libsound.audio
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.audio.javasound.JavaSoundBackend
 import dev.hivens.libsound.audio.pulse.PulseBackend
+import dev.hivens.libsound.audio.wasapi.WasapiBackend
 import org.slf4j.LoggerFactory
 
 /**
@@ -41,9 +42,11 @@ public object AudioBackends {
         val backend = when {
             osName.contains("linux") || osName.contains("bsd") ->
                 PulseBackend.connectOrNull(applicationName) ?: fallback("no PulseAudio or PipeWire")
-            // Windows and macOS reach their native backends in later phases.
-            // Until then the fallback is the whole implementation there, which
-            // is why its behaviour was measured rather than assumed.
+            osName.contains("windows") ->
+                WasapiBackend.connectOrNull() ?: fallback("WASAPI unavailable")
+            // macOS reaches CoreAudio in a later phase. Until then the fallback
+            // is the whole implementation there, which is why its behaviour was
+            // measured rather than assumed.
             else -> fallback("no native backend for os.name=$osName yet")
         }
         if (backend == null) {
