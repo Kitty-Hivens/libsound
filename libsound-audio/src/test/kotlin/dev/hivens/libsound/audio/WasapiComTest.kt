@@ -104,6 +104,26 @@ class WasapiComTest {
     }
 
     @Test
+    fun `every HRESULT constant is the value the headers give`() {
+        // Hand-narrowing a 32-bit hex code to a negative Int is error-prone in
+        // the quietest way: one of the six was wrong by 65290, the compiler was
+        // content, and the only symptom would have been the backend refusing to
+        // start on a thread already placed in a single-threaded apartment.
+        WasapiAbi.AUDCLNT_E_DEVICE_INVALIDATED shouldBe 0x88890004L.toInt()
+        WasapiAbi.AUDCLNT_E_UNSUPPORTED_FORMAT shouldBe 0x88890008L.toInt()
+        WasapiAbi.AUDCLNT_E_DEVICE_IN_USE shouldBe 0x8889000AL.toInt()
+        WasapiAbi.AUDCLNT_E_SERVICE_NOT_RUNNING shouldBe 0x88890010L.toInt()
+        WasapiAbi.STREAMFLAGS_AUTOCONVERTPCM shouldBe 0x80000000L.toInt()
+        WasapiCom.RPC_E_CHANGED_MODE shouldBe 0x80010106L.toInt()
+
+        // And an HRESULT failure is exactly the sign bit, which is how every
+        // call site here decides whether it failed.
+        (WasapiAbi.AUDCLNT_E_DEVICE_INVALIDATED < 0) shouldBe true
+        (WasapiAbi.S_OK < 0) shouldBe false
+        (WasapiAbi.S_FALSE < 0) shouldBe false
+    }
+
+    @Test
     fun `the notification vtable is exactly as long as the interface`() {
         // The synthesised object has to fill every slot: a short vtable means
         // the shell calls through whatever memory follows it.

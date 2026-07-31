@@ -158,7 +158,7 @@ internal object WasapiAbi {
      * `Initialize` refuses anything but the engine's own format, and the
      * library would owe the resampling it says it does not do.
      */
-    const val STREAMFLAGS_AUTOCONVERTPCM: Int = -0x80000000 // 0x80000000
+    val STREAMFLAGS_AUTOCONVERTPCM: Int = 0x80000000u.toInt()
     const val STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000
 
     const val BUFFERFLAGS_SILENT = 0x00000002
@@ -175,10 +175,16 @@ internal object WasapiAbi {
      * update. Every WASAPI call answers this afterwards, and it is the signal
      * to tear the stream down and reopen rather than to keep pushing.
      */
-    const val AUDCLNT_E_DEVICE_INVALIDATED: Int = -0x7776FFFC // 0x88890004
-    const val AUDCLNT_E_UNSUPPORTED_FORMAT: Int = -0x7776FFF8 // 0x88890008
-    const val AUDCLNT_E_DEVICE_IN_USE: Int = -0x7776FFF6 // 0x8889000A
-    const val AUDCLNT_E_SERVICE_NOT_RUNNING: Int = -0x7776FFF0 // 0x88890010
+    // Written as the hex the headers use, narrowed rather than negated by hand.
+    // The first cut spelled these as negative literals, and one of the six --
+    // RPC_E_CHANGED_MODE -- came out wrong by 65290. Nothing catches that at
+    // compile time, and the symptom would have been the backend refusing to
+    // start on a thread a UI toolkit had already placed in a single-threaded
+    // apartment.
+    val AUDCLNT_E_DEVICE_INVALIDATED: Int = 0x88890004u.toInt()
+    val AUDCLNT_E_UNSUPPORTED_FORMAT: Int = 0x88890008u.toInt()
+    val AUDCLNT_E_DEVICE_IN_USE: Int = 0x8889000Au.toInt()
+    val AUDCLNT_E_SERVICE_NOT_RUNNING: Int = 0x88890010u.toInt()
 
     // -- time ----------------------------------------------------------------
 

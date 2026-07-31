@@ -36,8 +36,35 @@ internal class WasapiCom private constructor(
 
     private val linker = Linker.nativeLinker()
 
+    /** COM apartment state is per thread, so the record of it has to be too. */
+    private val initialised = ThreadLocal.withInitial { false }
+
     fun handle(name: String): MethodHandle =
         handles[name] ?: error("ole32 handle not loaded: $name. Add it to LOAD_SET.")
+
+    /**
+     * Threads that touch COM have to have entered an apartment, and each thread
+     * enters its own.
+     *
+     * Multithreaded, because every thread here is one we or the consumer owns
+     * and none of them pumps a Windows message loop -- which is what a
+     * single-threaded apartment would require to deliver anything. The flag is
+     * per thread and idempotent, so this is called at the head of each public
+     * entry point rather than tracked by the caller.
+     *
+     * S_FALSE means already initialised on this thread, which is a success.
+     */
+    fun ensureComOnThisThread() {
+        if (initialised.get()) return
+        val hr = handle("CoInitializeEx")
+            .invokeExact(MemorySegment.NULL, WasapiAbi.COINIT_MULTITHREADED) as Int
+        // RPC_E_CHANGED_MODE means somebody already put this thread in another
+        // apartment. Ours still works there, so it is not worth refusing over.
+        if (hr < 0 && hr != RPC_E_CHANGED_MODE) {
+            throw IllegalStateException("CoInitializeEx failed: 0x" + Integer.toHexString(hr))
+        }
+        initialised.set(true)
+    }
 
     // -- vtable navigation ---------------------------------------------------
 
@@ -171,6 +198,9 @@ internal class WasapiCom private constructor(
          * turns a stray pointer into a scan of the whole address space.
          */
         const val MAX_WIDE_BYTES = 4096L
+
+        /** The thread is already in a different apartment; ours works there anyway. */
+        val RPC_E_CHANGED_MODE: Int = 0x80010106u.toInt()
 
         private val ADDR = ValueLayout.ADDRESS
         private val I32 = ValueLayout.JAVA_INT
