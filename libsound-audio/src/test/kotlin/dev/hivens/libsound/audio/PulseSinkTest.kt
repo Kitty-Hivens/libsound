@@ -1,0 +1,177 @@
+package dev.hivens.libsound.audio
+
+import dev.hivens.libsound.AudioBackend
+import dev.hivens.libsound.AudioFormat
+import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.Capability
+import dev.hivens.libsound.MediaRole
+import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.audio.pulse.PulseBackend
+import dev.hivens.libsound.testing.AudioSinkContract
+import io.kotest.matchers.longs.shouldBeGreaterThan
+import io.kotest.matchers.shouldBe
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import java.util.concurrent.TimeUnit
+
+private const val APP_NAME = "libsound contract suite"
+
+private object PulseFixture {
+    var backend: AudioBackend? = null
+
+    fun connect() {
+        backend = PulseBackend.connectOrNull(APP_NAME)
+    }
+
+    fun disconnect() {
+        backend?.let { runCatching { it.close() } }
+        backend = null
+    }
+
+    fun gate() {
+        AudioTestGate.require("pulse", backend != null, "no PulseAudio or PipeWire server reachable")
+    }
+
+    fun config(): SinkConfig = SinkConfig(
+        applicationName = APP_NAME,
+        applicationId = "dev.hivens.libsound.test",
+        iconName = "audio-x-generic",
+        mediaRole = MediaRole.MUSIC,
+    )
+}
+
+/**
+ * The contract, against a real sound server.
+ *
+ * Runs only where one is reachable. On CI that is Linux with a null sink; the
+ * gate turns a missing server into a loud failure when the row was supposed to
+ * have one, and into a skip on a developer machine that has not started it.
+ */
+class PulseSinkContractTest : AudioSinkContract() {
+
+    companion object {
+        @JvmStatic
+        @BeforeAll
+        fun connect() = PulseFixture.connect()
+
+        @JvmStatic
+        @AfterAll
+        fun disconnect() = PulseFixture.disconnect()
+    }
+
+    @BeforeEach
+    fun gate() = PulseFixture.gate()
+
+    override fun newSink(): AudioSink = checkNotNull(PulseFixture.backend).createSink(PulseFixture.config())
+}
+
+class PulseBackendTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeAll
+        fun connect() = PulseFixture.connect()
+
+        @JvmStatic
+        @AfterAll
+        fun disconnect() = PulseFixture.disconnect()
+    }
+
+    private val format = AudioFormat(48_000, 2)
+
+    @BeforeEach
+    fun gate() = PulseFixture.gate()
+
+    @Test
+    fun `the server lists devices with names worth showing`() {
+        val backend = checkNotNull(PulseFixture.backend)
+        val devices = backend.devices()
+        // Also the cheapest possible check on the ABI table: the names and
+        // descriptions are read at oracle-derived offsets, and a wrong offset
+        // yields a null pointer or mojibake rather than a plausible label.
+        devices.isNotEmpty() shouldBe true
+        devices.all { it.id.value.isNotBlank() } shouldBe true
+        devices.all { it.name.isNotBlank() } shouldBe true
+    }
+
+    @Test
+    fun `the default device is one of the listed ones`() {
+        val backend = checkNotNull(PulseFixture.backend)
+        val default = backend.defaultDevice()
+        checkNotNull(default) { "a running server always has a default sink" }
+        backend.devices().map { it.id } shouldBe backend.devices().map { it.id }
+        (default.id in backend.devices().map { it.id }) shouldBe true
+        backend.devices().single { it.id == default.id }.isDefault shouldBe true
+    }
+
+    @Test
+    fun `the backend claims what it can actually do`() {
+        val backend = checkNotNull(PulseFixture.backend)
+        backend.capabilities.allOf(
+            Capability.STREAM_VOLUME,
+            Capability.STREAM_IDENTITY,
+            Capability.DEVICE_ENUMERATION,
+            Capability.DEVICE_SELECTION,
+            Capability.DEVICE_EVENTS,
+            Capability.DEVICE_POSITION,
+        ) shouldBe true
+    }
+
+    @Test
+    fun `the stream reaches the server under the name and role we chose`() {
+        // The whole point of the library, asserted end to end: an addressable
+        // stream rather than an anonymous client row. If this passes, an
+        // EasyEffects rule can match it.
+        val backend = checkNotNull(PulseFixture.backend)
+        backend.createSink(PulseFixture.config()).use { sink ->
+            sink.open(format)
+            val half = ByteArray(format.sampleRate / 2 * format.bytesPerFrame)
+            sink.write(half, 0, half.size)
+
+            val listing = pactlSinkInputs()
+            listing.contains(APP_NAME) shouldBe true
+            listing.contains("media.role = \"music\"") shouldBe true
+        }
+    }
+
+    @Test
+    fun `the playhead answers immediately after open`() {
+        // Without the timing flags and the explicit first update, pa_stream_get_time
+        // answers NODATA for the life of the stream and this reads as a device
+        // that never starts.
+        val backend = checkNotNull(PulseFixture.backend)
+        backend.createSink(PulseFixture.config()).use { sink ->
+            sink.open(format)
+            sink.framePosition() shouldBe 0L
+            val half = ByteArray(format.sampleRate / 2 * format.bytesPerFrame)
+            sink.write(half, 0, half.size)
+            sink.framePosition() shouldBeGreaterThan 0L
+        }
+    }
+
+    @Test
+    fun `latency is reported and plausible`() {
+        val backend = checkNotNull(PulseFixture.backend)
+        backend.createSink(PulseFixture.config()).use { sink ->
+            sink.open(format)
+            val half = ByteArray(format.sampleRate / 2 * format.bytesPerFrame)
+            sink.write(half, 0, half.size)
+            val latency = sink.latencyNanos()
+            // A zero would mean the timing info never arrived; anything past a
+            // second would mean the buffer request was ignored.
+            latency shouldBeGreaterThan 0L
+            (latency < 1_000_000_000L) shouldBe true
+        }
+    }
+}
+
+private fun pactlSinkInputs(): String = runCatching {
+    val process = ProcessBuilder("pactl", "list", "sink-inputs")
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.readAllBytes().decodeToString()
+    process.waitFor(5, TimeUnit.SECONDS)
+    output
+}.getOrDefault("")

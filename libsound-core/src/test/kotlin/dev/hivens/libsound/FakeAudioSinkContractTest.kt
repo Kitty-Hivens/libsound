@@ -14,7 +14,10 @@ import org.junit.jupiter.api.Test
  */
 class FakeAudioSinkContractTest : AudioSinkContract() {
 
-    override fun newSink() = FakeAudioSink()
+    // A second of buffer: the suite writes half a second at a time, and this
+    // device drains only when a test says so. A default-sized fake would park
+    // on the first write with nothing to unpark it.
+    override fun newSink() = FakeAudioSink(bufferFrames = 48_000)
 
     // The playhead is under test control here, so the suite runs deterministically
     // rather than against a sleep.

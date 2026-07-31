@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `libsound-audio`: the Linux output channel. A PulseAudio backend over
+  `pa_threaded_mainloop` -- which is also the PipeWire backend, since
+  `pipewire-pulse` speaks the same protocol -- carrying an application name, an
+  icon and a media role, so the stream is addressable by an EasyEffects rule
+  instead of appearing as an anonymous client. Per-stream volume the desktop's
+  mixer shows and follows, device enumeration and selection, and events when the
+  default moves.
+- `libsound-audio`: the JavaSound fallback, behind the same contract and
+  reporting through its capability set exactly what it loses -- no stream
+  identity, no system volume, no device selection. Its `flush` credits every
+  discarded frame as played, so the sink measures that jump and subtracts it;
+  without the compensation a seek would anchor a clock a whole buffer ahead of
+  the sound.
+- Backend selection: try the sound server, fall back, log which one won once.
+  Which backend is running decides what a settings screen may offer, so that one
+  line is the answer to most reports of a missing control.
+- `AudioTestGate` and `LIBSOUND_REQUIRE`: a named backend that turns out to be
+  unavailable fails the build rather than skipping. A skipped hardware suite and
+  a passing one look identical in CI otherwise.
+- The contract suite carries a class-level timeout. A backend that parks forever
+  now fails rather than hanging the build -- found by hanging the build.
 - `libsound-core`: the contracts and the types every backend and consumer share.
   `AudioSink` and `AudioBackend` for output, `MediaSession` and `SessionReader`
   for the session, `Capability` / `Capabilities` for what a backend can actually

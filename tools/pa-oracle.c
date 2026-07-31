@@ -74,6 +74,16 @@ int main(void) {
     P(offsetof(pa_sink_info, state));
     P(sizeof(pa_sink_info));
 
+    SECTION("pa_server_info (which sink is default)");
+    P(offsetof(pa_server_info, user_name));
+    P(offsetof(pa_server_info, host_name));
+    P(offsetof(pa_server_info, server_version));
+    P(offsetof(pa_server_info, server_name));
+    P(offsetof(pa_server_info, sample_spec));
+    P(offsetof(pa_server_info, default_sink_name));
+    P(offsetof(pa_server_info, default_source_name));
+    P(sizeof(pa_server_info));
+
     SECTION("pa_sink_input_info (per-stream volume, Phase 2)");
     P(offsetof(pa_sink_input_info, index));
     P(offsetof(pa_sink_input_info, name));

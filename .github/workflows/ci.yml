@@ -25,12 +25,32 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
       - uses: gradle/actions/setup-gradle@v4
 
-      # Everything in libsound-core runs without a sound server or a session
-      # bus. The integration rows that need both land with the first real
-      # backend, together with the capability gate that makes their absence a
-      # failure rather than a skip -- a suite that skips reads as green, which
-      # is how skinema shipped a subtitle bundle that exported no symbols.
+      # A runner has no audio device, so one is created. Linux is the cheap
+      # case: a null sink is a module load. Windows and macOS would need a
+      # driver installed, which is why their rows verify only what needs no
+      # device and the rest is checked on real hardware.
+      - name: Start a sound server with a null sink
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pulseaudio pulseaudio-utils libasound2-plugins
+          export XDG_RUNTIME_DIR=/tmp/libsound-runtime
+          mkdir -p "$XDG_RUNTIME_DIR"
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=libsound_test
+          # Point ALSA's default at the same server, so the JavaSound fallback
+          # is exercised against the graph it actually reaches on a desktop
+          # rather than being skipped for want of a card.
+          printf 'pcm.!default pulse\nctl.!default pulse\n' | sudo tee /etc/asound.conf
+          pactl info
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+
+      # LIBSOUND_REQUIRE names what this row is for. A named backend that turns
+      # out to be unavailable fails the build instead of skipping, because a
+      # skipped hardware suite and a passing one are the same shade of green --
+      # which is how skinema shipped a subtitle bundle that exported no symbols.
       - name: Build + test
+        env:
+          LIBSOUND_REQUIRE: pulse,javasound
         run: ./gradlew build --stacktrace
 
       - name: Upload test report on failure

@@ -5,6 +5,7 @@ import dev.hivens.libsound.AudioSink
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.assertThrows
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -22,10 +23,26 @@ import java.util.concurrent.atomic.AtomicReference
  * unblocked -- because a real device cannot be driven frame by frame. Anything
  * that needs exact counts belongs in the tests of a sink that can be driven
  * exactly, not in a suite a hardware backend also has to pass.
+ *
+ * Writes are half a second at a time, which is not arbitrary. A real server
+ * will not start playing until its prebuffer is met, and that defaults to the
+ * whole target buffer; a suite that wrote a few milliseconds and then asked
+ * whether the device had moved would be asking about a device that had
+ * correctly not started yet.
  */
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 public abstract class AudioSinkContract {
 
-    /** A fresh, unopened sink. */
+    /**
+     * A fresh, unopened sink.
+     *
+     * Its buffer has to hold at least [writeHalfSecond]'s worth, or the very
+     * first write parks against a device nothing is draining. That is not a
+     * hypothetical: it is how this suite first met its own class timeout, which
+     * is why the timeout is on the class at all. A blocking write with no
+     * deadline turns a broken backend into a hung build rather than a red one,
+     * and a hung build on CI is a wasted hour instead of a diagnosis.
+     */
     protected abstract fun newSink(): AudioSink
 
     /** The format the suite opens with. Override if a backend cannot take this one. */
@@ -42,8 +59,16 @@ public abstract class AudioSinkContract {
         Thread.sleep(format.nanosFor(frames) / 1_000_000 + REAL_TIME_SLACK_MILLIS)
     }
 
-    /** Silence, [frames] long, in the suite's format. */
+    /** Silence, [count] frames long, in the suite's format. */
     protected fun frames(count: Int): ByteArray = ByteArray(count * format.bytesPerFrame)
+
+    /** Write half a second of silence -- comfortably past any plausible prebuffer. */
+    protected fun writeHalfSecond(sink: AudioSink) {
+        val half = frames(format.sampleRate / 2)
+        sink.write(half, 0, half.size)
+    }
+
+    private fun halfSecondFrames(): Long = (format.sampleRate / 2).toLong()
 
     @Test
     public fun `frame position is zero on a freshly opened sink`() {
@@ -55,12 +80,13 @@ public abstract class AudioSinkContract {
 
     @Test
     public fun `open leaves the device running`() {
-        // No start() anywhere in this test: if open only prepared the device,
-        // the position would never move and a consumer would wait forever.
+        // No start() anywhere in this test. If open only prepared the device,
+        // the blocking write would never drain and the position would never
+        // move -- a consumer would wait forever on a sink that looks healthy.
         newSink().use { sink ->
             sink.open(format)
-            sink.write(frames(480), 0, 480 * format.bytesPerFrame)
-            advance(sink, 480)
+            writeHalfSecond(sink)
+            advance(sink, halfSecondFrames() / 2)
             sink.framePosition() shouldBeGreaterThan 0L
         }
     }
@@ -69,8 +95,8 @@ public abstract class AudioSinkContract {
     public fun `open resets the frame position`() {
         newSink().use { sink ->
             sink.open(format)
-            sink.write(frames(960), 0, 960 * format.bytesPerFrame)
-            advance(sink, 960)
+            writeHalfSecond(sink)
+            advance(sink, halfSecondFrames() / 2)
             sink.framePosition() shouldBeGreaterThan 0L
 
             // A track switch reopens, and a clock re-anchors against the fresh
@@ -84,18 +110,23 @@ public abstract class AudioSinkContract {
     public fun `stop freezes the frame position and start resumes it`() {
         newSink().use { sink ->
             sink.open(format)
-            sink.write(frames(960), 0, 960 * format.bytesPerFrame)
-            advance(sink, 480)
+            writeHalfSecond(sink)
 
             sink.stop()
             val frozen = sink.framePosition()
-            advance(sink, 480)
+            advance(sink, halfSecondFrames() / 2)
             // The seek handshake freezes first and reads second; a position that
             // keeps moving here steps a mastered clock backward later.
             sink.framePosition() shouldBe frozen
 
             sink.start()
-            advance(sink, 480)
+            // The resume is followed by a write, because that is what a
+            // consumer does and because one backend's playhead only advances
+            // while writes are flowing. Asserting that start() alone moves it
+            // would be asserting something no consumer depends on and one
+            // backend cannot provide.
+            writeHalfSecond(sink)
+            advance(sink, halfSecondFrames() / 2)
             sink.framePosition() shouldBeGreaterThan frozen
         }
     }
@@ -104,16 +135,17 @@ public abstract class AudioSinkContract {
     public fun `flush is valid while stopped and discards the tail`() {
         newSink().use { sink ->
             sink.open(format)
-            sink.write(frames(960), 0, 960 * format.bytesPerFrame)
+            writeHalfSecond(sink)
             sink.stop()
             sink.flush()
             val afterFlush = sink.framePosition()
 
             sink.start()
-            advance(sink, 960)
-            // The discarded frames must not turn up in the position: a seek
-            // reads the playhead right after this, and counting the dropped
-            // tail lands the anchor past where sound will actually resume.
+            advance(sink, halfSecondFrames())
+            // The discarded frames must not turn up in the position. A seek
+            // reads the playhead right after this, and counting a dropped tail
+            // lands the anchor ahead of where sound will actually resume --
+            // which is exactly what an uncompensated JavaSound flush does.
             sink.framePosition() shouldBe afterFlush
         }
     }
@@ -146,6 +178,8 @@ public abstract class AudioSinkContract {
                 val huge = frames(format.sampleRate * 10)
                 sink.write(huge, 0, huge.size)
             } catch (t: Throwable) {
+                // Returning or throwing are both acceptable ways to come back;
+                // staying parked is not.
                 thrown.set(t)
             } finally {
                 finished.countDown()
@@ -155,7 +189,7 @@ public abstract class AudioSinkContract {
         writer.start()
 
         entered.await(2, TimeUnit.SECONDS) shouldBe true
-        Thread.sleep(200)   // let it reach the park
+        Thread.sleep(500)   // let it fill the buffer and reach the park
         sink.close()
 
         finished.await(5, TimeUnit.SECONDS) shouldBe true
@@ -191,6 +225,6 @@ public abstract class AudioSinkContract {
 
     private companion object {
         /** Slack over the nominal duration, so a loaded runner still drains. */
-        const val REAL_TIME_SLACK_MILLIS = 50L
+        const val REAL_TIME_SLACK_MILLIS = 150L
     }
 }
