@@ -25,3 +25,6 @@ local.properties
 tools/pa-oracle
 tools/wasapi-oracle.exe
 tools/dbus-oracle
+
+# Kotlin compiler scratch
+.kotlin/

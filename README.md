@@ -114,10 +114,6 @@ depend on this by accident. The API will still shift.
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux
 backends pass the same contract suite, and the stream is visible in
 `pactl list sink-inputs` under the name and media role it was given.
-
-Built and driven by [Nexira](https://github.com/Kitty-Hivens/Nexira), the
-primary downstream -- it is the consumer whose requirements set the priorities,
-not the reason the library exists.
 </details>
 
 ---
