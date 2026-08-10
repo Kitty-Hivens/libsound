@@ -41,6 +41,20 @@ tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
+// The hand check for platforms no runner can verify. Windows and macOS runners
+// have no output device worth trusting, so their backends would otherwise reach
+// a release having never executed; this is what a person runs instead.
+//
+// In the test source set, so it stays out of the published jar.
+val smoke by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Run the audible hand check against whatever backend this machine has."
+    mainClass.set("dev.hivens.libsound.audio.smoke.SmokeCheckKt")
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    standardInput = System.`in`
+}
+
 mavenPublishing {
     pom { description.set("Audio output channel for libsound: PulseAudio, WASAPI, CoreAudio, with a JavaSound fallback.") }
 }
