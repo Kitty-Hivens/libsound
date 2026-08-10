@@ -183,6 +183,19 @@ internal class DictWriter(
         if (values.isEmpty()) return
         entry(key) { symbols.appendVariantStringArray(call, it, values) }
     }
+
+    /**
+     * An entry whose variant the caller writes.
+     *
+     * For values whose type is decided somewhere else -- a property table that
+     * knows which of a dozen shapes each name carries. [write] returns false to
+     * abandon the entry, which still has to be closed: libdbus records the
+     * closing bookkeeping in the parent, and an unbalanced pair corrupts the
+     * message rather than failing it.
+     */
+    fun raw(key: String, write: (MemorySegment) -> Boolean) {
+        entry(key) { write(it) }
+    }
 }
 
 // -- reads ---------------------------------------------------------------------
