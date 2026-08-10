@@ -39,5 +39,13 @@ jobs:
           clang -o /tmp/coreaudio-oracle tools/coreaudio-oracle.c \
             -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
 
+      # Only arm64 runners exist, and Intel Macs do. The oracle asserts every
+      # value that reached the Kotlin table, so compiling it for x86_64 -- which
+      # cannot be run here, hence syntax only -- turns a different layout there
+      # into a compile error instead of something a user finds by hearing
+      # nothing.
+      - name: The same assertions, laid out for Intel
+        run: clang -arch x86_64 -fsyntax-only tools/coreaudio-oracle.c
+
       - name: Offsets, selectors, and what this runner actually has
         run: /tmp/coreaudio-oracle
