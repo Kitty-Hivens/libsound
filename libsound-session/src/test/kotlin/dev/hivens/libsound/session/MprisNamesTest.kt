@@ -83,7 +83,8 @@ class MprisNamesTest {
 
     @Test
     fun `a bus name survives a human application name`() {
-        Mpris.busName("Nexira") shouldBe "org.mpris.MediaPlayer2.Nexira"
+        // The suffix is the consumer's own name; the library fixes only the prefix.
+        Mpris.busName("Aurora") shouldBe "org.mpris.MediaPlayer2.Aurora"
         Mpris.busName("My Player") shouldBe "org.mpris.MediaPlayer2.My_Player"
         // A name element may not start with a digit.
         Mpris.busName("2Player") shouldBe "org.mpris.MediaPlayer2._2Player"
