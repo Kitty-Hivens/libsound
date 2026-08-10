@@ -91,7 +91,15 @@ int main(void) {
     P(offsetof(pa_sink_input_info, sink));
     P(offsetof(pa_sink_input_info, volume));
     P(offsetof(pa_sink_input_info, mute));
+    P(offsetof(pa_sink_input_info, proplist));
+    P(offsetof(pa_sink_input_info, corked));
+    P(offsetof(pa_sink_input_info, has_volume));
+    P(offsetof(pa_sink_input_info, volume_writable));
     P(sizeof(pa_sink_input_info));
+
+    SECTION("pa_cvolume, read side");
+    P(offsetof(pa_cvolume, channels));
+    P(offsetof(pa_cvolume, values));
 
     SECTION("sample formats");
     P(PA_SAMPLE_S16LE);

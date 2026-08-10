@@ -81,6 +81,17 @@ internal class PulseLibrary private constructor(
             Triple("pa_context_set_subscribe_callback", null, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_context_set_sink_input_volume", ADDR, listOf(ADDR, I32, ADDR, ADDR, ADDR)),
 
+            // The mixer half: everyone else's streams, on the same context the
+            // sink already opened and through the same introspection shape.
+            Triple("pa_context_get_sink_input_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_context_get_sink_input_info", ADDR, listOf(ADDR, I32, ADDR, ADDR)),
+            Triple("pa_context_set_sink_input_mute", ADDR, listOf(ADDR, I32, I32, ADDR, ADDR)),
+            Triple("pa_context_move_sink_input_by_name", ADDR, listOf(ADDR, I32, ADDR, ADDR, ADDR)),
+            Triple("pa_context_get_sink_info_by_index", ADDR, listOf(ADDR, I32, ADDR, ADDR)),
+            Triple("pa_proplist_gets", ADDR, listOf(ADDR, ADDR)),
+            Triple("pa_sw_volume_to_linear", F64, listOf(I32)),
+            Triple("pa_cvolume_max", I32, listOf(ADDR)),
+
             // Stream lifecycle.
             Triple("pa_stream_new_with_proplist", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
             Triple("pa_stream_set_state_callback", null, listOf(ADDR, ADDR, ADDR)),

@@ -47,6 +47,23 @@ internal object PulseAbi {
     const val SINK_INFO_INDEX = 8L
     const val SINK_INFO_DESCRIPTION = 16L
 
+    // -- pa_sink_input_info: somebody else's stream ---------------------------
+
+    const val SINK_INPUT_INDEX = 0L
+    const val SINK_INPUT_NAME = 8L
+    const val SINK_INPUT_SINK = 24L
+    const val SINK_INPUT_VOLUME = 172L
+    const val SINK_INPUT_MUTE = 336L
+    const val SINK_INPUT_PROPLIST = 344L
+    const val SINK_INPUT_CORKED = 352L
+
+    /** Only the head is read; the struct is 376 bytes and most of it is not ours. */
+    const val SINK_INPUT_HEAD = 360L
+
+    /** Stream properties a mixer shows, read out of the sink input's proplist. */
+    const val PROP_MEDIA_NAME = "media.name"
+    const val PROP_APPLICATION_PROCESS_BINARY = "application.process.binary"
+
     // -- pa_server_info, for which sink is currently default -----------------
 
     const val SERVER_INFO_DEFAULT_SINK_NAME = 48L
@@ -105,6 +122,19 @@ internal object PulseAbi {
      * header, not remembered.
      */
     const val SUBSCRIPTION_MASK_SERVER = 0x0080
+    const val SUBSCRIPTION_MASK_SINK_INPUT = 0x0004
+
+    /**
+     * A subscription event packs the facility and the kind into one int. The
+     * low nibble says what changed, bits 4 and 5 say how, and reading either
+     * without masking gives a number that matches nothing.
+     */
+    const val SUBSCRIPTION_EVENT_FACILITY_MASK = 0x000F
+    const val SUBSCRIPTION_EVENT_TYPE_MASK = 0x0030
+    const val SUBSCRIPTION_EVENT_SINK_INPUT = 0x0002
+    const val SUBSCRIPTION_EVENT_NEW = 0x0000
+    const val SUBSCRIPTION_EVENT_CHANGE = 0x0010
+    const val SUBSCRIPTION_EVENT_REMOVE = 0x0020
 
     /** Properties the stream carries so the desktop can name and route it. */
     const val PROP_APPLICATION_NAME = "application.name"
