@@ -1,6 +1,7 @@
 package dev.hivens.libsound.audio
 
 import dev.hivens.libsound.AudioBackend
+import dev.hivens.libsound.audio.coreaudio.CoreAudioBackend
 import dev.hivens.libsound.audio.javasound.JavaSoundBackend
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import dev.hivens.libsound.audio.wasapi.WasapiBackend
@@ -44,10 +45,9 @@ public object AudioBackends {
                 PulseBackend.connectOrNull(applicationName) ?: fallback("no PulseAudio or PipeWire")
             osName.contains("windows") ->
                 WasapiBackend.connectOrNull() ?: fallback("WASAPI unavailable")
-            // macOS reaches CoreAudio in a later phase. Until then the fallback
-            // is the whole implementation there, which is why its behaviour was
-            // measured rather than assumed.
-            else -> fallback("no native backend for os.name=$osName yet")
+            osName.contains("mac") ->
+                CoreAudioBackend.connectOrNull() ?: fallback("CoreAudio unavailable")
+            else -> fallback("no native backend for os.name=$osName")
         }
         if (backend == null) {
             log.warn("no audio backend available on this machine")

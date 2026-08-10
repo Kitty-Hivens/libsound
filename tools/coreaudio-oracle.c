@@ -27,6 +27,63 @@
 #define P(expr) printf("%-52s = %lld\n", #expr, (long long)(expr))
 #define SECTION(name) printf("\n== %s ==\n", name)
 
+/*
+ * The numbers below were printed on an arm64 runner, which is the only kind
+ * available. Intel Macs exist and this library claims to work on them, so every
+ * value that reached the Kotlin table is asserted here as well. The workflow
+ * compiles this file for x86_64 too -- syntax only, since it cannot be run --
+ * and a different layout there becomes a compile error rather than something a
+ * user discovers by hearing nothing.
+ *
+ * Update these together with the Kotlin table, never separately.
+ */
+_Static_assert(sizeof(AudioStreamBasicDescription) == 40, "ASBD size moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mSampleRate) == 0, "ASBD.mSampleRate moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mFormatID) == 8, "ASBD.mFormatID moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mFormatFlags) == 12, "ASBD.mFormatFlags moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mBytesPerPacket) == 16, "ASBD.mBytesPerPacket moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mFramesPerPacket) == 20, "ASBD.mFramesPerPacket moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mBytesPerFrame) == 24, "ASBD.mBytesPerFrame moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mChannelsPerFrame) == 28, "ASBD.mChannelsPerFrame moved");
+_Static_assert(offsetof(AudioStreamBasicDescription, mBitsPerChannel) == 32, "ASBD.mBitsPerChannel moved");
+
+_Static_assert(sizeof(AudioObjectPropertyAddress) == 12, "property address size moved");
+_Static_assert(offsetof(AudioObjectPropertyAddress, mSelector) == 0, "address.mSelector moved");
+_Static_assert(offsetof(AudioObjectPropertyAddress, mScope) == 4, "address.mScope moved");
+_Static_assert(offsetof(AudioObjectPropertyAddress, mElement) == 8, "address.mElement moved");
+
+_Static_assert(sizeof(AudioBuffer) == 16, "AudioBuffer size moved");
+_Static_assert(offsetof(AudioBuffer, mNumberChannels) == 0, "AudioBuffer.mNumberChannels moved");
+_Static_assert(offsetof(AudioBuffer, mDataByteSize) == 4, "AudioBuffer.mDataByteSize moved");
+_Static_assert(offsetof(AudioBuffer, mData) == 8, "AudioBuffer.mData moved");
+_Static_assert(offsetof(AudioBufferList, mNumberBuffers) == 0, "AudioBufferList.mNumberBuffers moved");
+_Static_assert(offsetof(AudioBufferList, mBuffers) == 8, "AudioBufferList.mBuffers moved");
+
+_Static_assert(sizeof(AudioTimeStamp) == 64, "AudioTimeStamp size moved");
+_Static_assert(offsetof(AudioTimeStamp, mSampleTime) == 0, "AudioTimeStamp.mSampleTime moved");
+
+_Static_assert(sizeof(AudioComponentDescription) == 20, "component description size moved");
+_Static_assert(offsetof(AudioComponentDescription, componentSubType) == 4, "description.componentSubType moved");
+_Static_assert(offsetof(AudioComponentDescription, componentManufacturer) == 8, "description.componentManufacturer moved");
+_Static_assert(offsetof(AudioComponentDescription, componentFlags) == 12, "description.componentFlags moved");
+_Static_assert(offsetof(AudioComponentDescription, componentFlagsMask) == 16, "description.componentFlagsMask moved");
+
+_Static_assert(sizeof(AURenderCallbackStruct) == 16, "render callback struct size moved");
+_Static_assert(offsetof(AURenderCallbackStruct, inputProcRefCon) == 8, "callback.inputProcRefCon moved");
+
+/* Scopes are the ones most easily misremembered: Global is 0 and Output is 2,
+ * so a binding that assumed Output was 0 would silently address Global. */
+_Static_assert(kAudioUnitScope_Global == 0, "scope Global moved");
+_Static_assert(kAudioUnitScope_Input == 1, "scope Input moved");
+_Static_assert(kAudioUnitScope_Output == 2, "scope Output moved");
+_Static_assert(kAudioUnitProperty_StreamFormat == 8, "StreamFormat property moved");
+_Static_assert(kAudioUnitProperty_SetRenderCallback == 23, "SetRenderCallback property moved");
+_Static_assert(kAudioUnitProperty_MaximumFramesPerSlice == 14, "MaximumFramesPerSlice property moved");
+_Static_assert(kAudioOutputUnitProperty_CurrentDevice == 2000, "CurrentDevice property moved");
+_Static_assert(kHALOutputParam_Volume == 14, "HAL volume parameter moved");
+_Static_assert(kAudioObjectSystemObject == 1, "system object moved");
+_Static_assert(kAudioObjectPropertyElementMain == 0, "main element moved");
+
 /* A four-character code, printed as both, because only one of the two is
  * checkable by eye and only the other one goes into the binding. */
 static void fourcc(const char *name, UInt32 value) {
