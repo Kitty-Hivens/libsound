@@ -87,6 +87,28 @@ public sealed interface SessionCommand {
 }
 
 /**
+ * Who the session says it is.
+ *
+ * [identity] is the human name a widget shows. [desktopEntry] is the basename of
+ * the `.desktop` file without its suffix, and it is what lets a desktop find the
+ * application's icon -- without it a media widget shows a generic placeholder
+ * beside an otherwise complete session.
+ */
+public data class SessionConfig(
+    public val applicationName: String,
+    public val identity: String = applicationName,
+    public val desktopEntry: String? = null,
+    /** Whether the desktop may ask the application to quit. */
+    public val canQuit: Boolean = false,
+    /** Whether the desktop may ask the application to show its window. */
+    public val canRaise: Boolean = false,
+) {
+    init {
+        require(applicationName.isNotBlank()) { "applicationName must not be blank" }
+    }
+}
+
+/**
  * Our own media session, published outward.
  *
  * Unlike [AudioSink], this one degrades quietly: a session is a convenience

@@ -78,7 +78,7 @@ class WasapiComTest {
         // source looked wrong, and the result would have been a device id
         // running off into whatever followed it.
         Arena.ofConfined().use { arena ->
-            listOf("", "Nexira", "устройство вывода", "a b  c").forEach { original ->
+            listOf("", "Aurora", "устройство вывода", "a b  c").forEach { original ->
                 WasapiCom.readWide(WasapiCom.wide(arena, original)) shouldBe original
             }
         }

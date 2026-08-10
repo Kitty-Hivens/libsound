@@ -16,15 +16,17 @@
 
 ---
 
-Everything between an application and the OS media services: a named PCM output
-stream with system-level volume and device selection, and a media session the
-desktop can see and control. It does **not** decode, resample, or run effects --
-that is [`skinema`](https://github.com/Kitty-Hivens/skinema)'s job, and
-duplicating it would be a defect.
+The audio-control layer between an application and the OS: what this process
+plays, what every other process is playing, and what the desktop does about any
+of it. A named output stream with system-level volume and device selection, the
+mixer surface for everyone else's streams, and a media session the desktop can
+see and control. It does **not** decode, resample, or run effects -- that is
+[`skinema`](https://github.com/Kitty-Hivens/skinema)'s job, and duplicating it
+would be a defect.
 
-For any JVM desktop application that draws its own UI and wants to be a
+For any JVM desktop application that draws its own UI -- whether it wants to be a
 first-class citizen of the desktop's audio stack rather than an anonymous client
-row in the mixer. A sibling to
+row in the mixer, or whether it *is* the mixer. A sibling to
 [`libtray`](https://github.com/Kitty-Hivens/libtray) and
 [`libnotify`](https://github.com/Kitty-Hivens/libnotify): same binding
 discipline, pure `java.lang.foreign`, no JNI, no JNA, no GLib on Linux. Unlike
@@ -37,7 +39,8 @@ system already has.
 | Artifact | What it is |
 |---|---|
 | `libsound-core` | Types and contracts. Zero dependencies, Java 17 floor, no Panama. Compile against this without pulling any backend. |
-| `libsound-audio` | The output channel: PulseAudio and JavaSound today, WASAPI written, CoreAudio planned -- all behind one contract. |
+| `libsound-audio` | Our own output channel: PulseAudio and JavaSound today, WASAPI written, CoreAudio planned -- all behind one contract. |
+| `libsound-mixer` | Everyone else's audio: every stream on the machine, its volume and mute, routing between devices, peak levels. Planned. |
 | `libsound-session` | The media session. Contracts live in `-core`; this module is a placeholder until MPRIS lands, and is not published. |
 
 Split so a consumer pays only for what it uses -- MPRIS without libpulse, an
