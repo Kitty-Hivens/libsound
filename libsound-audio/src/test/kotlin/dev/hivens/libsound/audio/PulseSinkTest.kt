@@ -14,9 +14,13 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 private const val APP_NAME = "libsound contract suite"
+
+private const val CONCURRENT_READERS = 8
 
 private object PulseFixture {
     var backend: AudioBackend? = null
@@ -108,6 +112,35 @@ class PulseBackendTest {
         (default.id in devices.map { it.id }) shouldBe true
         devices.single { it.id == default.id }.isDefault shouldBe true
         devices.count { it.isDefault } shouldBe 1
+    }
+
+    @Test
+    fun `concurrent enumeration does not shred the answer`() {
+        // Holding the mainloop lock is not enough on its own, because the wait
+        // releases it: two threads asking at once each cleared the other's
+        // collection and then read a list holding both replies. A settings
+        // screen refreshing while a device event lands is exactly that, and it
+        // shows up as a doubled or truncated list rather than an exception.
+        val backend = checkNotNull(PulseFixture.backend)
+        val expected = backend.devices().map { it.id.value }.sorted()
+        expected.isNotEmpty() shouldBe true
+
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(CONCURRENT_READERS)
+        try {
+            val futures = (1..CONCURRENT_READERS).map {
+                pool.submit<List<List<String>>> {
+                    start.await()
+                    (1..15).map { backend.devices().map { device -> device.id.value }.sorted() }
+                }
+            }
+            start.countDown()
+            val results = futures.flatMap { it.get(60, TimeUnit.SECONDS) }
+            results.none { it.size != it.distinct().size } shouldBe true
+            results.all { it == expected } shouldBe true
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     @Test

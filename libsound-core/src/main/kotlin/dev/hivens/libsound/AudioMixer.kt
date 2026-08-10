@@ -30,6 +30,12 @@ public data class AudioStream(
     /** Reverse-DNS id, where one was given -- what matches a `.desktop` entry. */
     public val applicationId: String? = null,
     public val iconName: String? = null,
+    /**
+     * What the stream is playing, where it says: a track title, or a generic
+     * label. The second line of a mixer row, and never a substitute for
+     * [applicationName] -- "Playback Stream" names no application.
+     */
+    public val mediaName: String? = null,
     /** What the stream says it is for; the same roles our own output can request. */
     public val mediaRole: MediaRole? = null,
     /** The device it is currently playing to. */
@@ -37,6 +43,12 @@ public data class AudioStream(
     /** Linear 0..1, as the desktop's mixer would show it. */
     public val volume: Float = 1f,
     public val muted: Boolean = false,
+    /**
+     * False when the stream is attached but not rendering -- a paused player
+     * holding its channel open. A mixer draws the row either way and may grey
+     * it, which is why this is not simply omitted from the list.
+     */
+    public val active: Boolean = true,
     /** True when this stream is one of ours, so a UI can mark or skip it. */
     public val isOurs: Boolean = false,
 )
@@ -78,9 +90,17 @@ public interface AudioMixer : AutoCloseable {
     /** Every playback stream the server currently has, ours included. */
     public fun streams(): List<AudioStream>
 
-    /** Linear 0..1, clamped. Returns false when the stream went away. */
+    /**
+     * Linear 0..1, clamped.
+     *
+     * Returns what the server answered, not that the request was sent: false
+     * means the stream went away or refused. A mixer row that springs back is
+     * the correct rendering of a stream that closed mid-drag, and it can only be
+     * drawn by an implementation that waited for the answer.
+     */
     public fun setVolume(id: StreamId, volume: Float): Boolean
 
+    /** As [setVolume], and answering for the same reasons. */
     public fun setMuted(id: StreamId, muted: Boolean): Boolean
 
     /**
