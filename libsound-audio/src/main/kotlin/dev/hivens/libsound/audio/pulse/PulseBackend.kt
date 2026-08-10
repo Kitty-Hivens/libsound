@@ -16,6 +16,10 @@ import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * The PulseAudio backend, which is also the PipeWire backend: `pipewire-pulse`
@@ -61,12 +65,36 @@ internal class PulseBackend private constructor(
     private val sinks = CopyOnWriteArrayList<PulseSink>()
     private val deviceListeners = CopyOnWriteArrayList<() -> Unit>()
 
-    // Touched only on the mainloop thread (from the upcalls) or under the
-    // mainloop lock (from the collecting calls below), so they need no locking
-    // of their own.
+    /**
+     * One introspection round trip at a time.
+     *
+     * Holding the mainloop lock is not enough on its own:
+     * `pa_threaded_mainloop_wait` releases it while it waits, so two threads
+     * asking for the device list would each collect into the other's buffer.
+     * A settings screen refreshing while the subscription dispatcher answers a
+     * default-sink change is exactly that, and is the ordinary case rather than
+     * a contrived one.
+     *
+     * Always taken before the mainloop lock, never while holding it.
+     */
+    private val roundTrip = ReentrantLock()
+
+    private val closed = AtomicBoolean(false)
+
+    // Written on the mainloop thread by the upcalls, read by the thread holding
+    // roundTrip that issued the call. The completion flags are volatile and are
+    // written last, so a reader that sees one set also sees everything the
+    // callback wrote before it. The mainloop's own mutex cannot supply that
+    // edge: it is native, and the Java memory model cannot see it.
     private val collected = mutableListOf<AudioDevice>()
+
+    @Volatile
     private var collectComplete = false
+
+    @Volatile
     private var defaultSinkName: String? = null
+
+    @Volatile
     private var serverInfoComplete = false
 
     private lateinit var sinkInfoStub: MemorySegment
@@ -80,22 +108,24 @@ internal class PulseBackend private constructor(
     }
 
     override fun devices(): List<AudioDevice> {
-        val default = queryDefaultSinkName()
-        return pulse.locked {
-            collected.clear()
-            collectComplete = false
-            val op = lib.handle("pa_context_get_sink_info_list")
-                .invokeExact(pulse.context, sinkInfoStub, MemorySegment.NULL) as MemorySegment
-            pulse.releaseOperation(op)
-            if (!awaitFlag { collectComplete }) return@locked emptyList()
-            collected.map { it.copy(isDefault = it.id.value == default) }
+        if (closed.get()) return emptyList()
+        return roundTrip.withLock {
+            val default = queryDefaultSinkName()
+            pulse.locked {
+                collected.clear()
+                collectComplete = false
+                val op = lib.handle("pa_context_get_sink_info_list")
+                    .invokeExact(pulse.context, sinkInfoStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked emptyList()
+                pulse.releaseOperation(op)
+                if (!awaitFlag { collectComplete }) return@locked emptyList()
+                collected.map { it.copy(isDefault = it.id.value == default) }
+            }
         }
     }
 
-    override fun defaultDevice(): AudioDevice? {
-        val default = queryDefaultSinkName() ?: return null
-        return devices().firstOrNull { it.id.value == default }
-    }
+    /** The list already carries the answer, so asking the server twice buys nothing. */
+    override fun defaultDevice(): AudioDevice? = devices().firstOrNull { it.isDefault }
 
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit {
         deviceListeners.add(handler)
@@ -103,10 +133,17 @@ internal class PulseBackend private constructor(
     }
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         sinks.forEach { runCatching { it.close() } }
         sinks.clear()
         deviceListeners.clear()
-        eventDispatch.shutdownNow()
+        // Drained, not killed. A handler runs on this thread and its natural
+        // first move is to re-read the device list, which parks on the mainloop
+        // -- a wait that shutdownNow cannot interrupt because it is native.
+        // Tearing the context down underneath it would free what it is reading.
+        // Its work ends quickly regardless: devices() answers empty once closed.
+        eventDispatch.shutdown()
+        runCatching { eventDispatch.awaitTermination(2, TimeUnit.SECONDS) }
         pulse.close()
     }
 
@@ -173,11 +210,13 @@ internal class PulseBackend private constructor(
 
     // -- internals -----------------------------------------------------------
 
+    /** Caller holds [roundTrip]. */
     private fun queryDefaultSinkName(): String? = pulse.locked {
         defaultSinkName = null
         serverInfoComplete = false
         val op = lib.handle("pa_context_get_server_info")
             .invokeExact(pulse.context, serverInfoStub, MemorySegment.NULL) as MemorySegment
+        if (op.address() == 0L) return@locked null
         pulse.releaseOperation(op)
         if (!awaitFlag { serverInfoComplete }) null else defaultSinkName
     }

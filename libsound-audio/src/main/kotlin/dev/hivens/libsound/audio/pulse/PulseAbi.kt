@@ -39,7 +39,11 @@ internal object PulseAbi {
     // -- pa_cvolume ----------------------------------------------------------
 
     const val CVOLUME_SIZE = 132L
+    const val CVOLUME_CHANNELS = 0L
     const val VOLUME_NORM = 65_536
+
+    /** `PA_CHANNELS_MAX`. A cvolume claiming more channels than this is invalid. */
+    const val CHANNELS_MAX = 32
 
     // -- pa_sink_info, read field by field -----------------------------------
 
@@ -63,6 +67,14 @@ internal object PulseAbi {
     /** Stream properties a mixer shows, read out of the sink input's proplist. */
     const val PROP_MEDIA_NAME = "media.name"
     const val PROP_APPLICATION_PROCESS_BINARY = "application.process.binary"
+
+    /**
+     * The pid libpulse stamps on every stream its client opens, without being
+     * asked. Comparing it to our own is how a mixer knows which rows are its own
+     * process's -- exact, and needing no bookkeeping between the sink that
+     * opened a stream and the mixer that lists it.
+     */
+    const val PROP_APPLICATION_PROCESS_ID = "application.process.id"
 
     // -- pa_server_info, for which sink is currently default -----------------
 

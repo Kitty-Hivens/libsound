@@ -19,7 +19,10 @@ import java.lang.invoke.MethodType
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * Everyone else's streams, over the same libpulse the sink uses.
@@ -33,16 +36,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * ## What it puts back
  *
  * A sound server remembers per-application volume, so this is the one surface in
- * the library that writes state outliving its process. Every change is recorded
- * against the value it replaced, and [close] restores whatever is still
- * outstanding. That covers an orderly exit and not a crash, which is why a
- * consumer whose ducking is temporary should prefer the media role where the
- * desktop honours it: a role vanishes with the stream that asked for it, and a
- * volume does not.
+ * the library that writes state outliving its process. Volume and mute are each
+ * recorded against the value they replaced, separately, so that restoring a
+ * volume this process lowered does not also undo a mute the user set meanwhile.
+ * [close] restores whatever is still outstanding. That covers an orderly exit
+ * and not a crash, which is why a consumer whose ducking is temporary should
+ * prefer the media role where the desktop honours it: a role vanishes with the
+ * stream that asked for it, and a volume does not.
  */
 internal class PulseMixer private constructor(
     private val pulse: PulseContext,
-    private val ourStreamIndices: Set<Int>,
 ) : AudioMixer {
 
     private val log = LoggerFactory.getLogger("libsound.Mixer")
@@ -53,23 +56,66 @@ internal class PulseMixer private constructor(
 
     private val listeners = CopyOnWriteArrayList<(StreamEvent) -> Unit>()
 
-    /** Original volume per stream we changed, so close() can put it back. */
-    private val originals = ConcurrentHashMap<Int, Float>()
+    /**
+     * Volume and mute as we first found them, kept apart on purpose.
+     *
+     * One snapshot covering both would restore a field this process never
+     * touched -- lower somebody's volume, and an unrelated mute the user set
+     * afterwards would be undone along with it.
+     */
+    private val originalVolumes = ConcurrentHashMap<Int, Float>()
+    private val originalMutes = ConcurrentHashMap<Int, Boolean>()
+
+    /**
+     * Channel count per stream. A cvolume carries its own channel count and the
+     * server matches it against the stream's: sending a fixed two at a mono
+     * stream is a request a strict server is entitled to reject, and half the
+     * streams on a desktop are mono.
+     */
+    private val channelCounts = ConcurrentHashMap<Int, Int>()
+
+    private val sinkNames = ConcurrentHashMap<Int, String>()
+
+    /**
+     * One round trip at a time.
+     *
+     * `pa_threaded_mainloop_wait` releases the mainloop lock while it waits, so
+     * two threads issuing introspection at once would each collect into the
+     * other's buffer and read the other's answer. That is a contended path
+     * rather than a theoretical one: the subscription dispatcher enumerates on
+     * every event, while a consumer may be enumerating for its own reasons.
+     *
+     * Always taken before the mainloop lock, never while holding it.
+     */
+    private val roundTrip = ReentrantLock()
 
     /** Handlers never run on the mainloop thread; see PulseBackend for why. */
     private val dispatch = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "libsound-mixer-events").apply { isDaemon = true }
     }
 
-    // Touched on the mainloop thread from the upcalls, or under its lock from
-    // the collecting calls below.
-    private val collected = mutableListOf<AudioStream>()
-    private var collectComplete = false
-    private val sinkNames = ConcurrentHashMap<Int, String>()
+    // Written on the mainloop thread by the upcalls, read by the thread holding
+    // roundTrip that issued the call. The completion flags are volatile and are
+    // written last, so the reader that sees a flag set also sees everything the
+    // callback wrote before it -- the mainloop's own mutex is invisible to the
+    // Java memory model and cannot be relied on for that edge.
+    private val rows = mutableListOf<Row>()
+
+    @Volatile
+    private var rowsComplete = false
+
+    @Volatile
+    private var sinkLookupComplete = false
+
+    @Volatile
+    private var controlPending = false
+
+    private var controlSuccess = false
 
     private lateinit var sinkInputStub: MemorySegment
     private lateinit var sinkStub: MemorySegment
     private lateinit var subscribeStub: MemorySegment
+    private lateinit var successStub: MemorySegment
 
     override val capabilities: Capabilities = Capabilities.of(
         Capability.STREAM_ENUMERATION,
@@ -81,77 +127,71 @@ internal class PulseMixer private constructor(
 
     override fun streams(): List<AudioStream> {
         if (closed.get()) return emptyList()
-        return pulse.locked {
-            collected.clear()
-            collectComplete = false
-            val op = lib.handle("pa_context_get_sink_input_info_list")
-                .invokeExact(pulse.context, sinkInputStub, MemorySegment.NULL) as MemorySegment
-            pulse.releaseOperation(op)
-            if (!awaitFlag { collectComplete }) return@locked emptyList()
-            collected.toList()
+        val collected = roundTrip.withLock {
+            val listed = pulse.locked {
+                rows.clear()
+                rowsComplete = false
+                val op = lib.handle("pa_context_get_sink_input_info_list")
+                    .invokeExact(pulse.context, sinkInputStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked null
+                pulse.releaseOperation(op)
+                if (!awaitFlag { rowsComplete }) return@locked null
+                rows.toList()
+            } ?: return emptyList()
+            // Name any device we have not seen yet. Priming at open catches the
+            // sinks that existed then; this catches one plugged in since, which
+            // is otherwise a row whose device column stays blank for the life of
+            // the mixer.
+            listed.asSequence().map { it.sinkIndex }.distinct()
+                .filter { it != INVALID_INDEX && !sinkNames.containsKey(it) }
+                .forEach { resolveSinkName(it) }
+            listed
         }
+        collected.forEach { channelCounts[it.index] = it.channels }
+        return collected.map { it.toStream() }
     }
 
     override fun setVolume(id: StreamId, volume: Float): Boolean {
         val index = id.value.toIntOrNull() ?: return false
         if (closed.get()) return false
-        val clamped = volume.coerceIn(0f, 1f)
-        // Remember what it was before the first change, not before each one:
-        // restoring has to reach the value the user had, not the one we set a
-        // moment ago.
-        originals.computeIfAbsent(index) { currentVolume(index) ?: clamped }
-        return pulse.locked {
-            Arena.ofConfined().use { call ->
-                val cvolume = call.allocate(PulseAbi.CVOLUME_SIZE, 4)
-                val level = lib.handle("pa_sw_volume_from_linear").invokeExact(clamped.toDouble()) as Int
-                // Channel count from the stream itself would be better, but a
-                // cvolume set across the maximum applies to however many it has.
-                lib.handle("pa_cvolume_set").invokeExact(cvolume, CHANNELS_MAX, level) as MemorySegment
-                val op = lib.handle("pa_context_set_sink_input_volume").invokeExact(
-                    pulse.context, index, cvolume, MemorySegment.NULL, MemorySegment.NULL,
-                ) as MemorySegment
-                val ok = op.address() != 0L
-                pulse.releaseOperation(op)
-                ok
-            }
+        return roundTrip.withLock {
+            rememberVolume(index)
+            applyVolume(index, volume)
         }
     }
 
     override fun setMuted(id: StreamId, muted: Boolean): Boolean {
         val index = id.value.toIntOrNull() ?: return false
         if (closed.get()) return false
-        return pulse.locked {
-            val op = lib.handle("pa_context_set_sink_input_mute").invokeExact(
-                pulse.context, index, if (muted) 1 else 0, MemorySegment.NULL, MemorySegment.NULL,
-            ) as MemorySegment
-            val ok = op.address() != 0L
-            pulse.releaseOperation(op)
-            ok
+        return roundTrip.withLock {
+            rememberMute(index)
+            applyMute(index, muted)
         }
     }
 
     override fun moveTo(id: StreamId, device: DeviceId): Boolean {
         val index = id.value.toIntOrNull() ?: return false
         if (closed.get()) return false
-        return pulse.locked {
-            Arena.ofConfined().use { call ->
-                val op = lib.handle("pa_context_move_sink_input_by_name").invokeExact(
-                    pulse.context, index, call.allocateUtf8(device.value),
-                    MemorySegment.NULL, MemorySegment.NULL,
-                ) as MemorySegment
-                val ok = op.address() != 0L
-                pulse.releaseOperation(op)
-                ok
-            }
+        return awaitControl { call ->
+            lib.handle("pa_context_move_sink_input_by_name").invokeExact(
+                pulse.context, index, call.allocateUtf8(device.value),
+                successStub, MemorySegment.NULL,
+            ) as MemorySegment
         }
     }
 
     override fun restoreAll() {
-        val outstanding = originals.entries.toList()
-        originals.clear()
-        outstanding.forEach { (index, volume) ->
-            runCatching { setVolumeWithoutRecording(index, volume) }
-                .onFailure { log.debug("could not restore stream {}: {}", index, it.message) }
+        val volumes = originalVolumes.entries.map { it.key to it.value }
+        volumes.forEach { originalVolumes.remove(it.first) }
+        val mutes = originalMutes.entries.map { it.key to it.value }
+        mutes.forEach { originalMutes.remove(it.first) }
+        volumes.forEach { (index, volume) ->
+            runCatching { applyVolume(index, volume) }
+                .onFailure { log.debug("could not restore volume of stream {}: {}", index, it.message) }
+        }
+        mutes.forEach { (index, muted) ->
+            runCatching { applyMute(index, muted) }
+                .onFailure { log.debug("could not restore mute of stream {}: {}", index, it.message) }
         }
     }
 
@@ -162,40 +202,92 @@ internal class PulseMixer private constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        // Before the connection goes: a restore needs it.
-        runCatching { restoreOnClose() }
         listeners.clear()
-        dispatch.shutdownNow()
+        // Drain the event thread before restoring: it enumerates, and an
+        // enumeration in flight holds the round-trip lock the restore needs.
+        // Its work stops quickly because streams() answers empty once closed.
+        dispatch.shutdown()
+        runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
+        runCatching { restoreOnClose() }
         pulse.close()
     }
 
     private fun restoreOnClose() {
-        val outstanding = originals.entries.toList()
-        originals.clear()
-        if (outstanding.isEmpty()) return
-        log.info("restoring {} stream volume(s) this process changed", outstanding.size)
-        outstanding.forEach { (index, volume) ->
-            runCatching { setVolumeWithoutRecording(index, volume) }
+        val outstanding = originalVolumes.size + originalMutes.size
+        if (outstanding == 0) return
+        log.info("restoring {} stream setting(s) this process changed", outstanding)
+        restoreAll()
+    }
+
+    // -- control, each waiting for the server's own answer ----------------------
+
+    private fun applyVolume(index: Int, volume: Float): Boolean {
+        // The channel count comes from the cache rather than a fresh
+        // enumeration: this runs during close(), when streams() answers empty
+        // by design. Anything we are restoring was enumerated when we recorded
+        // it, so the cache has it.
+        val channels = (channelCounts[index] ?: FALLBACK_CHANNELS).coerceIn(1, PulseAbi.CHANNELS_MAX)
+        return awaitControl { call ->
+            val cvolume = call.allocate(PulseAbi.CVOLUME_SIZE, 4)
+            val level = lib.handle("pa_sw_volume_from_linear")
+                .invokeExact(volume.coerceIn(0f, 1f).toDouble()) as Int
+            lib.handle("pa_cvolume_set").invokeExact(cvolume, channels, level) as MemorySegment
+            lib.handle("pa_context_set_sink_input_volume").invokeExact(
+                pulse.context, index, cvolume, successStub, MemorySegment.NULL,
+            ) as MemorySegment
         }
     }
 
-    private fun setVolumeWithoutRecording(index: Int, volume: Float) {
+    private fun applyMute(index: Int, muted: Boolean): Boolean = awaitControl {
+        lib.handle("pa_context_set_sink_input_mute").invokeExact(
+            pulse.context, index, if (muted) 1 else 0, successStub, MemorySegment.NULL,
+        ) as MemorySegment
+    }
+
+    /**
+     * Issue an operation and return what the server said about it.
+     *
+     * Not whether the request was accepted: `pa_context_*` hands back a live
+     * operation for a stream that has already gone, and reports the failure
+     * through the callback a moment later. A mixer slider that springs back when
+     * the application closes mid-drag can only be drawn on top of the real
+     * answer.
+     */
+    private fun awaitControl(issue: (Arena) -> MemorySegment): Boolean = roundTrip.withLock {
         pulse.locked {
             Arena.ofConfined().use { call ->
-                val cvolume = call.allocate(PulseAbi.CVOLUME_SIZE, 4)
-                val level = lib.handle("pa_sw_volume_from_linear")
-                    .invokeExact(volume.coerceIn(0f, 1f).toDouble()) as Int
-                lib.handle("pa_cvolume_set").invokeExact(cvolume, CHANNELS_MAX, level) as MemorySegment
-                val op = lib.handle("pa_context_set_sink_input_volume").invokeExact(
-                    pulse.context, index, cvolume, MemorySegment.NULL, MemorySegment.NULL,
-                ) as MemorySegment
+                controlSuccess = false
+                controlPending = true
+                val op = runCatching { issue(call) }.getOrElse {
+                    controlPending = false
+                    throw it
+                }
+                if (op.address() == 0L) {
+                    controlPending = false
+                    return@locked false
+                }
                 pulse.releaseOperation(op)
+                if (!awaitFlag { !controlPending }) return@locked false
+                controlSuccess
             }
         }
     }
 
-    private fun currentVolume(index: Int): Float? =
-        streams().firstOrNull { it.id.value == index.toString() }?.volume
+    private fun rememberVolume(index: Int) {
+        if (originalVolumes.containsKey(index)) return
+        val current = find(index) ?: return
+        originalVolumes.putIfAbsent(index, current.volume)
+    }
+
+    private fun rememberMute(index: Int) {
+        if (originalMutes.containsKey(index)) return
+        val current = find(index) ?: return
+        originalMutes.putIfAbsent(index, current.muted)
+    }
+
+    /** Enumerates, so it must not be called while the mainloop lock is held. */
+    private fun find(index: Int): AudioStream? =
+        streams().firstOrNull { it.id.value == index.toString() }
 
     // -- upcalls, on the mainloop thread with its lock held ---------------------
 
@@ -205,30 +297,29 @@ internal class PulseMixer private constructor(
     fun onSinkInput(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
         runCatching {
             if (eol != 0) {
-                collectComplete = true
+                rowsComplete = true
                 pulse.signal()
                 return@runCatching
             }
             if (info.address() == 0L) return@runCatching
             val head = info.reinterpret(PulseAbi.SINK_INPUT_HEAD)
-            val index = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_INDEX)
             val proplist = head.get(ValueLayout.ADDRESS, PulseAbi.SINK_INPUT_PROPLIST)
-            val sinkIndex = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_SINK)
-            val muted = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_MUTE) != 0
-            val volume = readVolume(head.asSlice(PulseAbi.SINK_INPUT_VOLUME, PulseAbi.CVOLUME_SIZE))
-
-            collected.add(
-                AudioStream(
-                    id = StreamId(index.toString()),
+            val cvolume = head.asSlice(PulseAbi.SINK_INPUT_VOLUME, PulseAbi.CVOLUME_SIZE)
+            rows.add(
+                Row(
+                    index = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_INDEX),
+                    sinkIndex = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_SINK),
                     applicationName = prop(proplist, PulseAbi.PROP_APPLICATION_NAME)
                         ?: prop(proplist, PulseAbi.PROP_APPLICATION_PROCESS_BINARY),
                     applicationId = prop(proplist, PulseAbi.PROP_APPLICATION_ID),
                     iconName = prop(proplist, PulseAbi.PROP_APPLICATION_ICON_NAME),
-                    mediaRole = roleOf(prop(proplist, PulseAbi.PROP_MEDIA_ROLE)),
-                    device = sinkNames[sinkIndex]?.let { DeviceId(it) },
-                    volume = volume,
-                    muted = muted,
-                    isOurs = index in ourStreamIndices,
+                    mediaName = prop(proplist, PulseAbi.PROP_MEDIA_NAME),
+                    role = roleOf(prop(proplist, PulseAbi.PROP_MEDIA_ROLE)),
+                    volume = readVolume(cvolume),
+                    channels = cvolume.get(ValueLayout.JAVA_BYTE, PulseAbi.CVOLUME_CHANNELS).toInt() and 0xFF,
+                    muted = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_MUTE) != 0,
+                    active = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_CORKED) == 0,
+                    ours = prop(proplist, PulseAbi.PROP_APPLICATION_PROCESS_ID)?.toLongOrNull() == OUR_PID,
                 ),
             )
         }.onFailure { log.warn("sink input callback threw: {}", it.message) }
@@ -236,12 +327,25 @@ internal class PulseMixer private constructor(
 
     fun onSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
         runCatching {
-            if (eol != 0 || info.address() == 0L) return@runCatching
+            if (eol != 0) {
+                sinkLookupComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            if (info.address() == 0L) return@runCatching
             val head = info.reinterpret(SINK_HEAD)
             val index = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INFO_INDEX)
             val name = head.get(ValueLayout.ADDRESS, PulseAbi.SINK_INFO_NAME).readCString()
             if (name != null) sinkNames[index] = name
         }.onFailure { log.warn("sink callback threw: {}", it.message) }
+    }
+
+    fun onControlSuccess(unusedContext: MemorySegment, success: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            controlSuccess = success != 0
+            controlPending = false
+            pulse.signal()
+        }
     }
 
     fun onSubscribe(unusedContext: MemorySegment, event: Int, index: Int, unusedUserData: MemorySegment) {
@@ -254,9 +358,12 @@ internal class PulseMixer private constructor(
         runCatching {
             dispatch.execute {
                 val streamEvent = when (kind) {
-                    PulseAbi.SUBSCRIPTION_EVENT_REMOVE -> StreamEvent.Gone(StreamId(index.toString()))
+                    PulseAbi.SUBSCRIPTION_EVENT_REMOVE -> {
+                        channelCounts.remove(index)
+                        StreamEvent.Gone(StreamId(index.toString()))
+                    }
                     else -> {
-                        val stream = streams().firstOrNull { it.id.value == index.toString() } ?: return@execute
+                        val stream = find(index) ?: return@execute
                         if (kind == PulseAbi.SUBSCRIPTION_EVENT_NEW) StreamEvent.Appeared(stream)
                         else StreamEvent.Changed(stream)
                     }
@@ -270,6 +377,36 @@ internal class PulseMixer private constructor(
     }
 
     // -- internals --------------------------------------------------------------
+
+    /** One row as the callback read it, before the sink index has a name. */
+    private class Row(
+        val index: Int,
+        val sinkIndex: Int,
+        val applicationName: String?,
+        val applicationId: String?,
+        val iconName: String?,
+        val mediaName: String?,
+        val role: MediaRole?,
+        val volume: Float,
+        val channels: Int,
+        val muted: Boolean,
+        val active: Boolean,
+        val ours: Boolean,
+    )
+
+    private fun Row.toStream() = AudioStream(
+        id = StreamId(index.toString()),
+        applicationName = applicationName,
+        applicationId = applicationId,
+        iconName = iconName,
+        mediaName = mediaName,
+        mediaRole = role,
+        device = sinkNames[sinkIndex]?.let { DeviceId(it) },
+        volume = volume,
+        muted = muted,
+        active = active,
+        isOurs = ours,
+    )
 
     /** The loudest channel, which is what a mixer slider shows. */
     private fun readVolume(cvolume: MemorySegment): Float {
@@ -295,12 +432,43 @@ internal class PulseMixer private constructor(
             val state = lib.handle("pa_context_get_state").invokeExact(pulse.context) as Int
             if (state != PulseAbi.CONTEXT_READY) return false
             if (System.nanoTime() > deadline) {
-                log.warn("stream introspection timed out")
+                log.warn("introspection timed out")
                 return false
             }
             pulse.await()
         }
         return true
+    }
+
+    private fun resolveSinkName(index: Int) {
+        pulse.locked {
+            sinkLookupComplete = false
+            val op = lib.handle("pa_context_get_sink_info_by_index")
+                .invokeExact(pulse.context, index, sinkStub, MemorySegment.NULL) as MemorySegment
+            if (op.address() == 0L) return@locked
+            pulse.releaseOperation(op)
+            awaitFlag { sinkLookupComplete }
+        }
+    }
+
+    /**
+     * Name every sink that exists now, before the first enumeration.
+     *
+     * Waited on rather than fired and forgotten: the first `streams()` call
+     * otherwise reports a null device for every row, which is indistinguishable
+     * from a backend that cannot tell.
+     */
+    private fun primeSinkNames() {
+        roundTrip.withLock {
+            pulse.locked {
+                sinkLookupComplete = false
+                val op = lib.handle("pa_context_get_sink_info_list")
+                    .invokeExact(pulse.context, sinkStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked
+                pulse.releaseOperation(op)
+                awaitFlag { sinkLookupComplete }
+            }
+        }
     }
 
     private fun installStubs() {
@@ -320,24 +488,24 @@ internal class PulseMixer private constructor(
             lookup.findVirtual(PulseMixer::class.java, "onSink", infoType).bindTo(this),
             FunctionDescriptor.ofVoid(addr, addr, i32, addr), lib.arena,
         )
+        val intPairType = MethodType.methodType(
+            Void.TYPE, MemorySegment::class.java, Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType, MemorySegment::class.java,
+        )
         subscribeStub = linker.upcallStub(
-            lookup.findVirtual(
-                PulseMixer::class.java, "onSubscribe",
-                MethodType.methodType(
-                    Void.TYPE, MemorySegment::class.java, Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType, MemorySegment::class.java,
-                ),
-            ).bindTo(this),
+            lookup.findVirtual(PulseMixer::class.java, "onSubscribe", intPairType).bindTo(this),
             FunctionDescriptor.ofVoid(addr, i32, i32, addr), lib.arena,
         )
-    }
-
-    private fun primeSinkNames() {
-        pulse.locked {
-            val op = lib.handle("pa_context_get_sink_info_list")
-                .invokeExact(pulse.context, sinkStub, MemorySegment.NULL) as MemorySegment
-            pulse.releaseOperation(op)
-        }
+        successStub = linker.upcallStub(
+            lookup.findVirtual(
+                PulseMixer::class.java, "onControlSuccess",
+                MethodType.methodType(
+                    Void.TYPE, MemorySegment::class.java, Int::class.javaPrimitiveType,
+                    MemorySegment::class.java,
+                ),
+            ).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, i32, addr), lib.arena,
+        )
     }
 
     private fun subscribe() {
@@ -354,9 +522,20 @@ internal class PulseMixer private constructor(
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.Mixer")
 
-        private const val CHANNELS_MAX = 2
+        private val OUR_PID = ProcessHandle.current().pid()
+
+        /**
+         * Only reached when a restore runs for a stream whose channel count was
+         * never seen, which the recording path makes unreachable. Stereo is the
+         * least surprising thing to send if it ever is.
+         */
+        private const val FALLBACK_CHANNELS = 2
+
         private const val SINK_HEAD = 32L
         private const val INTROSPECT_TIMEOUT_NANOS = 2_000_000_000L
+
+        /** `PA_INVALID_INDEX`, which a sink input carries when it is not routed. */
+        private const val INVALID_INDEX = -1
 
         /**
          * Open a mixer, or null where there is no sound server.
@@ -366,10 +545,10 @@ internal class PulseMixer private constructor(
          * connection a sink is writing through puts introspection traffic on the
          * path that carries audio timing.
          */
-        fun openOrNull(applicationName: String, ourStreamIndices: Set<Int> = emptySet()): AudioMixer? {
+        fun openOrNull(applicationName: String): AudioMixer? {
             val context = PulseContext.connectOrNull(applicationName) ?: return null
             return runCatching {
-                PulseMixer(context, ourStreamIndices).apply {
+                PulseMixer(context).apply {
                     installStubs()
                     primeSinkNames()
                     subscribe()

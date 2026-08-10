@@ -7,6 +7,7 @@ import dev.hivens.libsound.Capability
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.StreamEvent
+import dev.hivens.libsound.StreamId
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import io.kotest.matchers.floats.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
@@ -65,9 +67,80 @@ class PulseMixerTest {
         val stream = checkNotNull(ours()) { "our own stream should be listed" }
         stream.mediaRole shouldBe MediaRole.MUSIC
         stream.volume shouldBeGreaterThan 0f
+        stream.active shouldBe true
         // The device it is playing to, resolved from the sink index to a name a
         // consumer could store and select again later.
         (stream.device != null) shouldBe true
+    }
+
+    @Test
+    fun `a stream this process opened is marked as ours`() {
+        // From the pid libpulse stamps on every stream, so it holds for streams
+        // this process opened by other means too -- and needs no bookkeeping
+        // between the sink and the mixer, which do not know each other.
+        checkNotNull(ours()).isOurs shouldBe true
+        // And is not simply true for everything: the mixer's own connection
+        // publishes no stream, so anything else on the machine is somebody's.
+        mixer!!.streams().count { it.isOurs } shouldBe
+            mixer!!.streams().count { it.applicationName?.startsWith(appName) == true }
+    }
+
+    @Test
+    fun `the first enumeration already knows the device names`() {
+        // Priming is waited on rather than fired and forgotten. Fired, the first
+        // call reports a null device for every row, which a consumer cannot tell
+        // apart from a backend that does not know how to answer.
+        val fresh = checkNotNull(AudioMixers.open("libsound mixer prime test"))
+        try {
+            fresh.streams().none { it.device == null } shouldBe true
+        } finally {
+            fresh.close()
+        }
+    }
+
+    @Test
+    fun `volume set on a mono stream is what the server then reports`() {
+        // A cvolume carries its own channel count and the server matches it
+        // against the stream's. Half the streams on a desktop are mono, and a
+        // fixed two is a request a server is entitled to reject.
+        val monoName = "$appName mono"
+        val mono = backend!!.createSink(SinkConfig(applicationName = monoName))
+            .also { it.open(AudioFormat(48_000, 1)) }
+        try {
+            val silence = ByteArray(48_000 / 4)
+            mono.write(silence, 0, silence.size)
+            Thread.sleep(200)
+            val stream = checkNotNull(mixer!!.streams().firstOrNull { it.applicationName == monoName })
+            mixer!!.setVolume(stream.id, 0.4f) shouldBe true
+            Thread.sleep(200)
+            val after = checkNotNull(mixer!!.streams().firstOrNull { it.applicationName == monoName })
+            (abs(after.volume - 0.4f) < 0.05f) shouldBe true
+        } finally {
+            runCatching { mono.close() }
+        }
+    }
+
+    @Test
+    fun `setting a stream that is not there answers false`() {
+        // What the server said, not that the request was sent: libpulse hands
+        // back a live operation for a stream that has already gone and reports
+        // the refusal a moment later.
+        mixer!!.setVolume(StreamId("999999"), 0.5f) shouldBe false
+        mixer!!.setMuted(StreamId("999999"), true) shouldBe false
+    }
+
+    @Test
+    fun `a mute this process set is put back`() {
+        // The same obligation as volume, and separately recorded: restoring a
+        // volume must not undo a mute the user set in the meantime.
+        checkNotNull(ours()).muted shouldBe false
+        mixer!!.setMuted(checkNotNull(ours()).id, true) shouldBe true
+        Thread.sleep(200)
+        checkNotNull(ours()).muted shouldBe true
+
+        mixer!!.restoreAll()
+        Thread.sleep(300)
+        checkNotNull(ours()).muted shouldBe false
     }
 
     @Test
@@ -116,6 +189,33 @@ class PulseMixerTest {
             appeared.await(10, TimeUnit.SECONDS) shouldBe true
         } finally {
             runCatching { second.close() }
+        }
+    }
+
+    @Test
+    fun `concurrent enumeration does not shred the answer`() {
+        // The mixer contends with itself by construction: its own subscription
+        // dispatcher enumerates on every stream event, so a consumer listing
+        // streams is racing a thread the library started. Duplicate ids are the
+        // signature -- two collections landing in one buffer -- and unlike a
+        // changed stream set they cannot happen for an honest reason.
+        val pool = Executors.newFixedThreadPool(4)
+        val start = CountDownLatch(1)
+        try {
+            val futures = (1..4).map {
+                pool.submit<List<List<String>>> {
+                    start.await()
+                    (1..15).map { mixer!!.streams().map { stream -> stream.id.value } }
+                }
+            }
+            start.countDown()
+            val results = futures.flatMap { it.get(60, TimeUnit.SECONDS) }
+            results.none { it.size != it.distinct().size } shouldBe true
+            // Ours is alive for the whole run, so every single listing must have
+            // it -- a truncated collection is what its absence would mean.
+            results.all { ids -> ids.contains(checkNotNull(ours()).id.value) } shouldBe true
+        } finally {
+            pool.shutdownNow()
         }
     }
 
