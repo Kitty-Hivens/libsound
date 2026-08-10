@@ -132,6 +132,20 @@ public interface MediaSession : AutoCloseable {
     public fun publish(state: SessionState)
 
     /**
+     * Announce that the position moved discontinuously -- a seek, a track
+     * change, a loop.
+     *
+     * Separate from [publish] because the difference cannot be inferred. A
+     * position that jumped and a position that advanced look identical to
+     * anything comparing two snapshots, and only the player knows which
+     * happened. Readers rely on this: the protocols deliberately leave position
+     * out of ordinary change notifications, since it moves continuously and
+     * emitting it as one would flood the bus, so a reader that is not told
+     * about a seek goes on extrapolating from the old anchor.
+     */
+    public fun seeked(positionMicros: Long)
+
+    /**
      * Subscribe to commands. The handler runs on the session's own dispatch
      * thread; hop before touching UI state. The returned function unsubscribes
      * and is idempotent.
