@@ -110,20 +110,42 @@ internal object Mpris {
     /**
      * Turn an arbitrary track identity into a valid object path.
      *
-     * Object paths admit only `[A-Za-z0-9_]` between slashes, so a consumer's
-     * identity -- a file path, a URL, a database key -- cannot be used as one
-     * directly. An invalid path is not a soft failure: libdbus refuses to append
-     * it and the whole metadata dictionary goes out malformed.
+     * Two reasons this is not optional, and the first is not what it looks like.
+     *
+     * **An invalid path aborts the process.** Not a rejected append, not a
+     * malformed message -- `dbus_message_iter_append_basic` asserts
+     * `_dbus_check_is_valid_path` and calls `_dbus_abort()`, which dumps core
+     * and takes the host down with it. Measured, after the comment here first
+     * claimed the milder version. A consumer's track identity is usually a file
+     * path or a URL, so handing it over unchecked is a crash waiting for the
+     * first track with a space in its name.
+     *
+     * **The mapping has to be injective.** Replacing every illegal character
+     * with the same `_` collapses distinct titles onto one path: any two
+     * Japanese titles of equal length become identical, and `SetPosition`
+     * compares the id against the current track before accepting a seek. Two
+     * tracks sharing a path means a seek aimed at one is accepted while the
+     * other is playing. So illegal bytes are escaped rather than replaced --
+     * `_` plus the hex of each UTF-8 byte, with `_` itself escaped so nothing
+     * is ambiguous.
      */
     fun trackPath(trackId: String?): String {
         if (trackId.isNullOrBlank()) return NO_TRACK
-        val cleaned = buildString(trackId.length) {
-            for (ch in trackId) {
-                append(if (ch.isLetterOrDigit() && ch.code < 128 || ch == '_') ch else '_')
+        val escaped = buildString(trackId.length * 2) {
+            for (byte in trackId.toByteArray(Charsets.UTF_8)) {
+                val ch = byte.toInt().toChar()
+                if (byte >= 0 && (ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9')) {
+                    append(ch)
+                } else {
+                    append('_').append("%02x".format(byte.toInt() and 0xFF))
+                }
             }
         }
-        return TRACK_ID_PREFIX + cleaned.ifEmpty { "unknown" }
+        return TRACK_ID_PREFIX + escaped.ifEmpty { "unknown" }
     }
+
+    /** The grammar an object path element has to satisfy, for tests and guards. */
+    val OBJECT_PATH_PATTERN: Regex = Regex("^/([A-Za-z0-9_]+)(/[A-Za-z0-9_]+)*$")
 
     /**
      * The bus name for [applicationName], with everything a bus name cannot
