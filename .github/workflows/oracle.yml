@@ -1,0 +1,43 @@
+name: Oracle
+
+# The ABI oracles, run where their headers live.
+#
+# Every constant and offset in a backend's ABI table is printed by a small C
+# program compiled against the real headers, and never written from memory. For
+# libpulse and libdbus that program runs on the maintainer's machine. CoreAudio
+# has no such machine, so it runs here, and this workflow is the only way its
+# numbers are ever obtained.
+#
+# Run it by hand from the Actions tab, or by touching the oracle itself. The
+# output is transcribed into the Kotlin table by a human reading the log --
+# deliberately not generated, because a generator is one more thing that can be
+# wrong in a way nobody reads.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/*-oracle.c'
+      - '.github/workflows/oracle.yml'
+
+jobs:
+  coreaudio:
+    name: CoreAudio ABI (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: SDK and toolchain, recorded with the numbers they produced
+        run: |
+          sw_vers
+          xcrun --show-sdk-version
+          xcrun --show-sdk-path
+          clang --version
+
+      - name: Compile the oracle
+        run: |
+          clang -o /tmp/coreaudio-oracle tools/coreaudio-oracle.c \
+            -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
+
+      - name: Offsets, selectors, and what this runner actually has
+        run: /tmp/coreaudio-oracle

@@ -104,15 +104,34 @@ depend on this by accident. The API will still shift.
 |---|---|
 | Contracts and core | Done. Types, sink and session contracts, ring buffer, pull pump, fake backend, contract suite. |
 | Linux audio (libpulse) | Done and exercised. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. |
+| Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events -- and everything it changes put back. |
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
-| Windows audio (WASAPI) | Written to the ABI and compiling; **no part of it has been run.** Verification is on real hardware. |
-| Linux session (MPRIS) | Not started. |
+| Windows audio (WASAPI) | Written to the ABI and compiling; **no part of it has been run.** Verification is on real hardware -- see [docs/TESTING.md](docs/TESTING.md). |
+| Windows mixer (IAudioSessionManager2) | Not started. |
+| Linux session (MPRIS) | Done and exercised. Publishes a player `playerctl` and the desktop can drive, and reads and controls everyone else's. |
 | Windows session (SMTC) | Not started. |
-| macOS | Not started, and will be deliberately partial: the platform has no per-application volume and no public foreign-session read. |
+| macOS audio (CoreAudio) | Not started. The ABI oracle is written and runs on a macOS CI runner, since there is no Mac to run it on here. |
+| macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`AudioMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/AudioMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux
-backends pass the same contract suite, and the stream is visible in
+backends pass the same contract suite, the mixer round-trips volume, mute and
+routing against real streams, and the stream is visible in
 `pactl list sink-inputs` under the name and media role it was given.
+</details>
+
+<details>
+  <summary>Checking a platform by hand</summary>
+
+A backend that no runner can exercise reaches a release having never executed,
+and a hardware suite that skips is the same shade of green as one that passes.
+So `./gradlew smoke` is an audible check a person runs: it exercises the same
+rules the contract asserts, prints a pass or failure for each, and then asks the
+four questions no assertion can answer -- whether a tone was audible, whether
+the desktop's mixer shows the stream under our name, whether the slider moves
+with our volume, and whether stopping actually silenced the device.
+
+[docs/TESTING.md](docs/TESTING.md) is written for somebody who has never seen
+this repository.
 </details>
 
 ---
