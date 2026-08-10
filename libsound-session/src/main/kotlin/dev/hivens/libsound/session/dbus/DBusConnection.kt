@@ -97,15 +97,21 @@ internal class DBusConnection private constructor(
      * Send and wait for the reply, on the calling thread. Returns null when the
      * peer did not answer -- absent, or past [timeoutMillis].
      *
-     * The reply is the caller's to unref. Never call this from a message
-     * handler: handlers run on the I/O thread, and this would have that thread
-     * waiting for itself.
+     * The reply is the caller's to unref.
+     *
+     * Safe from a message handler, which runs on the I/O thread: the round trip
+     * is then made inline rather than queued, because queueing it would have
+     * that thread waiting for itself. The first version only documented the
+     * hazard and an integration test walked straight into it -- a handler
+     * resolving a signal's sender back to a well-known name is an obvious thing
+     * to do, and it hung for the whole timeout every time.
      */
     fun call(message: MemorySegment, timeoutMillis: Int = DEFAULT_REPLY_TIMEOUT_MS): MemorySegment? {
         if (!open.get()) {
             runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
             return null
         }
+        if (Thread.currentThread() === ioThread) return blockingCall(message, timeoutMillis)
         val future = CompletableFuture<MemorySegment?>()
         tasks.put(Runnable { future.complete(runCatching { blockingCall(message, timeoutMillis) }.getOrNull()) })
         return runCatching {
