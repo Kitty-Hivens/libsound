@@ -39,6 +39,26 @@ public enum class Capability {
      */
     DEVICE_POSITION,
 
+    /** Every playback stream on the machine can be listed. */
+    STREAM_ENUMERATION,
+
+    /** Volume and mute can be set on somebody else's stream. */
+    STREAM_CONTROL,
+
+    /** A stream can be moved to another device. */
+    STREAM_ROUTING,
+
+    /**
+     * A media role actually changes what other streams do.
+     *
+     * Present only where the session manager is configured to act on roles, so
+     * it says something about the desktop rather than about the backend. A
+     * consumer that wants to quiet the music behind a video asks this before
+     * choosing between the role, which the server enforces and which vanishes
+     * with the stream, and direct volume, which does neither.
+     */
+    DUCKS_OTHERS,
+
     /** Our own media session can be published to the desktop. */
     SESSION_PUBLISH,
 

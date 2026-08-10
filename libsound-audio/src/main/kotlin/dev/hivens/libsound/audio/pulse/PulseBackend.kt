@@ -297,5 +297,5 @@ internal class PulseBackend private constructor(
 }
 
 /** Read a `const char *` out of a pointer-valued field. */
-private fun MemorySegment.readCString(): String? =
+internal fun MemorySegment.readCString(): String? =
     if (address() == 0L) null else reinterpret(Long.MAX_VALUE).getString(0)

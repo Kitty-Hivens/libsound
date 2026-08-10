@@ -39,9 +39,8 @@ system already has.
 | Artifact | What it is |
 |---|---|
 | `libsound-core` | Types and contracts. Zero dependencies, Java 17 floor, no Panama. Compile against this without pulling any backend. |
-| `libsound-audio` | Our own output channel: PulseAudio and JavaSound today, WASAPI written, CoreAudio planned -- all behind one contract. |
-| `libsound-mixer` | Everyone else's audio: every stream on the machine, its volume and mute, routing between devices, peak levels. Planned. |
-| `libsound-session` | The media session. Contracts live in `-core`; this module is a placeholder until MPRIS lands, and is not published. |
+| `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio and JavaSound today, WASAPI written, CoreAudio planned. |
+| `libsound-session` | The media session: publish our own, read and drive everyone else's. MPRIS today, SMTC planned. |
 
 Split so a consumer pays only for what it uses -- MPRIS without libpulse, an
 output channel without D-Bus.
