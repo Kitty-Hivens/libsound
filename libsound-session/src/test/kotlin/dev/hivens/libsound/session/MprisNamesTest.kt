@@ -32,18 +32,45 @@ class MprisNamesTest {
 
     @Test
     fun `a track id becomes a valid object path`() {
-        // An object path admits only [A-Za-z0-9_] between slashes. A consumer's
-        // identity is usually a file path or a URL, and libdbus refuses to
-        // append an invalid one -- which takes the whole metadata dictionary out
-        // malformed rather than dropping one field.
-        Mpris.trackPath("track-42") shouldBe "/dev/hivens/libsound/track/track_42"
-        Mpris.trackPath("/home/haru/Bus Stop.mp3") shouldBe
-            "/dev/hivens/libsound/track/_home_haru_Bus_Stop_mp3"
-        Mpris.trackPath("https://example.invalid/a?b=c") shouldBe
-            "/dev/hivens/libsound/track/https___example_invalid_a_b_c"
-        // Cyrillic and CJK are not path-legal either, and must not vanish into
-        // an empty element.
-        Mpris.trackPath("дорожка") shouldBe "/dev/hivens/libsound/track/_______"
+        // An invalid path is not a rejected field. libdbus asserts and calls
+        // _dbus_abort(), which dumps core and takes the host with it -- measured,
+        // not assumed. So every output of this has to satisfy the grammar.
+        listOf(
+            "track-42",
+            "/home/haru/Bus Stop.mp3",
+            "https://example.invalid/a?b=c",
+            "\u590f\u51ea\u304e",
+            "\u3053\u306e\u60d1\u661f\u306eBirthday Song",
+            "\u0434\u043e\u0440\u043e\u0436\u043a\u0430",
+            "_leading_underscore",
+            "emoji \ud83c\udfb5 here",
+        ).forEach { id ->
+            val path = Mpris.trackPath(id)
+            Mpris.OBJECT_PATH_PATTERN.matches(path) shouldBe true
+        }
+        // ASCII letters and digits survive readably; everything else is escaped
+        // rather than replaced.
+        Mpris.trackPath("track42") shouldBe "/dev/hivens/libsound/track/track42"
+    }
+
+    @Test
+    fun `distinct titles never collapse onto one path`() {
+        // The failure this guards is not cosmetic. SetPosition compares the id
+        // against the current track before accepting a seek, so two tracks
+        // sharing a path means a seek aimed at one is accepted while the other
+        // plays. Replacing every illegal character with the same underscore did
+        // exactly that: any two Japanese titles of equal length collided.
+        val titles = listOf(
+            "\u590f\u51ea\u304e",
+            "\u5915\u51ea\u304e",
+            "\u3053\u306e\u60d1\u661f\u306eBirthday Song",
+            "\u7d04\u675f\u306e\u5504",
+            "Bus Stop",
+            "Bus_Stop",
+            "Bus-Stop",
+        )
+        val paths = titles.map { Mpris.trackPath(it) }
+        paths.distinct().size shouldBe titles.size
     }
 
     @Test
