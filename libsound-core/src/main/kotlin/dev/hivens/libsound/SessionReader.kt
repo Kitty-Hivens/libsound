@@ -14,6 +14,16 @@ public data class ForeignPlayer(
     public val playback: PlaybackState = PlaybackState.STOPPED,
     public val metadata: TrackMetadata = TrackMetadata.EMPTY,
     public val positionMicros: Long = 0,
+    /**
+     * Whether this player accepts being driven from outside.
+     *
+     * Its own answer, not our guess. A widget that draws transport buttons for a
+     * player which refuses them is a widget with dead buttons, and the player is
+     * the only thing that knows.
+     */
+    public val canControl: Boolean = false,
+    public val canGoNext: Boolean = false,
+    public val canGoPrevious: Boolean = false,
 )
 
 /**
@@ -39,6 +49,26 @@ public interface SessionReader : AutoCloseable {
      * [ForeignPlayer.playback] and its own policy.
      */
     public fun players(): List<ForeignPlayer>
+
+    /**
+     * Ask another player to do something.
+     *
+     * The same [SessionCommand] set we accept ourselves, because the protocol is
+     * symmetric: what a desktop can ask of us, we can ask of anyone publishing.
+     *
+     * This is control of another application, and it is deliberately in scope
+     * while reaching into the sound server's stream list to change a volume is a
+     * different matter. The distinction is not whose audio it is but what the
+     * target agreed to: a player owning an MPRIS name has published a control
+     * surface, advertises through [ForeignPlayer.canControl] whether it honours
+     * it, and takes the whole arrangement away by closing its session. Nothing
+     * is left behind for it to be broken by.
+     *
+     * Returns false when the player is gone or refused. Commands are
+     * fire-and-forget past that: a player is free to ignore one, and no protocol
+     * here reports back that it did.
+     */
+    public fun control(playerId: String, command: SessionCommand): Boolean
 
     /**
      * Subscribe to appearances, disappearances and state changes.
