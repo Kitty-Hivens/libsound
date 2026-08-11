@@ -58,7 +58,7 @@ fun main() {
     try {
         devices(backend)
         playback(backend)
-        mixer()
+        mixer(backend)
     } finally {
         runCatching { backend.close() }
     }
@@ -181,13 +181,27 @@ private fun checkCloseIsIdempotent(sink: AudioSink) {
     check("a closed sink reports itself closed", !sink.isOpen)
 }
 
-private fun mixer() {
+private fun mixer(backend: AudioBackend) {
     banner("mixer")
     val mixer: AudioMixer? = AudioMixers.open(APP)
     if (mixer == null) {
         println("(no mixer here. Expected on macOS, which has no per-application")
         println(" volume in any public API; anywhere else it is a finding.)")
         return
+    }
+    // A stream of our own, alive for this section. The list is otherwise empty
+    // on a machine where nothing else happens to be playing, which is every
+    // clean test runner -- and an empty list would read as a broken mixer
+    // rather than as an idle machine.
+    val ours = backend.createSink(SinkConfig(applicationName = APP, mediaRole = MediaRole.MUSIC))
+    try {
+        val format = AudioFormat(48_000, 2)
+        ours.open(format)
+        val silence = ByteArray(format.sampleRate / 4 * format.bytesPerFrame)
+        ours.write(silence, 0, silence.size)
+        Thread.sleep(300)
+    } catch (e: Throwable) {
+        println("  (could not open a stream of our own: ${e.message})")
     }
     try {
         println("capabilities  ${mixer.capabilities}")
@@ -197,6 +211,7 @@ private fun mixer() {
             println("      volume ${(stream.volume * 100).roundToInt()}%  muted=${stream.muted}  active=${stream.active}")
         }
         check("the mixer lists at least one stream", streams.isNotEmpty())
+        check("the mixer sees the stream this process just opened", streams.any { it.isOurs })
         check("no stream is listed twice", streams.map { it.id.value }.let { it.size == it.distinct().size })
         // Deliberately reads and does not write: a diagnostic that quietly
         // changed the volume of whatever the tester had playing would be an
@@ -210,6 +225,7 @@ private fun mixer() {
         println("  (read-only: this check never changes anybody else's volume)")
     } finally {
         runCatching { mixer.close() }
+        runCatching { ours.close() }
     }
 }
 
