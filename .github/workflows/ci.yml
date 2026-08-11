@@ -113,7 +113,8 @@ jobs:
           ./gradlew dokkaJavadocJar --stacktrace
           # Named pages rather than a file count: most of a Dokka jar is
           # stylesheets and scripts, so a threshold would pass on a jar that
-          # documented nothing at all.
+          # documented nothing at all. Dokka dasherises a type name into its
+          # path, so AudioSink is looked for as -audio-sink.
           documents() {
             jar=$(ls "$1"/build/libs/*javadoc*.jar)
             if ! unzip -l "$jar" | grep -q "$2"; then
@@ -123,9 +124,9 @@ jobs:
             fi
             echo "$1: documents $2 ($(unzip -l "$jar" | tail -1 | awk '{print $2}') entries)"
           }
-          documents libsound-core AudioSink
-          documents libsound-audio AudioBackends
-          documents libsound-session MediaSessions
+          documents libsound-core -audio-sink/index.html
+          documents libsound-audio -audio-backends/index.html
+          documents libsound-session -media-sessions/index.html
 
       - name: Upload test report on failure
         if: failure()
