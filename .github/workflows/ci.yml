@@ -94,6 +94,15 @@ jobs:
           LIBSOUND_REQUIRE: pulse,javasound
         run: ./gradlew build --stacktrace
 
+      # A green tick says the build did not fail; it does not say a hardware
+      # suite ran. LIBSOUND_REQUIRE covers a missing backend, this covers the
+      # other half -- a suite that reached zero tests with the backend present.
+      - name: What each suite actually did
+        if: always()
+        env:
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound
+        run: python3 .github/test-summary.py
+
       - name: Upload test report on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -128,6 +137,12 @@ jobs:
         env:
           LIBSOUND_REQUIRE: coreaudio
         run: ./gradlew build --stacktrace
+
+      - name: What each suite actually did
+        if: always()
+        env:
+          LIBSOUND_EXPECT: CoreAudioSinkContract,CoreAudioBackend
+        run: python3 .github/test-summary.py
 
       - name: Upload test report on failure
         if: failure()
