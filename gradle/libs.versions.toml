@@ -1,8 +1,8 @@
 [versions]
 # Pinned so Panama bindings stay binary-compatible across the projects
 # that share them. Bump deliberately, not on every Kotlin release.
-kotlin = "2.3.21"
-slf4j  = "2.0.16"
+kotlin = "2.4.10"
+slf4j  = "2.0.18"
 
 # The backends' floor: Java 22 is where `java.lang.foreign` (Project Panama)
 # was finalized as JEP 454. Earlier LTSes carry FFM only in preview, which a
@@ -18,11 +18,11 @@ javaCoreTarget = "17"
 
 # Test stack -- light. JUnit 5 + Kotest assertions for readable test code.
 junit  = "5.11.4"
-kotest = "5.9.1"
+kotest = "6.2.3"
 
 # Maven Central publishing (signing + Central Portal upload).
-mavenPublish = "0.36.0"
-dokka = "2.0.0"
+mavenPublish = "0.37.0"
+dokka = "2.2.0"
 
 [libraries]
 slf4j-api    = { group = "org.slf4j", name = "slf4j-api",    version.ref = "slf4j" }
