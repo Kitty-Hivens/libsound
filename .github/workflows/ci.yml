@@ -251,7 +251,11 @@ jobs:
             < libsound-audio/build/smoke-classpath.txt | paste -sd';')
           xvfb-run -a wine "$java_exe" --enable-native-access=ALL-UNNAMED \
             -cp "$classpath" dev.hivens.libsound.audio.smoke.SmokeCheckKt \
-            < /dev/null 2>&1 | tee /tmp/smoke.log
+            < /dev/null 2>&1 | tee /tmp/smoke.log || true
+          # The verdict is the next step's, not this one's. The check exits
+          # non-zero when anything failed, including the wine gap this job
+          # knowingly tolerates -- and a wine that never started leaves a log
+          # with no backend line, which the next step catches anyway.
 
       # The exit code alone would pass on a fallback. A machine where WASAPI
       # refuses to open still plays audio through JavaSound and still answers
