@@ -90,6 +90,12 @@ programs in `tools/`, compiled against the real headers and run -- the Windows
 one cross-compiled and run under wine. They are transcribed into the ABI tables,
 never guessed, and rerunning them is the first step of any version bump.
 
+The same tool checks the result. Wine is a poor oracle for behaviour and a good
+one for ABI: it does not emulate anything, it reimplements the same interfaces
+with the same slots and GUIDs, because otherwise real Windows programs would not
+run on it. So CI runs the audible check on a Windows JVM under wine, and a wrong
+slot becomes a red build rather than a bug report a week later.
+
 This is not ceremony. The sibling libraries inferred one struct size instead and
 wrote past an allocation on every call through two shipped releases. On this
 library the discipline caught a wrong vtable slot on its first use:
@@ -110,8 +116,8 @@ depend on this by accident. The API will still shift.
 | Linux audio (libpulse) | Done and exercised. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. |
 | Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events -- and everything it changes put back. |
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
-| Windows audio (WASAPI) | Written to the ABI and compiling; **no part of it has been run.** Verification is on real hardware -- see [docs/TESTING.md](docs/TESTING.md). |
-| Windows mixer (IAudioSessionManager2) | Written to the ABI and compiling; **no part of it has been run.** Enumeration, volume, mute, per-session events, and the same restore obligation as the Linux mixer. No routing: Windows exposes no way to move another application's session, so the capability is absent rather than faked. |
+| Windows audio (WASAPI) | Runs. Device enumeration, playback, playhead and volume execute on every push against a Windows JVM under wine -- which checks the ABI, not the hardware. Real devices still need [docs/TESTING.md](docs/TESTING.md). |
+| Windows mixer (IAudioSessionManager2) | Enumeration, volume, mute and the same restore obligation as the Linux mixer, executing under wine. Per-session events are still unexecuted: wine answers `E_NOTIMPL` to `RegisterSessionNotification`, so only hardware can exercise that path. No routing at all -- Windows exposes no way to move another application's session, so the capability is absent rather than faked. |
 | Linux session (MPRIS) | Done and exercised. Publishes a player `playerctl` and the desktop can drive, and reads and controls everyone else's. |
 | Windows session (SMTC) | Not started. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |
