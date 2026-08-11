@@ -209,11 +209,19 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
       - uses: gradle/actions/setup-gradle@v6
 
+      # WineHQ rather than the distribution's wine. Ubuntu 24.04 packages 9.0,
+      # whose IAudioSessionManager2 enumerates no sessions at all -- measured,
+      # by this job failing on it while the same check passed on 11.14. The
+      # output path works on either; the mixer needs the newer one.
       - name: Wine, and a sound server for its WASAPI to sit on
         run: |
           sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          sudo wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+          sudo wget -qNP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources
           sudo apt-get update
-          sudo apt-get install -y wine64 xvfb pulseaudio pulseaudio-utils
+          sudo apt-get install -y --install-recommends winehq-stable xvfb pulseaudio pulseaudio-utils
+          wine --version
           export XDG_RUNTIME_DIR=/tmp/libsound-runtime
           mkdir -p "$XDG_RUNTIME_DIR"
           pulseaudio --start --exit-idle-time=-1
