@@ -278,7 +278,10 @@ jobs:
           grep -q "no mixer here" /tmp/smoke.log \
             && { echo "FAIL: the Windows mixer did not open at all"; exit 1; }
 
-          grep "^FAIL  " /tmp/smoke.log | sed 's/^FAIL  //' > /tmp/failed || true
+          # tr -d '\r' because the check ran on a Windows JVM, which ends its
+          # lines with CRLF. Without it every label carries a trailing carriage
+          # return and the exact-line match below can never succeed.
+          tr -d '\r' < /tmp/smoke.log | grep "^FAIL  " | sed 's/^FAIL  //' > /tmp/failed || true
           unexpected=$(grep -vxF \
             -e "the mixer lists at least one stream" \
             -e "the mixer sees the stream this process just opened" \
