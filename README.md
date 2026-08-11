@@ -39,7 +39,7 @@ system already has.
 | Artifact | What it is |
 |---|---|
 | `libsound-core` | Types and contracts. Zero dependencies, Java 17 floor, no Panama. Compile against this without pulling any backend. |
-| `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio, CoreAudio and JavaSound exercised; WASAPI written and awaiting hardware. |
+| `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio, CoreAudio and JavaSound exercised; WASAPI output and mixer written and awaiting hardware. |
 | `libsound-session` | The media session: publish our own, read and drive everyone else's. MPRIS today, SMTC planned. |
 
 Split so a consumer pays only for what it uses -- MPRIS without libpulse, an
@@ -107,7 +107,7 @@ depend on this by accident. The API will still shift.
 | Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events -- and everything it changes put back. |
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
 | Windows audio (WASAPI) | Written to the ABI and compiling; **no part of it has been run.** Verification is on real hardware -- see [docs/TESTING.md](docs/TESTING.md). |
-| Windows mixer (IAudioSessionManager2) | Not started. |
+| Windows mixer (IAudioSessionManager2) | Written to the ABI and compiling; **no part of it has been run.** Enumeration, volume, mute, per-session events, and the same restore obligation as the Linux mixer. No routing: Windows exposes no way to move another application's session, so the capability is absent rather than faked. |
 | Linux session (MPRIS) | Done and exercised. Publishes a player `playerctl` and the desktop can drive, and reads and controls everyone else's. |
 | Windows session (SMTC) | Not started. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |

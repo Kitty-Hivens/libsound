@@ -2,6 +2,7 @@ package dev.hivens.libsound.audio
 
 import dev.hivens.libsound.AudioMixer
 import dev.hivens.libsound.audio.pulse.PulseMixer
+import dev.hivens.libsound.audio.wasapi.WasapiMixer
 import org.slf4j.LoggerFactory
 
 /**
@@ -27,10 +28,10 @@ public object AudioMixers {
         val osName = System.getProperty("os.name", "").lowercase()
         val mixer = when {
             osName.contains("linux") || osName.contains("bsd") -> PulseMixer.openOrNull(applicationName)
-            // Windows has the same surface behind IAudioSessionManager2 and
-            // lands with the rest of the Windows work. macOS has no
-            // per-application volume to enumerate, so its absence here is the
-            // platform's answer rather than a gap in this library.
+            osName.contains("windows") -> WasapiMixer.openOrNull()
+            // macOS has no per-application volume to enumerate in any public
+            // API, so its absence here is the platform's answer rather than a
+            // gap in this library.
             else -> null
         }
         if (mixer == null) log.info("no mixer available for os.name={}", osName)

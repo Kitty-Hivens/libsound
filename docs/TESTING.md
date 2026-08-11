@@ -39,8 +39,8 @@ tone starts:
 
 - **Windows** -- press `Win`+`R`, type `sndvol`, press Enter. The window is
   titled "Volume Mixer" and shows one column per application that is playing.
-- **macOS** -- there is no per-application mixer; skip that part and answer
-  "n/a" for the two questions about it.
+- **macOS** -- there is no per-application mixer in the OS at all; skip that
+  part and answer "n/a" for the questions about it.
 
 Press Enter when it is open, and watch it while the tone plays.
 
@@ -59,6 +59,12 @@ are the ones no automatic check can answer:
    if you hear the change but the slider stays where it was, that is the defect.
 4. **Was it silent while the check said it was stopping?** Two seconds of true
    silence. A tone that keeps playing, or a click at either end, is a defect.
+5. **Did the list of other applications match the system mixer?** The check
+   prints every application the system says is playing. Compare it with the
+   mixer window: the same applications should be there, under names you
+   recognise. A row that is blank, or named `javaw`, where the mixer shows a
+   real name is a defect even though the list is not empty. This part only
+   reads -- it never changes anybody else's volume.
 
 Also worth reporting even though nothing asks:
 

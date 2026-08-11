@@ -25,6 +25,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
+#include <endpointvolume.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -129,6 +130,67 @@ int main(void) {
     SLOT(IAudioSessionControlVtbl, RegisterAudioSessionNotification);
     SLOT(IAudioSessionControlVtbl, UnregisterAudioSessionNotification);
 
+    /* The mixer half: everyone else's sessions, which is what the Windows
+     * volume mixer itself is built on. IAudioSessionControl2 extends
+     * IAudioSessionControl, so its own methods start after that interface ends
+     * -- and getting that boundary wrong calls a base method with a derived
+     * signature, which is the failure mode this whole file exists to prevent. */
+    SECTION("IAudioSessionManager2 (every session on a device)");
+    SLOT(IAudioSessionManager2Vtbl, GetAudioSessionControl);
+    SLOT(IAudioSessionManager2Vtbl, GetSimpleAudioVolume);
+    SLOT(IAudioSessionManager2Vtbl, GetSessionEnumerator);
+    SLOT(IAudioSessionManager2Vtbl, RegisterSessionNotification);
+    SLOT(IAudioSessionManager2Vtbl, UnregisterSessionNotification);
+    SLOT(IAudioSessionManager2Vtbl, RegisterDuckNotification);
+    SLOT(IAudioSessionManager2Vtbl, UnregisterDuckNotification);
+
+    SECTION("IAudioSessionEnumerator");
+    SLOT(IAudioSessionEnumeratorVtbl, GetCount);
+    SLOT(IAudioSessionEnumeratorVtbl, GetSession);
+
+    SECTION("IAudioSessionControl2 (identity of somebody else's session)");
+    SLOT(IAudioSessionControl2Vtbl, GetState);
+    SLOT(IAudioSessionControl2Vtbl, GetDisplayName);
+    SLOT(IAudioSessionControl2Vtbl, GetIconPath);
+    SLOT(IAudioSessionControl2Vtbl, GetGroupingParam);
+    SLOT(IAudioSessionControl2Vtbl, RegisterAudioSessionNotification);
+    SLOT(IAudioSessionControl2Vtbl, UnregisterAudioSessionNotification);
+    SLOT(IAudioSessionControl2Vtbl, GetSessionIdentifier);
+    SLOT(IAudioSessionControl2Vtbl, GetSessionInstanceIdentifier);
+    SLOT(IAudioSessionControl2Vtbl, GetProcessId);
+    SLOT(IAudioSessionControl2Vtbl, IsSystemSoundsSession);
+    SLOT(IAudioSessionControl2Vtbl, SetDuckingPreference);
+
+    /* No IAudioMeterInformation section. mingw-w64 forward-declares the
+     * interface and defines neither its vtable nor its IID, so this toolchain
+     * cannot measure it -- and a GUID written from memory is exactly what this
+     * file exists to prevent. Peak levels wait for a toolchain that can print
+     * them rather than being guessed now. */
+
+    /* Two interfaces we implement rather than call, so their slot counts matter
+     * as much as their indices: a vtable shorter than the shell expects means it
+     * calls through whatever memory follows it. */
+    SECTION("IAudioSessionNotification (a session appearing)");
+    SLOT(IAudioSessionNotificationVtbl, OnSessionCreated);
+    printf("  %-52s = %llu\n", "slots in IAudioSessionNotificationVtbl",
+           (unsigned long long)(sizeof(IAudioSessionNotificationVtbl) / sizeof(void *)));
+
+    SECTION("IAudioSessionEvents (a session changing under us)");
+    SLOT(IAudioSessionEventsVtbl, OnDisplayNameChanged);
+    SLOT(IAudioSessionEventsVtbl, OnIconPathChanged);
+    SLOT(IAudioSessionEventsVtbl, OnSimpleVolumeChanged);
+    SLOT(IAudioSessionEventsVtbl, OnChannelVolumeChanged);
+    SLOT(IAudioSessionEventsVtbl, OnGroupingParamChanged);
+    SLOT(IAudioSessionEventsVtbl, OnStateChanged);
+    SLOT(IAudioSessionEventsVtbl, OnSessionDisconnected);
+    printf("  %-52s = %llu\n", "slots in IAudioSessionEventsVtbl",
+           (unsigned long long)(sizeof(IAudioSessionEventsVtbl) / sizeof(void *)));
+
+    SECTION("session state");
+    VALUE(AudioSessionStateInactive);
+    VALUE(AudioSessionStateActive);
+    VALUE(AudioSessionStateExpired);
+
     SECTION("IMMNotificationClient (we implement this one, so slots are ours to fill)");
     SLOT(IMMNotificationClientVtbl, OnDeviceStateChanged);
     SLOT(IMMNotificationClientVtbl, OnDeviceAdded);
@@ -147,6 +209,11 @@ int main(void) {
     GUID_OF(IID_IAudioClock);
     GUID_OF(IID_ISimpleAudioVolume);
     GUID_OF(IID_IAudioSessionControl);
+    GUID_OF(IID_IAudioSessionManager2);
+    GUID_OF(IID_IAudioSessionControl2);
+    GUID_OF(IID_IAudioSessionEnumerator);
+    GUID_OF(IID_IAudioSessionNotification);
+    GUID_OF(IID_IAudioSessionEvents);
     GUID_OF(IID_IUnknown);
 
     SECTION("WAVEFORMATEX / WAVEFORMATEXTENSIBLE");

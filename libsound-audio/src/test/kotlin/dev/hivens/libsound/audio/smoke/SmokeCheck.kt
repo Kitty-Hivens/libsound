@@ -17,13 +17,14 @@ import kotlin.system.exitProcess
 /**
  * The hand check, for the platforms no runner can verify.
  *
- * Windows and macOS runners have no output device worth trusting, so the
- * contract suite cannot run there and the backends reach a release having never
- * executed. This is what a person runs instead: it exercises the same rules the
- * contract asserts, prints a pass or a failure for each, and stops at the four
- * questions no assertion can answer -- whether a tone was audible, whether the
- * desktop's mixer shows the stream under our name, whether the slider moves,
- * and whether stopping actually silences the device.
+ * Windows runners have no output device, so the contract suite cannot run there
+ * and the backend would reach a release having never executed. This is what a
+ * person runs instead: it exercises the same rules the contract asserts, prints
+ * a pass or a failure for each, and stops at the questions no assertion can
+ * answer -- whether a tone was audible, whether the desktop's mixer shows the
+ * stream under our name, whether the slider moves with our volume, whether
+ * stopping actually silences the device, and whether the applications we list
+ * are the ones the system mixer shows.
  *
  *     ./gradlew smoke
  *
@@ -68,8 +69,8 @@ fun main() {
     println()
     println("${results.size - failed} passed, $failed failed")
     println()
-    println("Then report the four answers you were asked for above. A run with no")
-    println("failures and four yeses is what this platform needs to ship.")
+    println("Then report the answers to the numbered questions above. A run with no")
+    println("failures and a yes to each is what this platform needs to ship.")
     exitProcess(if (failed == 0) 0 else 1)
 }
 
@@ -184,8 +185,8 @@ private fun mixer() {
     banner("mixer")
     val mixer: AudioMixer? = AudioMixers.open(APP)
     if (mixer == null) {
-        println("(no mixer on this platform yet -- expected on macOS, and on Windows")
-        println(" until IAudioSessionManager2 lands)")
+        println("(no mixer here. Expected on macOS, which has no per-application")
+        println(" volume in any public API; anywhere else it is a finding.)")
         return
     }
     try {
@@ -200,7 +201,12 @@ private fun mixer() {
         // Deliberately reads and does not write: a diagnostic that quietly
         // changed the volume of whatever the tester had playing would be an
         // unpleasant surprise on a machine that is not ours.
-        println()
+        ask(
+            "5. Compare this list with what the system mixer shows.",
+            "   Are the same applications there, under names you recognise?",
+            "   A row named \"javaw\" or blank where the mixer shows a real name",
+            "   is a defect worth reporting even though the list is not empty.",
+        )
         println("  (read-only: this check never changes anybody else's volume)")
     } finally {
         runCatching { mixer.close() }
