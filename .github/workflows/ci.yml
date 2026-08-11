@@ -179,3 +179,97 @@ jobs:
           name: test-results-macos
           path: '**/build/reports/tests/test'
           retention-days: 7
+
+  # The Windows ABI, checked without a Windows machine.
+  #
+  # Wine is a bad oracle for behaviour and a good one for ABI: it does not
+  # emulate anything, it reimplements the same interfaces with the same vtable
+  # slots and the same GUIDs, because otherwise real Windows programs would not
+  # run on it. Matching the ABI is its job rather than a side effect.
+  #
+  # And the ABI is exactly what this backend risks. A slot index is a plain
+  # integer: calling the wrong one invokes a different function through the
+  # signature you declared, and nothing at runtime checks it. Here that becomes
+  # a red build on the push that introduced it.
+  #
+  # This is NOT "Windows is tested". It says nothing about real hardware,
+  # device switching, Bluetooth latency, or what a row looks like in the real
+  # volume mixer. docs/TESTING.md is still what answers those, and still needs
+  # a person.
+  windows-abi:
+    name: Windows ABI (wine, not hardware)
+    runs-on: ubuntu-latest
+    env:
+      WINDOWS_JDK: 'https://github.com/adoptium/temurin22-binaries/releases/download/jdk-22.0.2%2B9/OpenJDK22U-jdk_x64_windows_hotspot_22.0.2_9.zip'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Wine, and a sound server for its WASAPI to sit on
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y wine64 xvfb pulseaudio pulseaudio-utils
+          export XDG_RUNTIME_DIR=/tmp/libsound-runtime
+          mkdir -p "$XDG_RUNTIME_DIR"
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=libsound_test
+          pactl info
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "WINEPREFIX=$HOME/.wine-libsound" >> "$GITHUB_ENV"
+          echo "WINEDEBUG=-all" >> "$GITHUB_ENV"
+
+      # 200 MB, and the same bytes on every run. Cached rather than fetched.
+      - name: Cache the Windows JDK
+        id: jdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/windows-jdk
+          key: windows-jdk-22.0.2+9
+
+      - name: Fetch the Windows JDK
+        if: steps.jdk-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/windows-jdk
+          curl -sL -o /tmp/jdk-win.zip "$WINDOWS_JDK"
+          unzip -q /tmp/jdk-win.zip -d ~/windows-jdk
+
+      - name: Build the classes the Windows JVM will run
+        run: ./gradlew :libsound-audio:testClasses :libsound-audio:smokeClasspath
+
+      - name: The smoke check, on a Windows JVM
+        run: |
+          set -o pipefail
+          xvfb-run -a wineboot -i
+          java_exe=$(find ~/windows-jdk -name java.exe | head -1)
+          classpath=$(while read -r entry; do winepath -w "$entry"; done \
+            < libsound-audio/build/smoke-classpath.txt | paste -sd';')
+          xvfb-run -a wine "$java_exe" --enable-native-access=ALL-UNNAMED \
+            -cp "$classpath" dev.hivens.libsound.audio.smoke.SmokeCheckKt \
+            < /dev/null 2>&1 | tee /tmp/smoke.log
+
+      # The exit code alone would pass on a fallback. A machine where WASAPI
+      # refuses to open still plays audio through JavaSound and still answers
+      # every check correctly -- so a run that never touched the code this job
+      # exists for would be exactly as green as one that did.
+      - name: It was WASAPI that ran, and not the fallback
+        run: |
+          grep -q "^backend       wasapi" /tmp/smoke.log \
+            || { echo "FAIL: the smoke check did not select the WASAPI backend"; exit 1; }
+          grep -q "no mixer here" /tmp/smoke.log \
+            && { echo "FAIL: the Windows mixer did not open"; exit 1; }
+          grep -q ", 0 failed" /tmp/smoke.log \
+            || { echo "FAIL: a check failed under wine"; exit 1; }
+          echo "WASAPI output and mixer executed, every automatic check passed"
+
+      - name: Upload the transcript
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-abi-smoke-log
+          path: /tmp/smoke.log
+          retention-days: 7

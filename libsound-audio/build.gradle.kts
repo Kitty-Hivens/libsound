@@ -75,6 +75,19 @@ tasks.register<JavaExec>("smoke") {
     standardInput = System.`in`
 }
 
+// The classpath the smoke check needs, written out so something other than
+// Gradle can launch it -- specifically a Windows JVM under wine, which runs the
+// same bytecode but cannot run this build.
+tasks.register("smokeClasspath") {
+    val classpath = sourceSets["test"].runtimeClasspath
+    val output = layout.buildDirectory.file("smoke-classpath.txt")
+    inputs.files(classpath)
+    outputs.file(output)
+    doLast {
+        output.get().asFile.writeText(classpath.joinToString("\n") { it.absolutePath })
+    }
+}
+
 mavenPublishing {
     pom { description.set("Audio output channel for libsound: PulseAudio, WASAPI, CoreAudio, with a JavaSound fallback.") }
 }
