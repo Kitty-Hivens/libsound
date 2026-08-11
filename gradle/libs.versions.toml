@@ -22,6 +22,7 @@ kotest = "5.9.1"
 
 # Maven Central publishing (signing + Central Portal upload).
 mavenPublish = "0.36.0"
+dokka = "2.0.0"
 
 [libraries]
 slf4j-api    = { group = "org.slf4j", name = "slf4j-api",    version.ref = "slf4j" }
@@ -34,3 +35,4 @@ kotest-assertions       = { group = "io.kotest", name = "kotest-assertions-core"
 [plugins]
 kotlin-jvm   = { id = "org.jetbrains.kotlin.jvm",     version.ref = "kotlin" }
 mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
+dokka        = { id = "org.jetbrains.dokka",           version.ref = "dokka" }

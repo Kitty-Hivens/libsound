@@ -9,6 +9,11 @@ plugins {
     // fake too. Test sources cannot cross a module boundary; fixtures can,
     // without putting test doubles on the main published surface.
     `java-test-fixtures`
+    // Dokka before mavenPublish, and the order is load-bearing: the root build
+    // reacts to the publish plugin by pointing the javadoc jar at a Dokka task,
+    // and that reaction runs while the publish plugin is still being applied.
+    // Applied after it, Dokka's tasks would not exist yet.
+    alias(libs.plugins.dokka)
     alias(libs.plugins.mavenPublish)
     signing
 }
