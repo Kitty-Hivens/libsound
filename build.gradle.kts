@@ -1,11 +1,14 @@
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.plugins.signing.SigningExtension
+import com.vanniktech.maven.publish.JavadocJar
+import com.vanniktech.maven.publish.KotlinJvm
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.mavenPublish) apply false
+    alias(libs.plugins.dokka) apply false
 }
 
 // Releases pass -PappVersion=<tag> (tag first, then publish -- the libtray
@@ -61,6 +64,18 @@ subprojects {
     // applying the vanniktech plugin; modules add only their description.
     plugins.withId("com.vanniktech.maven.publish") {
         configure<MavenPublishBaseExtension> {
+            // The javadoc jar carries the KDoc, because otherwise it carries
+            // nothing. Left to itself the publish plugin falls back to
+            // plainJavadocJar, which runs the *Java* javadoc tool over a project
+            // with no Java sources: the jar it produced held a manifest and no
+            // other entry, 25 bytes in total. Central's requirement was
+            // satisfied and every word of the documentation stayed on the
+            // machine that wrote it.
+            //
+            // Dokka is applied by each module rather than here: applied from
+            // inside this block it would land while the publish plugin is still
+            // being applied, and the task named below would not exist yet.
+            configure(KotlinJvm(javadocJar = JavadocJar.Dokka("dokkaGeneratePublicationHtml"), sourcesJar = true))
             // Explicit auto-release: the no-arg form leaves the deployment
             // VALIDATED in the portal, waiting for a manual Publish click.
             publishToMavenCentral(automaticRelease = true)

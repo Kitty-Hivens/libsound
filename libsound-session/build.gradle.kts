@@ -1,14 +1,15 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-// No mavenPublish and no signing yet, deliberately. This module has no source
-// in it: the session contracts live in libsound-core and the MPRIS, SMTC and
-// MPNowPlayingInfoCenter backends are the next phases. Publishing an empty,
-// signed artifact whose POM advertises all three would promise a consumer
-// something they cannot obtain -- and a Central version, once taken, cannot be
-// reissued. The plugin goes back the moment there is an implementation.
 plugins {
     alias(libs.plugins.kotlin.jvm)
     `java-library`
+    // Dokka before mavenPublish, and the order is load-bearing: the root build
+    // reacts to the publish plugin by pointing the javadoc jar at a Dokka task,
+    // and that reaction runs while the publish plugin is still being applied.
+    // Applied after it, Dokka's tasks would not exist yet.
+    alias(libs.plugins.dokka)
+    alias(libs.plugins.mavenPublish)
+    signing
 }
 
 java {
@@ -45,4 +46,11 @@ tasks.test {
 tasks.register("printTestCp") {
     val cp = sourceSets.test.map { it.runtimeClasspath }
     doLast { println(cp.get().asPath) }
+}
+
+mavenPublishing {
+    // What is in the artifact, not what is planned for it. A POM that advertises
+    // SMTC would promise a consumer something they cannot obtain, and a Central
+    // version once taken cannot be reissued.
+    pom { description.set("Media session for libsound: publish and read MPRIS players over D-Bus.") }
 }
