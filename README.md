@@ -39,7 +39,7 @@ system already has.
 | Artifact | What it is |
 |---|---|
 | `libsound-core` | Types and contracts. Zero dependencies, Java 17 floor, no Panama. Compile against this without pulling any backend. |
-| `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio and JavaSound today, WASAPI written, CoreAudio planned. |
+| `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio, CoreAudio and JavaSound exercised; WASAPI written and awaiting hardware. |
 | `libsound-session` | The media session: publish our own, read and drive everyone else's. MPRIS today, SMTC planned. |
 
 Split so a consumer pays only for what it uses -- MPRIS without libpulse, an
@@ -110,13 +110,16 @@ depend on this by accident. The API will still shift.
 | Windows mixer (IAudioSessionManager2) | Not started. |
 | Linux session (MPRIS) | Done and exercised. Publishes a player `playerctl` and the desktop can drive, and reads and controls everyone else's. |
 | Windows session (SMTC) | Not started. |
-| macOS audio (CoreAudio) | Not started. The ABI oracle is written and runs on a macOS CI runner, since there is no Mac to run it on here. |
+| macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |
 | macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`AudioMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/AudioMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux
 backends pass the same contract suite, the mixer round-trips volume, mute and
 routing against real streams, and the stream is visible in
-`pactl list sink-inputs` under the name and media role it was given.
+`pactl list sink-inputs` under the name and media role it was given. macOS is
+verified on CI against a real output unit, since its runners have one and
+Windows runners do not -- which is why Windows is the platform that needs a
+person and macOS is not.
 </details>
 
 <details>
