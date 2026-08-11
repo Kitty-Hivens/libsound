@@ -9,6 +9,14 @@ offset oracle, and it has never executed.
 That is what this page is for. It takes about ten minutes and needs no
 knowledge of the library.
 
+**What is already covered, so you know what you are adding.** CI runs this same
+check on a Windows JVM under wine on every push, which proves the COM plumbing
+-- the vtable slots, the interface identifiers, the calls themselves. What it
+cannot prove is anything about real hardware: whether sound comes out, what the
+latency feels like, how a Bluetooth or HDMI device behaves, and what the row
+actually looks like in the real volume mixer. Those are the questions below, and
+they are the reason a person is still needed.
+
 ## What you need
 
 - **A JDK, version 22 or newer.** [Temurin](https://adoptium.net/) is the usual
