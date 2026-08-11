@@ -117,9 +117,12 @@ jobs:
           # path, so AudioSink is looked for as -audio-sink.
           documents() {
             jar=$(ls "$1"/build/libs/*javadoc*.jar)
-            if ! unzip -l "$jar" | grep -q "$2"; then
+            # -qF -- because a Dokka path starts with a dash, which grep would
+            # otherwise read as one of its own options.
+            if ! unzip -l "$jar" | grep -qF -- "$2"; then
               echo "FAIL: $1 ships a javadoc jar with no page for $2"
-              unzip -l "$jar" | head -30
+              echo "pages it does have:"
+              unzip -l "$jar" | grep -F "index.html" | head -40
               exit 1
             fi
             echo "$1: documents $2 ($(unzip -l "$jar" | tail -1 | awk '{print $2}') entries)"
