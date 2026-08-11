@@ -98,6 +98,52 @@ internal object WasapiAbi {
     /** The vtable we synthesise has to be exactly this long. */
     const val NOTIFY_VTABLE_SLOTS = 8
 
+    // -- the mixer half: everyone else's sessions ----------------------------
+
+    /** IAudioSessionManager2, reached through IMMDevice::Activate. */
+    const val SESSION_MANAGER_GET_SESSION_ENUMERATOR = 5
+    const val SESSION_MANAGER_REGISTER_NOTIFICATION = 6
+    const val SESSION_MANAGER_UNREGISTER_NOTIFICATION = 7
+
+    /** IAudioSessionEnumerator. */
+    const val SESSION_ENUM_GET_COUNT = 3
+    const val SESSION_ENUM_GET_SESSION = 4
+
+    /**
+     * IAudioSessionControl2's own methods start at 12, because it extends
+     * IAudioSessionControl and that interface ends at 11. Calling 11 for
+     * GetSessionIdentifier would invoke UnregisterAudioSessionNotification
+     * through the wrong signature -- the exact failure the oracle exists for.
+     */
+    const val SESSION_CONTROL_GET_STATE = 3
+    const val SESSION_CONTROL_GET_DISPLAY_NAME = 4
+    const val SESSION_CONTROL_GET_ICON_PATH = 6
+    const val SESSION_CONTROL_UNREGISTER_NOTIFICATION = 11
+    const val SESSION_CONTROL2_GET_SESSION_INSTANCE_IDENTIFIER = 13
+    const val SESSION_CONTROL2_GET_PROCESS_ID = 14
+    const val SESSION_CONTROL2_IS_SYSTEM_SOUNDS = 15
+
+    /** ISimpleAudioVolume, the read side as well as the write side. */
+    const val VOLUME_GET_MUTE = 6
+
+    /** IAudioSessionNotification, which we implement rather than call. */
+    const val SESSION_NOTIFY_ON_SESSION_CREATED = 3
+    const val SESSION_NOTIFY_VTABLE_SLOTS = 4
+
+    /** IAudioSessionEvents, likewise ours to fill. */
+    const val SESSION_EVENTS_ON_DISPLAY_NAME_CHANGED = 3
+    const val SESSION_EVENTS_ON_ICON_PATH_CHANGED = 4
+    const val SESSION_EVENTS_ON_SIMPLE_VOLUME_CHANGED = 5
+    const val SESSION_EVENTS_ON_CHANNEL_VOLUME_CHANGED = 6
+    const val SESSION_EVENTS_ON_GROUPING_PARAM_CHANGED = 7
+    const val SESSION_EVENTS_ON_STATE_CHANGED = 8
+    const val SESSION_EVENTS_ON_SESSION_DISCONNECTED = 9
+    const val SESSION_EVENTS_VTABLE_SLOTS = 10
+
+    const val SESSION_STATE_INACTIVE = 0
+    const val SESSION_STATE_ACTIVE = 1
+    const val SESSION_STATE_EXPIRED = 2
+
     // -- GUIDs, as {Data1, Data2, Data3, Data4[8]} ---------------------------
 
     const val CLSID_MM_DEVICE_ENUMERATOR = "BCDE0395-E52F-467C-8E3D-C4579291692E"
@@ -108,6 +154,11 @@ internal object WasapiAbi {
     const val IID_AUDIO_CLOCK = "CD63314F-3FBA-4A1B-812C-EF96358728E7"
     const val IID_SIMPLE_AUDIO_VOLUME = "87CE5498-68D6-44E5-9215-6DA47EF883D8"
     const val IID_AUDIO_SESSION_CONTROL = "F4B1A599-7266-4319-A8CA-E70ACB11E8CD"
+    const val IID_AUDIO_SESSION_MANAGER2 = "77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"
+    const val IID_AUDIO_SESSION_CONTROL2 = "BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D"
+    const val IID_AUDIO_SESSION_ENUMERATOR = "E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"
+    const val IID_AUDIO_SESSION_NOTIFICATION = "641DD20B-4D41-49CC-ABA3-174B9477BB08"
+    const val IID_AUDIO_SESSION_EVENTS = "24918ACC-64B3-37C1-8CA9-74A66E9957A8"
     const val IID_UNKNOWN = "00000000-0000-0000-C000-000000000046"
 
     /** PKEY_Device_FriendlyName: the human label a settings screen shows. */
