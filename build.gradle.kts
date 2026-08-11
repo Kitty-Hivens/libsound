@@ -3,6 +3,7 @@ import org.gradle.plugins.signing.SigningExtension
 import com.vanniktech.maven.publish.JavadocJar
 import com.vanniktech.maven.publish.KotlinJvm
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import com.vanniktech.maven.publish.SourcesJar
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
@@ -75,7 +76,7 @@ subprojects {
             // Dokka is applied by each module rather than here: applied from
             // inside this block it would land while the publish plugin is still
             // being applied, and the task named below would not exist yet.
-            configure(KotlinJvm(javadocJar = JavadocJar.Dokka("dokkaGeneratePublicationHtml"), sourcesJar = true))
+            configure(KotlinJvm(javadocJar = JavadocJar.Dokka("dokkaGeneratePublicationHtml"), sourcesJar = SourcesJar.Sources()))
             // Explicit auto-release: the no-arg form leaves the deployment
             // VALIDATED in the portal, waiting for a manual Publish click.
             publishToMavenCentral(automaticRelease = true)

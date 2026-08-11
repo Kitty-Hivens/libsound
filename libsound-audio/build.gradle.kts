@@ -66,7 +66,7 @@ tasks.test {
 // a release having never executed; this is what a person runs instead.
 //
 // In the test source set, so it stays out of the published jar.
-val smoke by tasks.registering(JavaExec::class) {
+tasks.register<JavaExec>("smoke") {
     group = "verification"
     description = "Run the audible hand check against whatever backend this machine has."
     mainClass.set("dev.hivens.libsound.audio.smoke.SmokeCheckKt")
