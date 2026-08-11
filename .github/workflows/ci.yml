@@ -278,14 +278,11 @@ jobs:
           grep -q "no mixer here" /tmp/smoke.log \
             && { echo "FAIL: the Windows mixer did not open at all"; exit 1; }
 
-          cat > /tmp/wine-gaps <<'GAPS'
-          the mixer lists at least one stream
-          the mixer sees the stream this process just opened
-          GAPS
-          sed 's/^ *//' -i /tmp/wine-gaps
-
-          grep "^FAIL  " /tmp/smoke.log | sed 's/^FAIL  //' | sort -u > /tmp/failed || true
-          unexpected=$(comm -23 /tmp/failed <(sort -u /tmp/wine-gaps))
+          grep "^FAIL  " /tmp/smoke.log | sed 's/^FAIL  //' > /tmp/failed || true
+          unexpected=$(grep -vxF \
+            -e "the mixer lists at least one stream" \
+            -e "the mixer sees the stream this process just opened" \
+            /tmp/failed || true)
           if [ -n "$unexpected" ]; then
             echo "FAIL: checks failed that wine is expected to pass:"
             echo "$unexpected"
