@@ -103,6 +103,24 @@ jobs:
           LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound
         run: python3 .github/test-summary.py
 
+      # The publishable artifacts, built before a release depends on them. The
+      # javadoc jar in particular: left to itself the publish plugin packages
+      # the *Java* javadoc tool's output for a project with no Java sources,
+      # which was a manifest and nothing else -- 25 bytes that satisfied
+      # Central's requirement and carried none of the documentation.
+      - name: The javadoc jars carry the KDoc
+        run: |
+          ./gradlew dokkaJavadocJar --stacktrace
+          for module in libsound-core libsound-audio libsound-session; do
+            jar=$(ls "$module"/build/libs/*javadoc*.jar)
+            entries=$(unzip -l "$jar" | tail -1 | awk '{print $2}')
+            echo "$module: $entries entries"
+            if [ "$entries" -lt 10 ]; then
+              echo "FAIL: $module ships a javadoc jar with nothing in it"
+              exit 1
+            fi
+          done
+
       - name: Upload test report on failure
         if: failure()
         uses: actions/upload-artifact@v7
