@@ -102,6 +102,25 @@ public data class SessionConfig(
     public val canQuit: Boolean = false,
     /** Whether the desktop may ask the application to show its window. */
     public val canRaise: Boolean = false,
+    /**
+     * The application's window, on Windows only. Ignored everywhere else.
+     *
+     * Windows attaches its transport controls to a window and offers a desktop
+     * process no other way in, so a session there belongs to a window whether
+     * the application thinks in those terms or not.
+     *
+     * Null is supported and is the right answer for a consumer that has no
+     * window -- a command line tool, a service. The backend then makes a window
+     * of its own to hang the session on. That is the fallback rather than the
+     * default because a window the application already owns is the one the user
+     * is looking at, and it is the one Windows will associate the controls with
+     * most reliably.
+     *
+     * A Compose or Swing application already has the value: Skiko exposes it as
+     * `SkiaLayer.windowHandle`, and an AWT `Window` yields it through the same
+     * native peer. Passing it costs a line and removes a guess.
+     */
+    public val windowHandle: Long? = null,
 ) {
     init {
         require(applicationName.isNotBlank()) { "applicationName must not be blank" }

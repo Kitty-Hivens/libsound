@@ -44,7 +44,7 @@ the build fails if the page and the code drift apart.
 |---|---|
 | `libsound-core` | Types and contracts. Zero dependencies, Java 17 floor, no Panama. Compile against this without pulling any backend. |
 | `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio, CoreAudio and JavaSound exercised; WASAPI output and mixer written and awaiting hardware. |
-| `libsound-session` | The media session: publish our own, read and drive everyone else's. MPRIS today; SMTC and MPNowPlayingInfoCenter planned. |
+| `libsound-session` | The media session: publish our own, read and drive everyone else's. MPRIS and SMTC; MPNowPlayingInfoCenter planned. |
 
 Split so a consumer pays only for what it uses -- MPRIS without libpulse, an
 output channel without D-Bus.
@@ -119,7 +119,7 @@ depend on this by accident. The API will still shift.
 | Windows audio (WASAPI) | Runs. Device enumeration, playback, playhead and volume execute on every push against a Windows JVM under wine -- which checks the ABI, not the hardware. Real devices still need [docs/TESTING.md](docs/TESTING.md). |
 | Windows mixer (IAudioSessionManager2) | Enumeration, volume, mute and the same restore obligation as the Linux mixer, executing under wine. Per-session events are still unexecuted: wine answers `E_NOTIMPL` to `RegisterSessionNotification`, so only hardware can exercise that path. No routing at all -- Windows exposes no way to move another application's session, so the capability is absent rather than faked. |
 | Linux session (MPRIS) | Done and exercised. Publishes a player `playerctl` and the desktop can drive, and reads and controls everyone else's. |
-| Windows session (SMTC) | Not started. |
+| Windows session (SMTC) | Written and executed once on a Windows JVM under wine: metadata, playback state, timeline and media keys. Whether the lock screen shows it needs a person. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |
 | macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`AudioMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/AudioMixers.kt) answers null there rather than pretending. |
 
