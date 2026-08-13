@@ -45,6 +45,17 @@ struct BlockDescriptor {
     unsigned long size;
 };
 
+/* What the compiler actually emits: BLOCK_HAS_SIGNATURE puts an encoding string
+ * after the two fields above, and the runtime reads it when it wants the block's
+ * type. Synthesising a block without it means claiming a block that has no
+ * signature, which is a different thing from the one the framework was handed
+ * when it was compiled against a real one. */
+struct BlockDescriptorWithSignature {
+    unsigned long reserved;
+    unsigned long size;
+    const char *signature;
+};
+
 extern void *_NSConcreteGlobalBlock[32];
 
 int main(void) {
@@ -84,6 +95,16 @@ int main(void) {
         printf("  %-54s = 0x%08X\n", "flags the compiler set", (unsigned)real->flags);
         printf("  %-54s = %s\n", "invoke is non-null", real->invoke ? "yes" : "NO");
         printf("  %-54s = %lu\n", "descriptor->size", real->descriptor->size);
+        printf("  %-54s = 0x%08X\n", "BLOCK_IS_GLOBAL", 1u << 28);
+        printf("  %-54s = 0x%08X\n", "BLOCK_HAS_SIGNATURE", 1u << 30);
+        if (real->flags & (1u << 30)) {
+            struct BlockDescriptorWithSignature *d =
+                (struct BlockDescriptorWithSignature *)real->descriptor;
+            printf("  %-54s = %s\n", "the signature the compiler wrote",
+                   d->signature ? d->signature : "(null)");
+            P(offsetof(struct BlockDescriptorWithSignature, signature));
+            P(sizeof(struct BlockDescriptorWithSignature));
+        }
 
         SECTION("MPNowPlayingPlaybackState");
         P(MPNowPlayingPlaybackStateUnknown);
