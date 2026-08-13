@@ -21,6 +21,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -104,6 +105,21 @@ internal class PulseMixer private constructor(
     @Volatile
     private var rowsComplete = false
 
+    /**
+     * Which round trip the callbacks are answering.
+     *
+     * `awaitFlag` gives up on a deadline, but giving up does not cancel the
+     * operation -- `pa_operation_unref` drops our reference and the server
+     * finishes it anyway. Without this, the abandoned request's end-of-list
+     * satisfied the *next* request's wait, and the caller got a half-collected
+     * list that looked complete. The generation goes out as the callback's
+     * userdata and comes back with every reply.
+     */
+    private val generation = AtomicLong(0)
+
+    @Volatile
+    private var currentGeneration = 0L
+
     @Volatile
     private var sinkLookupComplete = false
 
@@ -131,8 +147,9 @@ internal class PulseMixer private constructor(
             val listed = pulse.locked {
                 rows.clear()
                 rowsComplete = false
+                currentGeneration = generation.incrementAndGet()
                 val op = lib.handle("pa_context_get_sink_input_info_list")
-                    .invokeExact(pulse.context, sinkInputStub, MemorySegment.NULL) as MemorySegment
+                    .invokeExact(pulse.context, sinkInputStub, MemorySegment.ofAddress(currentGeneration)) as MemorySegment
                 if (op.address() == 0L) return@locked null
                 pulse.releaseOperation(op)
                 if (!awaitFlag { rowsComplete }) return@locked null
@@ -209,7 +226,11 @@ internal class PulseMixer private constructor(
         dispatch.shutdown()
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         runCatching { restoreOnClose() }
-        pulse.close()
+        // Under the round-trip lock, because closing frees the mainloop and the
+        // arena holding every upcall stub. A caller that passed the closed check
+        // a moment earlier is inside a round trip right now, and the flag alone
+        // does not wait for it.
+        roundTrip.withLock { pulse.close() }
     }
 
     private fun restoreOnClose() {
@@ -294,8 +315,11 @@ internal class PulseMixer private constructor(
     // Public rather than internal: Kotlin mangles an internal name and
     // findVirtual looks up what is written.
 
-    fun onSinkInput(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+    fun onSinkInput(unusedContext: MemorySegment, info: MemorySegment, eol: Int, userData: MemorySegment) {
         runCatching {
+            // A reply to a request nobody is waiting for any more. Answering it
+            // would end the round trip that is waiting now.
+            if (userData.address() != currentGeneration) return@runCatching
             if (eol != 0) {
                 rowsComplete = true
                 pulse.signal()

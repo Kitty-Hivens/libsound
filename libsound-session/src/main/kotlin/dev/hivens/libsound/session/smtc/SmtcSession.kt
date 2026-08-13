@@ -72,6 +72,17 @@ internal class SmtcSession private constructor(
     private var handlerObject: MemorySegment = MemorySegment.NULL
     private var handlerToken: Long = 0
 
+    /**
+     * What was last sent, so a repeat can be skipped.
+     *
+     * The interface says publish is cheap to call often, and a player driving a
+     * position bar calls it on a timer. Rewriting the metadata each time makes
+     * the lock screen redraw its artwork at that rate, which is visible, so only
+     * the parts that actually changed are sent.
+     */
+    @Volatile
+    private var lastPublished: SessionState? = null
+
     override val capabilities: Capabilities = Capabilities.of(Capability.SESSION_PUBLISH)
 
     override val isOpen: Boolean get() = !closed.get()
@@ -81,10 +92,18 @@ internal class SmtcSession private constructor(
         rt.ensureApartment()
         updating.withLock {
             runCatching {
-                putStatus(state.playback)
-                putFlags(state)
-                putMetadata(state)
-                putTimeline(state)
+                val previous = lastPublished
+                if (previous?.playback != state.playback) putStatus(state.playback)
+                if (previous == null || changedFlags(previous, state)) putFlags(state)
+                // Artwork and title are the expensive half and the one that
+                // flickers, so they go only when they differ.
+                if (previous?.metadata != state.metadata) putMetadata(state)
+                if (previous?.positionMicros != state.positionMicros ||
+                    previous.metadata.durationMicros != state.metadata.durationMicros
+                ) {
+                    putTimeline(state)
+                }
+                lastPublished = state
             }.onFailure { log.warn("could not publish the session state: {}", it.message) }
         }
     }
@@ -108,7 +127,12 @@ internal class SmtcSession private constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        // The apartment is per thread, and close may well be the first call this
+        // thread makes -- a shutdown hook has published nothing. Without this the
+        // COM calls below run outside any apartment.
+        runCatching { rt.ensureApartment() }
         handlers.clear()
+        lastPublished = null
         dispatch.shutdown()
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         runCatching { removeButtonHandler() }
@@ -116,12 +140,20 @@ internal class SmtcSession private constructor(
         // shell, and one left enabled is a player the desktop still offers to
         // drive after the application stopped answering.
         runCatching { putEnabled(false) }
-        rt.release(controls)
-        ownWindow?.let { rt.destroyWindow(it) }
-        rt.close()
+        // Under the publish lock: rt.close() frees the arena holding the
+        // handler vtable, and a publish in flight is calling through controls.
+        updating.withLock {
+            rt.release(controls)
+            ownWindow?.let { rt.destroyWindow(it) }
+            rt.close()
+        }
     }
 
     // -- publishing ------------------------------------------------------------
+
+    private fun changedFlags(a: SessionState, b: SessionState): Boolean =
+        a.canPlay != b.canPlay || a.canPause != b.canPause ||
+            a.canGoNext != b.canGoNext || a.canGoPrevious != b.canGoPrevious
 
     private fun putStatus(playback: PlaybackState) {
         val status = when (playback) {
@@ -237,10 +269,29 @@ internal class SmtcSession private constructor(
     // Public rather than internal although nothing outside calls them: Kotlin
     // mangles an internal name and findVirtual looks up what is written.
 
-    fun onQueryInterface(self: MemorySegment, unusedIid: MemorySegment, out: MemorySegment): Int = runCatching {
+    /**
+     * Only the two identifiers this object honestly is.
+     *
+     * Saying yes to everything is unsafe rather than merely lax: the runtime
+     * queries a delegate for `IMarshal` and `IAgileObject` when it works out how
+     * to deliver across an apartment, and a yes hands it a four-slot vtable to
+     * call a marshaller through.
+     */
+    fun onQueryInterface(self: MemorySegment, iid: MemorySegment, out: MemorySegment): Int = runCatching {
+        val wanted = readGuid(iid)
+        if (wanted != IID_UNKNOWN && wanted != SmtcAbi.IID_BUTTON_HANDLER) return E_NOINTERFACE
         out.reinterpret(ADDR.byteSize()).set(ADDR, 0, self)
         WinRt.S_OK
     }.getOrDefault(E_FAIL)
+
+    private fun readGuid(iid: MemorySegment): String {
+        val g = iid.reinterpret(16)
+        val d1 = g.get(ValueLayout.JAVA_INT, 0)
+        val d2 = g.get(ValueLayout.JAVA_SHORT, 4)
+        val d3 = g.get(ValueLayout.JAVA_SHORT, 6)
+        val tail = (0 until 8).joinToString("") { "%02X".format(g.get(ValueLayout.JAVA_BYTE, 8L + it).toInt() and 0xFF) }
+        return "%08X-%04X-%04X-%s-%s".format(d1, d2.toInt() and 0xFFFF, d3.toInt() and 0xFFFF, tail.take(4), tail.drop(4))
+    }
 
     /** The object lives in an arena closed at teardown, after the handler is removed. */
     fun onAddRef(unusedSelf: MemorySegment): Int = 1
@@ -386,6 +437,8 @@ internal class SmtcSession private constructor(
         private val I32 = ValueLayout.JAVA_INT
 
         private const val E_FAIL = 0x8000_4005.toInt()
+        private const val E_NOINTERFACE = 0x8000_4002.toInt()
+        private const val IID_UNKNOWN = "00000000-0000-0000-C000-000000000046"
 
         /** A WinRT TimeSpan counts hundred-nanosecond ticks. */
         private const val TICKS_PER_MICRO = 10L
@@ -428,7 +481,13 @@ internal class SmtcSession private constructor(
                 }
                 if (controls.address() == 0L) throw IllegalStateException("GetForWindow returned nothing")
 
-                SmtcSession(rt, controls, ownWindow).apply { installButtonHandler() }
+                runCatching { SmtcSession(rt, controls, ownWindow).apply { installButtonHandler() } }
+                    .getOrElse { failure ->
+                        // Closing the arena frees our memory, not the runtime's
+                        // reference to its own object.
+                        rt.release(controls)
+                        throw failure
+                    }
             }.getOrElse {
                 log.info("no media session on Windows: {}", it.message)
                 ownWindow?.let { window -> rt.destroyWindow(window) }
