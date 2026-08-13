@@ -199,7 +199,11 @@ internal class WasapiCom private constructor(
          */
         const val MAX_WIDE_BYTES = 4096L
 
-        /** The thread is already in a different apartment; ours works there anyway. */
+        /**
+         * The thread is already in a different apartment; ours works there
+         * anyway. Printed by the oracle, after a first cut computed the two's
+         * complement by hand and landed 65290 away from it.
+         */
         val RPC_E_CHANGED_MODE: Int = 0x80010106u.toInt()
 
         private val ADDR = ValueLayout.ADDRESS

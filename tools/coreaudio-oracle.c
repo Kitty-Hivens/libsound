@@ -83,6 +83,7 @@ _Static_assert(kAudioOutputUnitProperty_CurrentDevice == 2000, "CurrentDevice pr
 _Static_assert(kHALOutputParam_Volume == 14, "HAL volume parameter moved");
 _Static_assert(kAudioObjectSystemObject == 1, "system object moved");
 _Static_assert(kAudioObjectPropertyElementMain == 0, "main element moved");
+_Static_assert(kCFStringEncodingUTF8 == 0x08000100, "UTF-8 encoding id moved");
 
 /* A four-character code, printed as both, because only one of the two is
  * checkable by eye and only the other one goes into the binding. */
@@ -197,6 +198,12 @@ int main(void) {
     F(kAudioDevicePropertySafetyOffset);
     F(kAudioDevicePropertyVolumeScalar);
     F(kAudioDevicePropertyNominalSampleRate);
+
+    /* Live arguments in the binding that this program did not print, so the
+     * table's claim to be measured was true of everything except these. */
+    SECTION("constants the binding passes");
+    P(kCFStringEncodingUTF8);
+    P(kAudioObjectPropertyElementMain);
 
     SECTION("status codes worth naming");
     P(noErr);
