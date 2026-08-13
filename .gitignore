@@ -28,3 +28,9 @@ tools/dbus-oracle
 
 # Kotlin compiler scratch
 .kotlin/
+
+# Built by hand from tools/*.c, and never committed: the sources are the
+# artifact, and a binary in the history is one nobody can review.
+tools/*.exe
+tools/pa-oracle
+tools/dbus-oracle
