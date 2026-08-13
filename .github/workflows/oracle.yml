@@ -75,6 +75,6 @@ jobs:
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
-          cl /nologo /TC tools\smtc-probe.c ole32.lib runtimeobject.lib user32.lib /Fe:smtc-probe.exe
+          cl /nologo /TC tools\smtc-probe.c /Fe:smtc-probe.exe /link ole32.lib runtimeobject.lib user32.lib
           smtc-probe.exe
           exit /b 0
