@@ -49,9 +49,10 @@ public data class SinkConfig(
  *
  * Backends are selected, not constructed -- the platform module tries the real
  * service first and falls back, then reports through [capabilities] what
- * survived the fallback. A backend is always returned; "no audio at all" is not
- * a state this library models, because a consumer can do nothing useful with it
- * that silence does not already do.
+ * survived the fallback. "No sound server" is not a failure -- the fallback
+ * covers it, and reports through [capabilities] what it lost on the way. Only a
+ * JVM that cannot play audio at all, headless or in a container with no device,
+ * leaves a consumer with nothing, and the factory says so by answering null.
  */
 public interface AudioBackend : AutoCloseable {
 

@@ -29,10 +29,11 @@ public data class ForeignPlayer(
 /**
  * Reads the media sessions other applications publish.
  *
- * Present on Linux through MPRIS and on Windows through the SMTC session
- * manager. Absent on macOS, where the only route is the private MediaRemote
- * framework -- so a consumer asks [Capability.SESSION_READ] first and hides the
- * feature rather than showing an empty list that will never fill.
+ * Present on Linux through MPRIS. Windows exposes the same surface through its
+ * session manager and this library does not bind it yet. Absent on macOS for
+ * good, where the only route is the private MediaRemote framework -- so a
+ * consumer asks [Capability.SESSION_READ] first and hides the feature rather
+ * than showing an empty list that will never fill.
  *
  * Degrades quietly, like [MediaSession] and unlike [AudioSink]: no session bus
  * means no players, which is a legitimate answer.

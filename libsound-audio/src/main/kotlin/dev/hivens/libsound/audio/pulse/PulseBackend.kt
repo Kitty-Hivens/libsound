@@ -168,7 +168,10 @@ internal class PulseBackend private constructor(
         // Its work ends quickly regardless: devices() answers empty once closed.
         eventDispatch.shutdown()
         runCatching { eventDispatch.awaitTermination(2, TimeUnit.SECONDS) }
-        pulse.close()
+        // Under the round-trip lock: closing frees the mainloop and the arena
+        // holding the upcall stubs, and a caller that passed the closed check a
+        // moment ago is inside a round trip now.
+        roundTrip.withLock { pulse.close() }
     }
 
     // -- upcalls, all on the mainloop thread with its lock held --------------

@@ -132,8 +132,10 @@ public data class SessionConfig(
  *
  * Unlike [AudioSink], this one degrades quietly: a session is a convenience
  * surface, and a desktop without a session bus should cost the application
- * nothing more than the absence of media keys. Creation returns a no-op
- * implementation rather than failing, and [capabilities] says which it was.
+ * nothing more than the absence of media keys. So the factory answers null
+ * where there is nothing to publish to, rather than throwing -- and rather than
+ * handing back an object that accepts every update and shows nothing, which
+ * would be indistinguishable from a session the desktop is ignoring.
  */
 public interface MediaSession : AutoCloseable {
 
@@ -143,10 +145,9 @@ public interface MediaSession : AutoCloseable {
     public val isOpen: Boolean
 
     /**
-     * Publish the current state. Idempotent and cheap to call often -- the
-     * implementation diffs against what it last sent and emits only what
-     * changed, because a property-change storm is what makes a desktop widget
-     * flicker.
+     * Publish the current state. Idempotent, and cheap to call often: an
+     * implementation sends only what changed since the last call, because a
+     * property-change storm is what makes a desktop widget flicker.
      */
     public fun publish(state: SessionState)
 

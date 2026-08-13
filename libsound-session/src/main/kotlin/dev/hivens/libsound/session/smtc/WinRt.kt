@@ -232,7 +232,7 @@ internal class WinRt private constructor(
             val chars = text.toCharArray()
             val segment = arena.allocate((chars.size + 1) * 2L, 2)
             for (i in chars.indices) segment.set(ValueLayout.JAVA_CHAR, i * 2L, chars[i])
-            segment.set(ValueLayout.JAVA_CHAR, chars.size * 2L, ' ')
+            segment.set(ValueLayout.JAVA_CHAR, chars.size * 2L, NUL)
             return segment
         }
 

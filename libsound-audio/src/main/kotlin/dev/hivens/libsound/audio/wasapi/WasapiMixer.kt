@@ -200,8 +200,13 @@ internal class WasapiMixer private constructor(
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         runCatching { restoreAll() }
         runCatching { unregisterAll() }
-        com.release(enumerator)
-        com.close()
+        // Under the walk lock. com.close() frees the arena holding the vtables
+        // the audio service calls through, and a walk in flight is holding
+        // interfaces from it.
+        roundTrip.withLock {
+            com.release(enumerator)
+            com.close()
+        }
     }
 
     // -- enumeration ----------------------------------------------------------
@@ -482,7 +487,7 @@ internal class WasapiMixer private constructor(
     // -- events ---------------------------------------------------------------
 
     /** One session we hold open so its events keep arriving. */
-    private class Watch(val control: MemorySegment, val events: MemorySegment)
+    private class Watch(val control: MemorySegment, val events: MemorySegment, val token: Long)
 
     private fun watch(id: String, control: MemorySegment) {
         if (watched.containsKey(id)) {
@@ -490,6 +495,12 @@ internal class WasapiMixer private constructor(
             return
         }
         val token = nextToken.getAndIncrement()
+        // Sixteen bytes from the shared arena, which cannot be freed piecewise,
+        // so a session watched once costs them until the mixer closes. Kept
+        // deliberately: freeing it would mean a per-watch arena closed right
+        // after unregistering, and unregistering does not promise that a
+        // callback already dispatched has returned. A few kilobytes over a long
+        // session is the cheaper of the two mistakes.
         val instance = com.arena.allocate(INSTANCE_SIZE, 8)
         instance.set(ADDR, 0, sessionEventsVtable)
         instance.set(ValueLayout.JAVA_LONG, ADDR.byteSize(), token)
@@ -504,23 +515,39 @@ internal class WasapiMixer private constructor(
             com.release(control)
             return
         }
-        watched[id] = Watch(control, instance)
+        watched[id] = Watch(control, instance, token)
     }
 
     /** token -> session id, so one shared vtable serves every watched session. */
     private val tokens = ConcurrentHashMap<Long, String>()
 
-    private fun unregisterAll() {
-        watched.values.forEach { watch ->
-            runCatching {
-                com.method(
-                    watch.control, WasapiAbi.SESSION_CONTROL_UNREGISTER_NOTIFICATION,
-                    FunctionDescriptor.of(I32, ADDR, ADDR),
-                ).invokeExact(watch.control, watch.events) as Int
-            }
-            com.release(watch.control)
+    /**
+     * Undo one watch, exactly once.
+     *
+     * `remove` is the claim: whichever caller it returns the entry to owns the
+     * teardown, and every other caller gets null and does nothing. Releasing
+     * without claiming first let a disconnect arriving during teardown release
+     * the same control the teardown was already releasing.
+     *
+     * Unregistering comes before releasing, and that order is the whole point.
+     * A disconnected session is not a destroyed one -- a device change leaves
+     * the object alive -- so a registration left behind outlives the arena that
+     * holds its vtable, and the audio service then calls through freed memory.
+     */
+    private fun unwatch(id: String) {
+        val watch = watched.remove(id) ?: return
+        tokens.remove(watch.token)
+        runCatching {
+            com.method(
+                watch.control, WasapiAbi.SESSION_CONTROL_UNREGISTER_NOTIFICATION,
+                FunctionDescriptor.of(I32, ADDR, ADDR),
+            ).invokeExact(watch.control, watch.events) as Int
         }
-        watched.clear()
+        com.release(watch.control)
+    }
+
+    private fun unregisterAll() {
+        watched.keys.toList().forEach { unwatch(it) }
         tokens.clear()
 
         val manager = registeredManager
@@ -538,10 +565,38 @@ internal class WasapiMixer private constructor(
     // Public rather than internal, for the same reason as everywhere else here:
     // Kotlin mangles an internal name and findVirtual looks up what is written.
 
-    fun onQueryInterface(self: MemorySegment, unusedIid: MemorySegment, out: MemorySegment): Int = runCatching {
+    /**
+     * Hand back only the interfaces this object actually is.
+     *
+     * Answering yes to every identifier is the tempting shortcut and it is
+     * unsafe: the shell queries a callback object for `IMarshal` and
+     * `IAgileObject` when it decides how to deliver across an apartment, and a
+     * yes there hands it a vtable with four or ten slots to call a marshaller's
+     * methods through. The wrong function runs with the wrong signature, which
+     * is the same class of failure as a wrong slot index.
+     *
+     * The two synthesised objects share one stub, so which one `self` is decides
+     * which identifier is truthful for it.
+     */
+    fun onQueryInterface(self: MemorySegment, iid: MemorySegment, out: MemorySegment): Int = runCatching {
+        val wanted = readGuid(iid)
+        val isNotification = self.address() == sessionNotification.address()
+        val mine = wanted == WasapiAbi.IID_UNKNOWN ||
+            wanted == if (isNotification) WasapiAbi.IID_AUDIO_SESSION_NOTIFICATION else WasapiAbi.IID_AUDIO_SESSION_EVENTS
+        if (!mine) return E_NOINTERFACE
         out.reinterpret(ADDR.byteSize()).set(ADDR, 0, self)
         WasapiAbi.S_OK
     }.getOrDefault(E_FAIL)
+
+    /** A `GUID` back into the canonical text the ABI table stores. */
+    private fun readGuid(iid: MemorySegment): String {
+        val g = iid.reinterpret(16)
+        val d1 = g.get(ValueLayout.JAVA_INT, 0).toUInt()
+        val d2 = g.get(ValueLayout.JAVA_SHORT, 4).toUShort()
+        val d3 = g.get(ValueLayout.JAVA_SHORT, 6).toUShort()
+        val tail = (0 until 8).joinToString("") { "%02X".format(g.get(ValueLayout.JAVA_BYTE, 8L + it).toInt() and 0xFF) }
+        return "%08X-%04X-%04X-%s-%s".format(d1.toInt(), d2.toInt(), d3.toInt(), tail.take(4), tail.drop(4))
+    }
 
     /** The objects live in an arena we close on teardown, after unregistering. */
     fun onAddRef(unusedSelf: MemorySegment): Int = 1
@@ -573,7 +628,7 @@ internal class WasapiMixer private constructor(
 
     fun onSessionDisconnected(self: MemorySegment, unusedReason: Int): Int {
         val id = idOf(self) ?: return WasapiAbi.S_OK
-        watched.remove(id)?.let { com.release(it.control) }
+        unwatch(id)
         fire { StreamEvent.Gone(StreamId(id)) }
         return WasapiAbi.S_OK
     }
@@ -793,6 +848,9 @@ internal class WasapiMixer private constructor(
 
         private const val E_FAIL = 0x8000_4005.toInt()
 
+        /** What a COM object answers for an interface it is not. */
+        private const val E_NOINTERFACE = 0x8000_4002.toInt()
+
         private const val PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
         /** Matched to [WasapiCom.MAX_WIDE_BYTES]; a longer buffer could not be read anyway. */
@@ -825,7 +883,14 @@ internal class WasapiMixer private constructor(
                     out.get(ADDR, 0)
                 }
                 if (enumerator.address() == 0L) throw IllegalStateException("no device enumerator")
-                WasapiMixer(com, enumerator).apply { installNotifications() }
+                runCatching { WasapiMixer(com, enumerator).apply { installNotifications() } }
+                    .getOrElse { failure ->
+                        // The enumerator belongs to nobody once construction
+                        // fails, and closing the arena frees our own memory
+                        // rather than the shell's reference to its object.
+                        com.release(enumerator)
+                        throw failure
+                    }
             }.getOrElse {
                 log.debug("Windows mixer unavailable: {}", it.message)
                 com.close()
