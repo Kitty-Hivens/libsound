@@ -64,6 +64,10 @@ jobs:
   smtc:
     name: SMTC verdict (windows)
     runs-on: windows-latest
+    # Informational, and allowed to fail without gating anything: the probe is
+    # unfinished and says so. What is not allowed is for it to report success
+    # while doing nothing, which is what swallowing its exit code did.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -77,4 +81,3 @@ jobs:
           for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
           cl /nologo /TC tools\smtc-probe.c /Fe:smtc-probe.exe /link ole32.lib runtimeobject.lib user32.lib
           smtc-probe.exe
-          exit /b 0
