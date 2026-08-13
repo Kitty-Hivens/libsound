@@ -62,34 +62,19 @@ jobs:
   # Wine answers yes, which is worth little: its WinRT is stubbed in places and
   # a stub returns S_OK to everything. This row is the one that counts.
   smtc:
-    name: SMTC on a real Windows
-    runs-on: ubuntu-latest
+    name: SMTC verdict (windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cross-compile the probe
+      # Compiled on Windows with the Windows SDK rather than cross-compiled.
+      # Ubuntu's mingw headers are old enough that the WinRT C bindings this
+      # uses are not there, so the cross-compile failed on the runner while
+      # succeeding against a current mingw locally.
+      - name: Compile and ask Windows
+        shell: cmd
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-x86-64
-          x86_64-w64-mingw32-gcc -o /tmp/smtc-probe.exe tools/smtc-probe.c \
-            -lole32 -lruntimeobject -luser32
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: smtc-probe
-          path: /tmp/smtc-probe.exe
-
-  smtc-run:
-    name: SMTC verdict (windows)
-    runs-on: windows-latest
-    needs: smtc
-    steps:
-      - uses: actions/download-artifact@v5
-        with:
-          name: smtc-probe
-
-      # Not gated on the exit code: "no" is a real answer that decides the API
-      # just as firmly as "yes", and a red row would say the probe broke.
-      - name: Ask Windows
-        shell: bash
-        run: ./smtc-probe.exe || true
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /TC tools\smtc-probe.c ole32.lib runtimeobject.lib user32.lib /Fe:smtc-probe.exe
+          smtc-probe.exe
+          exit /b 0
