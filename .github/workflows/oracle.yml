@@ -62,6 +62,16 @@ jobs:
             -framework Foundation -framework MediaPlayer
           /tmp/mpnowplaying-probe
 
+      # The block layout in particular. Everything else in this API is reached
+      # by name and fails loudly when the name is wrong; a block is a struct
+      # with an ABI, and an invoke pointer at the wrong offset has the runtime
+      # call whatever is there.
+      - name: MediaPlayer layout and constants
+        run: |
+          clang -o /tmp/mpnowplaying-oracle tools/mpnowplaying-oracle.m \
+            -framework Foundation -framework MediaPlayer
+          /tmp/mpnowplaying-oracle
+
 # There is no SMTC row here, deliberately.
 #
 # tools/smtc-probe.c asks whether the transport controls accept a window the
