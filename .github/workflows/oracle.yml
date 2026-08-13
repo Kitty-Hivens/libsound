@@ -50,6 +50,18 @@ jobs:
       - name: Offsets, selectors, and what this runner actually has
         run: /tmp/coreaudio-oracle
 
+      # Whether a process with no bundle can publish a Now Playing session at
+      # all. It decides whether the macOS half of libsound-session is worth
+      # binding, and the answer is not something to remember.
+      #
+      # The probe exits zero whether the answer is yes or no -- "no" is a real
+      # answer and must not read as a broken row.
+      - name: Can a process like this publish a media session
+        run: |
+          clang -o /tmp/mpnowplaying-probe tools/mpnowplaying-probe.m \
+            -framework Foundation -framework MediaPlayer
+          /tmp/mpnowplaying-probe
+
 # There is no SMTC row here, deliberately.
 #
 # tools/smtc-probe.c asks whether the transport controls accept a window the
