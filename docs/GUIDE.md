@@ -244,7 +244,7 @@ backend closes the sinks it handed out. Closing a mixer restores what it changed
 | Device selection and events | yes | yes | yes |
 | Read and control other streams | yes | yes | **no** -- no public API exists |
 | Move another stream to a device | yes | **no** | **no** |
-| Publish a media session | MPRIS | not yet | not yet |
+| Publish a media session | MPRIS | SMTC | not yet |
 | Read other media sessions | MPRIS | not yet | **no** -- private API only |
 
 Ask the capability rather than reading this table at runtime. It is here to help
