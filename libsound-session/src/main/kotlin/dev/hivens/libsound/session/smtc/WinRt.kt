@@ -175,7 +175,11 @@ internal class WinRt private constructor(
     internal companion object {
         const val S_OK = 0
 
-        /** Somebody put this thread in another apartment; ours still works there. */
+        /**
+         * Somebody put this thread in another apartment; ours still works there.
+         * The value comes from `tools/wasapi-oracle.c`, which prints it for the
+         * audio side and covers this one by being the same constant.
+         */
         val RPC_E_CHANGED_MODE: Int = 0x80010106u.toInt()
 
         const val POINTER_SIZE = 8L

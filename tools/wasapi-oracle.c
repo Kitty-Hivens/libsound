@@ -274,6 +274,9 @@ int main(void) {
     HEX(AUDCLNT_E_BUFFER_SIZE_ERROR);
     HEX(AUDCLNT_E_SERVICE_NOT_RUNNING);
     HEX(AUDCLNT_S_BUFFER_EMPTY);
+    /* Hand-computed once as a two's complement and wrong by 65290. It is a
+     * value the binding compares against, so it is measured like the rest. */
+    HEX(RPC_E_CHANGED_MODE);
 
     /* REFERENCE_TIME is 100-nanosecond units; every duration in this API is in
      * them, and getting the factor wrong is a buffer off by a factor of ten. */

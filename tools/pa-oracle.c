@@ -17,6 +17,8 @@
 #define P(expr) printf("%-46s = %lld\n", #expr, (long long)(expr))
 #define SECTION(name) printf("\n== %s ==\n", name)
 
+#define HEX(expr) printf("%-46s = 0x%04X\n", #expr, (unsigned)(expr))
+
 int main(void) {
     printf("libpulse headers: %s\n", pa_get_headers_version());
     printf("libpulse runtime: %s\n", pa_get_library_version());
@@ -143,6 +145,24 @@ int main(void) {
     P(PA_STREAM_AUTO_TIMING_UPDATE);
     P(PA_STREAM_ADJUST_LATENCY);
     P(PA_STREAM_EARLY_REQUESTS);
+
+    /* The subscription constants were transcribed from the header by hand and
+     * the ABI table said so in a comment that claimed otherwise. One of them
+     * was wrong once already -- MASK_SERVER is 0x0080, and 0x0100 is the
+     * deprecated AUTOLOAD -- which is exactly why they belong here. */
+    SECTION("subscription");
+    HEX(PA_SUBSCRIPTION_MASK_SINK);
+    HEX(PA_SUBSCRIPTION_MASK_SINK_INPUT);
+    HEX(PA_SUBSCRIPTION_MASK_SERVER);
+    HEX(PA_SUBSCRIPTION_EVENT_FACILITY_MASK);
+    HEX(PA_SUBSCRIPTION_EVENT_TYPE_MASK);
+    HEX(PA_SUBSCRIPTION_EVENT_SINK_INPUT);
+    HEX(PA_SUBSCRIPTION_EVENT_NEW);
+    HEX(PA_SUBSCRIPTION_EVENT_CHANGE);
+    HEX(PA_SUBSCRIPTION_EVENT_REMOVE);
+
+    SECTION("error codes and sentinels");
+    P(PA_ERR_NODATA);
 
     SECTION("misc");
     P(PA_SEEK_RELATIVE);

@@ -148,8 +148,12 @@ internal object PulseAbi {
      * 0x0080, not 0x0100. The first cut used 0x0100, which is the deprecated
      * `PA_SUBSCRIPTION_MASK_AUTOLOAD` -- so the server-change event was never
      * subscribed and a default-sink switch reached no listener, while
-     * `Capability.DEVICE_EVENTS` still claimed it did. Verified against the
-     * header, not remembered.
+     * `Capability.DEVICE_EVENTS` still claimed it did.
+     *
+     * This and every other subscription constant below are printed by the
+     * oracle. They were not, for a while, and this comment claimed they were
+     * checked against the header -- true of how they were written, and not of
+     * anything a build could catch.
      */
     const val SUBSCRIPTION_MASK_SERVER = 0x0080
     const val SUBSCRIPTION_MASK_SINK_INPUT = 0x0004
