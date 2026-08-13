@@ -74,6 +74,17 @@ int main(void) {
     P(offsetof(pa_sink_info, state));
     P(sizeof(pa_sink_info));
 
+    /* Whether the session manager acts on media roles is a fact about the
+     * desktop, not about this library, and the only evidence reachable over the
+     * protocol is which modules the server loaded. */
+    SECTION("pa_module_info (is role ducking loaded at all)");
+    P(offsetof(pa_module_info, index));
+    P(offsetof(pa_module_info, name));
+    P(offsetof(pa_module_info, argument));
+    P(offsetof(pa_module_info, n_used));
+    P(offsetof(pa_module_info, proplist));
+    P(sizeof(pa_module_info));
+
     SECTION("pa_server_info (which sink is default)");
     P(offsetof(pa_server_info, user_name));
     P(offsetof(pa_server_info, host_name));

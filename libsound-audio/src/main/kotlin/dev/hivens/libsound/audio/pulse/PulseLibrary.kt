@@ -77,6 +77,7 @@ internal class PulseLibrary private constructor(
             // Server introspection and events.
             Triple("pa_context_get_sink_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_context_get_server_info", ADDR, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_context_get_module_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_context_subscribe", ADDR, listOf(ADDR, I32, ADDR, ADDR)),
             Triple("pa_context_set_subscribe_callback", null, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_context_set_sink_input_volume", ADDR, listOf(ADDR, I32, ADDR, ADDR, ADDR)),

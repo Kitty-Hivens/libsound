@@ -40,14 +40,30 @@ internal class PulseBackend private constructor(
 
     override val name: String = "pulse"
 
-    override val capabilities: Capabilities = Capabilities.of(
-        Capability.STREAM_VOLUME,
-        Capability.STREAM_IDENTITY,
-        Capability.DEVICE_ENUMERATION,
-        Capability.DEVICE_SELECTION,
-        Capability.DEVICE_EVENTS,
-        Capability.DEVICE_POSITION,
-    )
+    /**
+     * Fixed for this backend's lifetime, and [Capability.DUCKS_OTHERS] is the
+     * one entry decided by asking the server rather than by what this code can
+     * do.
+     *
+     * Computed on first read rather than at construction, because the answer
+     * comes from a round trip that cannot happen until the stubs are installed.
+     * Eager, it would be built before the question was asked and would report
+     * absent on every machine, which is precisely the lie this capability was
+     * added to avoid.
+     */
+    override val capabilities: Capabilities by lazy {
+        Capabilities(
+            buildSet {
+                add(Capability.STREAM_VOLUME)
+                add(Capability.STREAM_IDENTITY)
+                add(Capability.DEVICE_ENUMERATION)
+                add(Capability.DEVICE_SELECTION)
+                add(Capability.DEVICE_EVENTS)
+                add(Capability.DEVICE_POSITION)
+                if (rolePolicyLoaded) add(Capability.DUCKS_OTHERS)
+            },
+        )
+    }
 
     /**
      * Device-change handlers run here, never on the mainloop thread.
@@ -97,9 +113,17 @@ internal class PulseBackend private constructor(
     @Volatile
     private var serverInfoComplete = false
 
+    @Volatile
+    private var moduleListComplete = false
+
+    /** True once a module that acts on media roles has been seen in the list. */
+    @Volatile
+    private var rolePolicyLoaded = false
+
     private lateinit var sinkInfoStub: MemorySegment
     private lateinit var serverInfoStub: MemorySegment
     private lateinit var subscribeStub: MemorySegment
+    private lateinit var moduleInfoStub: MemorySegment
 
     override fun createSink(config: SinkConfig): AudioSink {
         val sink = PulseSink(pulse, config, SINK_CAPABILITIES)
@@ -188,6 +212,24 @@ internal class PulseBackend private constructor(
         }.onFailure { log.warn("server info callback threw: {}", it.message) }
     }
 
+    /**
+     * One module per call, ending with eol. Only the name is read: whether the
+     * module is there at all is the entire question.
+     */
+    fun onModuleInfo(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            if (eol != 0) {
+                moduleListComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            if (info.address() == 0L) return@runCatching
+            val name = info.reinterpret(PulseAbi.MODULE_INFO_HEAD)
+                .get(ValueLayout.ADDRESS, PulseAbi.MODULE_INFO_NAME).readCString()
+            if (name in PulseAbi.ROLE_POLICY_MODULES) rolePolicyLoaded = true
+        }.onFailure { log.warn("module info callback threw: {}", it.message) }
+    }
+
     fun onSubscribe(
         unusedContext: MemorySegment,
         unusedEvent: Int,
@@ -246,6 +288,35 @@ internal class PulseBackend private constructor(
         return true
     }
 
+    /**
+     * Ask the server whether a media role does anything here.
+     *
+     * A role is enforced by the session manager, not by us, so the honest answer
+     * comes from what the server loaded. Absent is the safe direction to be
+     * wrong in: a consumer that believes ducking will not happen falls back to
+     * setting volume directly, which works everywhere and merely has to put it
+     * back afterwards.
+     *
+     * PipeWire reports its own modules over this protocol rather than
+     * PulseAudio's, so the answer there is no. Its role policy lives in
+     * WirePlumber, which the protocol cannot see, and claiming a capability on
+     * the strength of not being able to check it is the failure this whole
+     * mechanism exists to prevent.
+     */
+    private fun probeRolePolicy() {
+        roundTrip.withLock {
+            pulse.locked {
+                moduleListComplete = false
+                val op = lib.handle("pa_context_get_module_info_list")
+                    .invokeExact(pulse.context, moduleInfoStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked
+                pulse.releaseOperation(op)
+                awaitFlag { moduleListComplete }
+            }
+        }
+        log.debug("media roles are acted on here: {}", rolePolicyLoaded)
+    }
+
     private fun installStubs() {
         val linker = Linker.nativeLinker()
         val lookup = MethodHandles.lookup()
@@ -271,6 +342,17 @@ internal class PulseBackend private constructor(
                 ),
             ).bindTo(this),
             FunctionDescriptor.ofVoid(addr, addr, addr),
+            lib.arena,
+        )
+        moduleInfoStub = linker.upcallStub(
+            lookup.findVirtual(
+                PulseBackend::class.java, "onModuleInfo",
+                MethodType.methodType(
+                    Void.TYPE, MemorySegment::class.java, MemorySegment::class.java,
+                    Int::class.javaPrimitiveType, MemorySegment::class.java,
+                ),
+            ).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, addr, i32, addr),
             lib.arena,
         )
         subscribeStub = linker.upcallStub(
@@ -324,6 +406,9 @@ internal class PulseBackend private constructor(
             return runCatching {
                 PulseBackend(context).apply {
                     installStubs()
+                    // Before anything reads capabilities: the set is fixed at
+                    // construction and DUCKS_OTHERS is the server's answer.
+                    probeRolePolicy()
                     subscribe()
                 }
             }.getOrElse {

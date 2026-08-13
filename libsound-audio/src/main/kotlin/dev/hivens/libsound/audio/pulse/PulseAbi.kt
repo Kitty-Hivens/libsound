@@ -76,6 +76,24 @@ internal object PulseAbi {
      */
     const val PROP_APPLICATION_PROCESS_ID = "application.process.id"
 
+    // -- pa_module_info, read to answer one question --------------------------
+
+    const val MODULE_INFO_NAME = 8L
+
+    /** Only the head is read; the argument and proplist are not our business. */
+    const val MODULE_INFO_HEAD = 16L
+
+    /**
+     * The modules that make a media role actually quiet other streams.
+     *
+     * Whether ducking happens is a fact about how the desktop is configured, not
+     * about this library, and the only evidence reachable over the protocol is
+     * which modules the server loaded. PipeWire's pulse server reports its own
+     * modules rather than these, so the answer there is a truthful no: its
+     * policy lives in WirePlumber, which the protocol cannot see.
+     */
+    val ROLE_POLICY_MODULES = setOf("module-role-ducking", "module-role-cork")
+
     // -- pa_server_info, for which sink is currently default -----------------
 
     const val SERVER_INFO_DEFAULT_SINK_NAME = 48L

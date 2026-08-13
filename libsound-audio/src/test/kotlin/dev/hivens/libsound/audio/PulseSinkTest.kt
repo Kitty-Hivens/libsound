@@ -11,6 +11,7 @@ import dev.hivens.libsound.testing.AudioSinkContract
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -141,6 +142,28 @@ class PulseBackendTest {
         } finally {
             pool.shutdownNow()
         }
+    }
+
+    @Test
+    fun `whether a media role ducks anything is answered from the server, not assumed`() {
+        // Cross-checked against pactl rather than pinned to a value, because the
+        // right answer differs per machine: it is a fact about how the desktop
+        // is configured. What must hold everywhere is that the two agree.
+        //
+        // A capability that answered a constant would pass any assertion about
+        // itself, so the check that matters is this one -- our answer tracks the
+        // module list, and the module list is read from the server.
+        val listed = runCatching {
+            ProcessBuilder("pactl", "list", "modules", "short")
+                .redirectErrorStream(true).start()
+                .inputStream.bufferedReader().readText()
+        }.getOrNull()
+        Assumptions.assumeTrue(listed != null, "pactl is not installed, nothing to cross-check against")
+
+        val serverActsOnRoles = listOf("module-role-ducking", "module-role-cork")
+            .any { it in checkNotNull(listed) }
+        val backend = checkNotNull(PulseFixture.backend)
+        (Capability.DUCKS_OTHERS in backend.capabilities) shouldBe serverActsOnRoles
     }
 
     @Test
