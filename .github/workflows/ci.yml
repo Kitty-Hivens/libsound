@@ -163,13 +163,15 @@ jobs:
 
       - name: Build + test
         env:
-          LIBSOUND_REQUIRE: coreaudio
+          # nowplaying alongside coreaudio: the macOS session backend can only
+          # execute here, and a skipped suite reads exactly like a passing one.
+          LIBSOUND_REQUIRE: coreaudio,nowplaying
         run: ./gradlew build --stacktrace
 
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: CoreAudioSinkContract,CoreAudioBackend
+          LIBSOUND_EXPECT: CoreAudioSinkContract,CoreAudioBackend,MpNowPlayingSession
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure
