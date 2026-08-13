@@ -2,6 +2,7 @@ package dev.hivens.libsound.session
 
 import dev.hivens.libsound.MediaSession
 import dev.hivens.libsound.SessionConfig
+import dev.hivens.libsound.session.macos.MpNowPlayingSession
 import dev.hivens.libsound.session.mpris.MprisSession
 import dev.hivens.libsound.session.smtc.SmtcSession
 import org.slf4j.LoggerFactory
@@ -32,9 +33,7 @@ public object MediaSessions {
         val session = when {
             osName.contains("linux") || osName.contains("bsd") -> MprisSession.openOrNull(config)
             osName.contains("windows") -> SmtcSession.openOrNull(config)
-            // macOS has MPNowPlayingInfoCenter and it is not written yet. A null
-            // says so, rather than a stub that accepts every update and shows
-            // nothing.
+            osName.contains("mac") -> MpNowPlayingSession.openOrNull(config)
             else -> null
         }
         if (session == null) log.info("no media session available for os.name={}", osName)
