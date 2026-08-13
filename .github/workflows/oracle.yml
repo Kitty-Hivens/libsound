@@ -49,3 +49,47 @@ jobs:
 
       - name: Offsets, selectors, and what this runner actually has
         run: /tmp/coreaudio-oracle
+
+  # Does SMTC accept a window the library made?
+  #
+  # A behaviour question rather than a layout one, and it decides an API. SMTC
+  # has one desktop entry point -- GetForWindow(HWND) -- and a library has no
+  # window. Neither does a command line consumer. So either the handle becomes
+  # part of libsound's public API and every windowless consumer is locked out,
+  # or the library makes its own window, and whether that is allowed has to be
+  # run rather than remembered.
+  #
+  # Wine answers yes, which is worth little: its WinRT is stubbed in places and
+  # a stub returns S_OK to everything. This row is the one that counts.
+  smtc:
+    name: SMTC on a real Windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cross-compile the probe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+          x86_64-w64-mingw32-gcc -o /tmp/smtc-probe.exe tools/smtc-probe.c \
+            -lole32 -lruntimeobject -luser32
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: smtc-probe
+          path: /tmp/smtc-probe.exe
+
+  smtc-run:
+    name: SMTC verdict (windows)
+    runs-on: windows-latest
+    needs: smtc
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: smtc-probe
+
+      # Not gated on the exit code: "no" is a real answer that decides the API
+      # just as firmly as "yes", and a red row would say the probe broke.
+      - name: Ask Windows
+        shell: bash
+        run: ./smtc-probe.exe || true
