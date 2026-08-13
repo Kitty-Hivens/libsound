@@ -20,6 +20,25 @@
  *
  *   x86_64-w64-mingw32-gcc -o smtc-probe.exe smtc-probe.c \
  *       -lole32 -lruntimeobject -luser32
+ *
+ * ## Where this stands
+ *
+ * It builds and runs against a current mingw, and under wine it answers yes --
+ * which is worth little, because wine's WinRT is stubbed in places and a stub
+ * says S_OK to everything. Wine's WASAPI is a different matter and does real
+ * work; this is specifically the young part of it.
+ *
+ * On a real Windows it compiles clean against the Windows SDK and then fails to
+ * link: in C mode the SDK emits no symbol for a WinRT interface's IID, where
+ * mingw defines them through DEFINE_GUID. Finishing it means rewriting it as
+ * C++ around __uuidof, which is a different program rather than a fix.
+ *
+ * It is kept because the question is still open and the next person should not
+ * start from nothing. It is not kept because the answer is needed: the API it
+ * was meant to decide is correct either way -- a consumer may pass a window
+ * handle, the library makes one when they cannot, and MediaSessions answers
+ * null when neither works. What the probe would settle is how often that
+ * fallback succeeds, which belongs in documentation rather than in a signature.
  */
 
 #define INITGUID
