@@ -149,6 +149,6 @@ internal object CoreAudioAbi {
 
     const val NO_ERROR = 0
 
-    /** `kCFStringEncodingUTF8`. */
+    /** `kCFStringEncodingUTF8`, printed and asserted by the oracle like the rest. */
     const val CF_ENCODING_UTF8 = 0x0800_0100
 }
