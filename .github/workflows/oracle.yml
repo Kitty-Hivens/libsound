@@ -17,7 +17,13 @@ on:
   workflow_dispatch:
   push:
     paths:
+      # Both suffixes, and the probes too. The macOS oracle is Objective-C, and
+      # a filter that named only .c meant editing an oracle did not run it --
+      # which is the one job this workflow has.
       - 'tools/*-oracle.c'
+      - 'tools/*-oracle.m'
+      - 'tools/*-probe.c'
+      - 'tools/*-probe.m'
       - '.github/workflows/oracle.yml'
 
 jobs:
