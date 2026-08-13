@@ -54,8 +54,22 @@ internal class CoreAudioSink(
 
     private val closed = AtomicBoolean(false)
 
-    /** Guards the unit pointer swap, so a dispose can happen exactly once. */
+    /**
+     * Held across every use of the unit, not only across the swap.
+     *
+     * Guarding the swap alone leaves the ordinary race: a caller reads the
+     * pointer into a local, close() disposes it, and the caller then makes a
+     * native call on a disposed unit. Reading it under the lock and calling
+     * under the same lock is what actually closes that, and the calls in
+     * question are property sets rather than anything that blocks.
+     */
     private val unitLock = Any()
+
+    /** Run [body] on the unit if there is one, with dispose held off meanwhile. */
+    private inline fun <T> withUnit(absent: T, body: (MemorySegment) -> T): T = synchronized(unitLock) {
+        val current = unit
+        if (current.address() == 0L) absent else body(current)
+    }
 
     @Volatile
     private var unit: MemorySegment = MemorySegment.NULL
@@ -254,16 +268,14 @@ internal class CoreAudioSink(
         }
     }
 
-    override fun start() {
-        val current = unit
-        if (current.address() == 0L || running) return
+    override fun start() = withUnit(Unit) { current ->
+        if (running) return@withUnit
         checkStatus("AudioOutputUnitStart", lib.handle("AudioOutputUnitStart").invokeExact(current) as Int)
         running = true
     }
 
-    override fun stop() {
-        val current = unit
-        if (current.address() == 0L || !running) return
+    override fun stop() = withUnit(Unit) { current ->
+        if (!running) return@withUnit
         checkStatus("AudioOutputUnitStop", lib.handle("AudioOutputUnitStop").invokeExact(current) as Int)
         running = false
     }
@@ -424,9 +436,7 @@ internal class CoreAudioSink(
         asbd.set(ValueLayout.JAVA_INT, CoreAudioAbi.ASBD_BITS_PER_CHANNEL, bitsPerChannel)
     }
 
-    private fun applyVolume() {
-        val current = unit
-        if (current.address() == 0L) return
+    private fun applyVolume() = withUnit(Unit) { current ->
         val rc = lib.handle("AudioUnitSetParameter").invokeExact(
             current, CoreAudioAbi.HAL_PARAM_VOLUME,
             CoreAudioAbi.SCOPE_GLOBAL, CoreAudioAbi.ELEMENT_OUTPUT, volumeValue, 0,

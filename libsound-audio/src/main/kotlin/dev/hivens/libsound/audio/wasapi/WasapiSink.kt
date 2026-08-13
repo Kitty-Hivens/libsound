@@ -4,6 +4,7 @@ import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capabilities
+import dev.hivens.libsound.Capability
 import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
 import org.slf4j.LoggerFactory
@@ -42,7 +43,7 @@ internal class WasapiSink(
     private val com: WasapiCom,
     private val enumerator: MemorySegment,
     private val config: SinkConfig,
-    override val capabilities: Capabilities,
+    private val baseCapabilities: Capabilities,
 ) : AudioSink {
 
     private val log = LoggerFactory.getLogger("libsound.Wasapi")
@@ -57,6 +58,23 @@ internal class WasapiSink(
     private var clock = MemorySegment.NULL
     private var simpleVolume = MemorySegment.NULL
     private var sessionControl = MemorySegment.NULL
+
+    /**
+     * What this sink turned out to be able to do, not what the backend hoped.
+     *
+     * The volume and session interfaces are asked for when the stream opens and
+     * an endpoint may refuse either. Reporting them from a constant meant a sink
+     * that never got `ISimpleAudioVolume` still claimed STREAM_VOLUME, and
+     * setVolume then returned quietly while volume() echoed the value back --
+     * the discovered-by-failing case this enum exists to prevent.
+     *
+     * Recomputed on each open, because an endpoint that refused once need not
+     * refuse the next one.
+     */
+    @Volatile
+    private var openCapabilities: Capabilities = baseCapabilities
+
+    override val capabilities: Capabilities get() = openCapabilities
 
     @Volatile
     private var openFormat: AudioFormat? = null
@@ -120,6 +138,13 @@ internal class WasapiSink(
                 clock = services.clock
                 simpleVolume = services.volume ?: MemorySegment.NULL
                 sessionControl = services.session ?: MemorySegment.NULL
+                openCapabilities = Capabilities(
+                    buildSet {
+                        addAll(baseCapabilities.supported)
+                        if (services.volume == null) remove(Capability.STREAM_VOLUME)
+                        if (services.session == null) remove(Capability.STREAM_IDENTITY)
+                    },
+                )
             }
             bufferFrames = readBufferSize(call, audioClient)
             clockFrequency = readClockFrequency(call, services.clock)
