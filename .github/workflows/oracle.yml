@@ -50,34 +50,14 @@ jobs:
       - name: Offsets, selectors, and what this runner actually has
         run: /tmp/coreaudio-oracle
 
-  # Does SMTC accept a window the library made?
-  #
-  # A behaviour question rather than a layout one, and it decides an API. SMTC
-  # has one desktop entry point -- GetForWindow(HWND) -- and a library has no
-  # window. Neither does a command line consumer. So either the handle becomes
-  # part of libsound's public API and every windowless consumer is locked out,
-  # or the library makes its own window, and whether that is allowed has to be
-  # run rather than remembered.
-  #
-  # Wine answers yes, which is worth little: its WinRT is stubbed in places and
-  # a stub returns S_OK to everything. This row is the one that counts.
-  smtc:
-    name: SMTC verdict (windows)
-    runs-on: windows-latest
-    # Informational, and allowed to fail without gating anything: the probe is
-    # unfinished and says so. What is not allowed is for it to report success
-    # while doing nothing, which is what swallowing its exit code did.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v7
-
-      # Compiled on Windows with the Windows SDK rather than cross-compiled.
-      # Ubuntu's mingw headers are old enough that the WinRT C bindings this
-      # uses are not there, so the cross-compile failed on the runner while
-      # succeeding against a current mingw locally.
-      - name: Compile and ask Windows
-        shell: cmd
-        run: |
-          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
-          cl /nologo /TC tools\smtc-probe.c /Fe:smtc-probe.exe /link ole32.lib runtimeobject.lib user32.lib
-          smtc-probe.exe
+# There is no SMTC row here, deliberately.
+#
+# tools/smtc-probe.c asks whether the transport controls accept a window the
+# library made -- a real question, and unfinished: it compiles against the
+# Windows SDK and fails to link, because C mode emits no IID symbol for a WinRT
+# interface. Finishing it means rewriting it as C++ around __uuidof.
+#
+# Running it here would put a permanently red row in front of everyone for a
+# question that gates nothing. A failure people learn to walk past is worse than
+# no row at all, because the next one they walk past will be real. The probe
+# comes back when it works, not before.
