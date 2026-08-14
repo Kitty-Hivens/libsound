@@ -193,6 +193,21 @@ internal class WasapiMixer private constructor(
         return { listeners.remove(handler) }
     }
 
+    /**
+     * No meter on Windows yet, and the reason is the toolchain rather than the
+     * platform.
+     *
+     * Windows has `IAudioMeterInformation` and it would answer this exactly.
+     * mingw-w64 forward-declares the interface and defines neither its vtable
+     * nor its identifier, so the oracle cannot print either -- and a GUID
+     * written from memory is the one thing this library will not do.
+     *
+     * So [Capability.STREAM_METERING] is absent and the handler is never called.
+     * A consumer that asks first leaves the meter out of the row instead of
+     * drawing one that never moves.
+     */
+    override fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit = {}
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         listeners.clear()

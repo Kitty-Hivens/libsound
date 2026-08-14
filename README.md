@@ -114,7 +114,7 @@ depend on this by accident. The API will still shift.
 |---|---|
 | Contracts and core | Done. Types, sink and session contracts, ring buffer, pull pump, fake backend, contract suite. |
 | Linux audio (libpulse) | Done and exercised. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. |
-| Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events -- and everything it changes put back. |
+| Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events, per-stream level meters -- and everything it changes put back. |
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
 | Windows audio (WASAPI) | Runs. Device enumeration, playback, playhead and volume execute on every push against a Windows JVM under wine -- which checks the ABI, not the hardware. Real devices still need [docs/TESTING.md](docs/TESTING.md). |
 | Windows mixer (IAudioSessionManager2) | Enumeration, volume, mute and the same restore obligation as the Linux mixer, executing under wine. Per-session events are still unexecuted: wine answers `E_NOTIMPL` to `RegisterSessionNotification`, so only hardware can exercise that path. No routing at all -- Windows exposes no way to move another application's session, so the capability is absent rather than faked. |

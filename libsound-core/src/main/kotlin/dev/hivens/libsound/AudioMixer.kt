@@ -127,5 +127,24 @@ public interface AudioMixer : AutoCloseable {
      */
     public fun onStreamsChanged(handler: (StreamEvent) -> Unit): () -> Unit
 
+    /**
+     * Watch one stream's level, for the meter beside its slider.
+     *
+     * The handler receives the loudest sample of each short window, linear 0..1,
+     * at a rate the backend picks -- fast enough to look live and slow enough
+     * not to cost anything. It runs on a thread the backend owns.
+     *
+     * Watching costs something: the backend attaches to the audio itself rather
+     * than asking about it. So this is a subscription with a cancel rather than
+     * a property, and a mixer that draws twenty rows should watch the ones on
+     * screen instead of all of them.
+     *
+     * Returns a cancel function in every case. Where
+     * [Capability.STREAM_METERING] is absent the handler is never called, which
+     * is why a consumer asks the capability rather than inferring the answer
+     * from a meter that does not move.
+     */
+    public fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit
+
     override fun close()
 }

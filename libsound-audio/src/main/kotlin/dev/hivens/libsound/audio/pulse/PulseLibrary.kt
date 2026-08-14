@@ -93,6 +93,14 @@ internal class PulseLibrary private constructor(
             Triple("pa_sw_volume_to_linear", F64, listOf(I32)),
             Triple("pa_cvolume_max", I32, listOf(ADDR)),
 
+            // Peak metering: a recording stream on a sink's monitor source,
+            // aimed at one sink input rather than at everything the sink plays.
+            Triple("pa_stream_connect_record", I32, listOf(ADDR, ADDR, ADDR, I32)),
+            Triple("pa_stream_set_monitor_stream", I32, listOf(ADDR, I32)),
+            Triple("pa_stream_set_read_callback", null, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_stream_peek", I32, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_stream_drop", I32, listOf(ADDR)),
+
             // Stream lifecycle.
             Triple("pa_stream_new_with_proplist", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
             Triple("pa_stream_set_state_callback", null, listOf(ADDR, ADDR, ADDR)),
