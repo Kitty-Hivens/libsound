@@ -150,6 +150,17 @@ int main(void) {
      * the ABI table said so in a comment that claimed otherwise. One of them
      * was wrong once already -- MASK_SERVER is 0x0080, and 0x0100 is the
      * deprecated AUTOLOAD -- which is exactly why they belong here. */
+    /* Peak metering is a recording stream on the sink's monitor source, aimed at
+     * one sink input. Everything below is what that needs. */
+    SECTION("peak metering");
+    P(PA_STREAM_PEAK_DETECT);
+    P(PA_STREAM_ADJUST_LATENCY);
+    P(PA_STREAM_DONT_MOVE);
+    P(offsetof(pa_sink_info, monitor_source));
+    P(offsetof(pa_sink_info, monitor_source_name));
+    P(PA_SAMPLE_FLOAT32LE);
+    P(PA_INVALID_INDEX);
+
     SECTION("subscription");
     HEX(PA_SUBSCRIPTION_MASK_SINK);
     HEX(PA_SUBSCRIPTION_MASK_SINK_INPUT);

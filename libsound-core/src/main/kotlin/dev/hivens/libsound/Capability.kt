@@ -49,6 +49,17 @@ public enum class Capability {
     STREAM_ROUTING,
 
     /**
+     * A stream's level can be watched, so a mixer can draw a meter beside its
+     * slider.
+     *
+     * Separate from [STREAM_ENUMERATION] because listing streams and watching
+     * what they are doing are different mechanisms: the level comes from
+     * attaching to the audio itself, not from asking about it. Absent means a
+     * mixer should leave the meter out rather than draw one that never moves.
+     */
+    STREAM_METERING,
+
+    /**
      * A media role actually changes what other streams do.
      *
      * Present only where the session manager is configured to act on roles, so

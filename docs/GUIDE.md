@@ -243,9 +243,15 @@ backend closes the sinks it handed out. Closing a mixer restores what it changed
 | Stream identity | yes | yes | **no** |
 | Device selection and events | yes | yes | yes |
 | Read and control other streams | yes | yes | **no** -- no public API exists |
+| Watch a stream's level | yes | **not yet** -- see below | **no** |
 | Move another stream to a device | yes | **no** | **no** |
 | Publish a media session | MPRIS | SMTC | MPNowPlayingInfoCenter |
 | Read other media sessions | MPRIS | not yet | **no** -- private API only |
+
+The Windows meter is a toolchain gap rather than a platform one: Windows has
+`IAudioMeterInformation`, and mingw-w64 declares the interface without its vtable
+or its identifier, so the oracle cannot print either. Peak levels wait for a
+toolchain that can, rather than for a GUID written from memory.
 
 Ask the capability rather than reading this table at runtime. It is here to help
 you decide what to build, not what to branch on.

@@ -15,10 +15,13 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.sin
 
 /**
  * The mixer against a live server, and only ever against our own stream.
@@ -220,11 +223,66 @@ class PulseMixerTest {
     }
 
     @Test
+    fun `a meter follows a stream that is actually playing`() {
+        // Silence would prove nothing: a meter that always answers zero passes
+        // any assertion about a stopped stream. So this writes a tone and asks
+        // for a peak above zero, which only real audio produces.
+        val toneName = "$appName tone"
+        val tone = backend!!.createSink(SinkConfig(applicationName = toneName))
+            .also { it.open(format) }
+        try {
+            val seen = CopyOnWriteArrayList<Float>()
+            val loud = CountDownLatch(1)
+            val samples = ByteArray(format.sampleRate * format.bytesPerFrame)
+            for (frame in 0 until format.sampleRate) {
+                val value = (sin(2.0 * PI * 440.0 * frame / format.sampleRate) * 0.5 * Short.MAX_VALUE).toInt()
+                val at = frame * format.bytesPerFrame
+                repeat(format.channels) { channel ->
+                    samples[at + channel * 2] = (value and 0xFF).toByte()
+                    samples[at + channel * 2 + 1] = ((value shr 8) and 0xFF).toByte()
+                }
+            }
+            tone.write(samples, 0, samples.size)
+            Thread.sleep(200)
+            val stream = checkNotNull(mixer!!.streams().firstOrNull { it.applicationName == toneName })
+
+            val cancel = mixer!!.meter(stream.id) { peak ->
+                seen += peak
+                if (peak > 0.01f) loud.countDown()
+            }
+            try {
+                tone.write(samples, 0, samples.size)
+                loud.await(10, TimeUnit.SECONDS) shouldBe true
+                seen.all { it in 0f..1f } shouldBe true
+            } finally {
+                cancel()
+            }
+        } finally {
+            runCatching { tone.close() }
+        }
+    }
+
+    @Test
+    fun `cancelling a meter stops it`() {
+        val stream = checkNotNull(ours())
+        val after = CopyOnWriteArrayList<Float>()
+        val cancel = mixer!!.meter(stream.id) { after += it }
+        cancel()
+        // Cancelling twice is a consumer mistake that must not be a crash: the
+        // second call has nothing to tear down and has to notice that itself.
+        cancel()
+        val settled = after.size
+        Thread.sleep(500)
+        after.size shouldBe settled
+    }
+
+    @Test
     fun `the mixer claims what it can do`() {
         mixer!!.capabilities.allOf(
             Capability.STREAM_ENUMERATION,
             Capability.STREAM_CONTROL,
             Capability.STREAM_ROUTING,
+            Capability.STREAM_METERING,
         ) shouldBe true
     }
 }
