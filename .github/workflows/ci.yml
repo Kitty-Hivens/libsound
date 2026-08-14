@@ -229,7 +229,7 @@ jobs:
       # 200 MB, and the same bytes on every run. Cached rather than fetched.
       - name: Cache the Windows JDK
         id: jdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/windows-jdk
           key: windows-jdk-22.0.2+9
