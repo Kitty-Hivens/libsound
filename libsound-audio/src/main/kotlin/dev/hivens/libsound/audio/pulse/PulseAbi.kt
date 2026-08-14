@@ -51,6 +51,30 @@ internal object PulseAbi {
     const val SINK_INFO_INDEX = 8L
     const val SINK_INFO_DESCRIPTION = 16L
 
+    // -- peak metering --------------------------------------------------------
+
+    /**
+     * With this flag the server sends one sample per fragment holding the
+     * loudest value in it, rather than the audio itself. A meter therefore costs
+     * a few bytes a second instead of a copy of the stream.
+     */
+    const val STREAM_PEAK_DETECT = 2_048
+    const val STREAM_ADJUST_LATENCY = 8_192
+
+    /** The monitor must stay on the sink it was aimed at, or the meter follows the wrong audio. */
+    const val STREAM_DONT_MOVE = 512
+
+    const val SINK_INFO_MONITOR_SOURCE = 308L
+    const val SINK_INFO_MONITOR_SOURCE_NAME = 312L
+
+    /** Enough of pa_sink_info to reach the monitor source name. */
+    const val SINK_INFO_MONITOR_HEAD = 320L
+
+    /** 25 windows a second: live to the eye, and nothing to the machine. */
+    const val METER_RATE = 25
+
+    const val INVALID_INDEX = -1
+
     // -- pa_sink_input_info: somebody else's stream ---------------------------
 
     const val SINK_INPUT_INDEX = 0L

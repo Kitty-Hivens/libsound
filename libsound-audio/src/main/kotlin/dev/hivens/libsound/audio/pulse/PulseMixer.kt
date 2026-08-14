@@ -77,6 +77,15 @@ internal class PulseMixer private constructor(
 
     private val sinkNames = ConcurrentHashMap<Int, String>()
 
+    /** Which sink each stream was last seen on, so a meter knows where to listen. */
+    private val lastSinkIndexes = ConcurrentHashMap<Int, Int>()
+
+    /** Live meters, closed with the mixer so none outlives the connection. */
+    private val meters = CopyOnWriteArrayList<PulseMeter>()
+
+    @Volatile
+    private var monitorName: String? = null
+
     /**
      * One round trip at a time.
      *
@@ -132,11 +141,13 @@ internal class PulseMixer private constructor(
     private lateinit var sinkStub: MemorySegment
     private lateinit var subscribeStub: MemorySegment
     private lateinit var successStub: MemorySegment
+    private lateinit var monitorStub: MemorySegment
 
     override val capabilities: Capabilities = Capabilities.of(
         Capability.STREAM_ENUMERATION,
         Capability.STREAM_CONTROL,
         Capability.STREAM_ROUTING,
+        Capability.STREAM_METERING,
     )
 
     override val isOpen: Boolean get() = !closed.get()
@@ -164,7 +175,10 @@ internal class PulseMixer private constructor(
                 .forEach { resolveSinkName(it) }
             listed
         }
-        collected.forEach { channelCounts[it.index] = it.channels }
+        collected.forEach {
+            channelCounts[it.index] = it.channels
+            if (it.sinkIndex != INVALID_INDEX) lastSinkIndexes[it.index] = it.sinkIndex
+        }
         return collected.map { it.toStream() }
     }
 
@@ -217,6 +231,76 @@ internal class PulseMixer private constructor(
         return { listeners.remove(handler) }
     }
 
+    /**
+     * A monitor stream per watch, torn down by the cancel this returns.
+     *
+     * The peak arrives on the mainloop thread, so it is handed to the dispatcher
+     * before the consumer sees it -- the same rule as every other callback here,
+     * and the more important for running at [PulseAbi.METER_RATE] a second.
+     */
+    override fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit {
+        val index = id.value.toIntOrNull() ?: return {}
+        if (closed.get()) return {}
+        val monitor = monitorSourceFor(index) ?: run {
+            log.debug("no monitor source for stream {}; nothing to meter", index)
+            return {}
+        }
+        val meter = PulseMeter.openOrNull(
+            pulse, monitor, index,
+            onPeak = { peak ->
+                runCatching { dispatch.execute { runCatching { handler(peak) } } }
+            },
+            onFailure = { log.debug("meter for {} failed: {}", index, it) },
+        ) ?: return {}
+        meters.add(meter)
+        return {
+            if (meters.remove(meter)) meter.close()
+        }
+    }
+
+    /**
+     * The monitor source of the sink the stream is playing to.
+     *
+     * A monitor belongs to a sink rather than to a stream, so this is two
+     * questions: which sink, then that sink's monitor. A stream that is not
+     * routed anywhere has neither.
+     */
+    private fun monitorSourceFor(index: Int): String? {
+        val sinkIndex = rowSinkIndex(index) ?: return null
+        return roundTrip.withLock {
+            monitorName = null
+            pulse.locked {
+                sinkLookupComplete = false
+                val op = lib.handle("pa_context_get_sink_info_by_index")
+                    .invokeExact(pulse.context, sinkIndex, monitorStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked
+                pulse.releaseOperation(op)
+                awaitFlag { sinkLookupComplete }
+            }
+            monitorName
+        }
+    }
+
+    /** Which sink a stream is on, from the last walk rather than a fresh one. */
+    private fun rowSinkIndex(index: Int): Int? {
+        streams()
+        return lastSinkIndexes[index]
+    }
+
+    /** Reads only the monitor source name; the device list has its own callback. */
+    fun onMonitorSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            if (eol != 0) {
+                sinkLookupComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            if (info.address() == 0L) return@runCatching
+            monitorName = info.reinterpret(PulseAbi.SINK_INFO_MONITOR_HEAD)
+                .get(ValueLayout.ADDRESS, PulseAbi.SINK_INFO_MONITOR_SOURCE_NAME).readCString()
+        }.onFailure { log.warn("monitor sink callback threw: {}", it.message) }
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         listeners.clear()
@@ -225,6 +309,8 @@ internal class PulseMixer private constructor(
         // Its work stops quickly because streams() answers empty once closed.
         dispatch.shutdown()
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
+        meters.forEach { runCatching { it.close() } }
+        meters.clear()
         runCatching { restoreOnClose() }
         // Under the round-trip lock, because closing frees the mainloop and the
         // arena holding every upcall stub. A caller that passed the closed check
@@ -519,6 +605,10 @@ internal class PulseMixer private constructor(
         subscribeStub = linker.upcallStub(
             lookup.findVirtual(PulseMixer::class.java, "onSubscribe", intPairType).bindTo(this),
             FunctionDescriptor.ofVoid(addr, i32, i32, addr), lib.arena,
+        )
+        monitorStub = linker.upcallStub(
+            lookup.findVirtual(PulseMixer::class.java, "onMonitorSink", infoType).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, addr, i32, addr), lib.arena,
         )
         successStub = linker.upcallStub(
             lookup.findVirtual(
