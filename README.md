@@ -135,6 +135,12 @@ Those two attributes resolve to the store directories holding `libpulse.so.0`
 and `libdbus-1.so.3`. For a process nobody packaged, `programs.nix-ld` covers
 the same ground.
 
+Working on this repository needs the same thing, so `flake.nix` carries it:
+`nix develop` puts a JDK, a sound server, a session bus and that search path in
+place, and `./gradlew build` then runs whole. A CI row enters that shell on
+every push rather than trusting it -- naming a package version is what makes a
+flake rot, and a shell nobody enters rots quietly.
+
 **musl is exercised, not assumed.** A CI row builds and tests inside Alpine on
 every push, against a real PulseAudio and a real session bus -- the same suites
 the glibc row runs, audio, mixer and MPRIS alike, and held to the same
