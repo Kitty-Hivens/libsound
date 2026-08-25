@@ -49,8 +49,14 @@ tasks.register("printTestCp") {
 }
 
 mavenPublishing {
-    // What is in the artifact, not what is planned for it. A POM that advertises
-    // SMTC would promise a consumer something they cannot obtain, and a Central
-    // version once taken cannot be reissued.
-    pom { description.set("Media session for libsound: publish and read MPRIS players over D-Bus.") }
+    // What is in the artifact, not what is planned for it -- which is why this
+    // line moved when SMTC and MPNowPlayingInfoCenter landed. Naming only MPRIS
+    // understated the module by two thirds, and a Central version once taken
+    // cannot be reissued to correct it.
+    pom {
+        description.set(
+            "Media session for libsound: publish through MPRIS, SMTC and MPNowPlayingInfoCenter, " +
+                "and read other players over D-Bus.",
+        )
+    }
 }

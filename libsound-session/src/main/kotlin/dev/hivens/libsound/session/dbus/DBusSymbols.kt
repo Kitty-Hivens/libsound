@@ -145,6 +145,17 @@ internal class DBusSymbols private constructor(
 /** Allocate a NUL-terminated UTF-8 string; libdbus takes `const char *` throughout. */
 internal fun Arena.allocateUtf8(value: String): MemorySegment = allocateFrom(value)
 
-/** Read a `const char *` a libdbus accessor returned, or null from NULL. */
-internal fun MemorySegment.readCString(): String? =
-    if (address() == 0L) null else reinterpret(Long.MAX_VALUE).getString(0)
+/**
+ * Read a `const char *` a libdbus accessor returned, or null from NULL.
+ *
+ * Bounded for the reason the WASAPI reader gives: a size is needed before the
+ * first read, and reinterpreting to `Long.MAX_VALUE` turns a stray pointer into
+ * a scan of the whole address space. Bus names, paths and metadata strings all
+ * sit far below the ceiling.
+ */
+internal fun MemorySegment.readCString(): String? {
+    if (address() == 0L) return null
+    return runCatching { reinterpret(MAX_C_STRING_BYTES).getString(0) }.getOrNull()
+}
+
+private const val MAX_C_STRING_BYTES = 64L * 1024

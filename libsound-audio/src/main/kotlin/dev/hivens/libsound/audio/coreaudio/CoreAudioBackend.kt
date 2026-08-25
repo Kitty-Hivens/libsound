@@ -46,12 +46,18 @@ internal class CoreAudioBackend private constructor(
 
     override val name: String = "coreaudio"
 
-    override val capabilities: Capabilities = Capabilities.of(
-        Capability.DEVICE_ENUMERATION,
-        Capability.DEVICE_SELECTION,
-        Capability.DEVICE_EVENTS,
-        Capability.DEVICE_POSITION,
-    )
+    /**
+     * [Capability.DEVICE_EVENTS] follows the listener rather than a constant.
+     *
+     * `AudioObjectAddPropertyListener` returns a status and the first cut threw
+     * it away, so a machine where the HAL refused the listener still claimed
+     * events that would never arrive. Every other entry here is decided by what
+     * this code does; that one is decided by what the system allowed.
+     *
+     * Set once, by [installListeners], before anything can read it.
+     */
+    override var capabilities: Capabilities = BASE_CAPABILITIES
+        private set
 
     private val closed = AtomicBoolean(false)
 
@@ -236,10 +242,18 @@ internal class CoreAudioBackend private constructor(
             ),
             lib.arena,
         )
+        var installed = 0
         forEachWatchedProperty { address ->
-            lib.handle("AudioObjectAddPropertyListener").invokeExact(
+            val rc = lib.handle("AudioObjectAddPropertyListener").invokeExact(
                 CoreAudioAbi.SYSTEM_OBJECT, address, listenerStub, MemorySegment.NULL,
             ) as Int
+            if (rc == CoreAudioAbi.NO_ERROR) installed++ else log.info("property listener refused: {}", rc)
+            rc
+        }
+        // Both properties or neither: a backend that learns about new devices
+        // but not about the default moving would report events it half has.
+        if (installed < WATCHED_PROPERTIES.size) {
+            capabilities = Capabilities(BASE_CAPABILITIES.supported - Capability.DEVICE_EVENTS)
         }
     }
 
@@ -256,10 +270,7 @@ internal class CoreAudioBackend private constructor(
     private inline fun forEachWatchedProperty(body: (MemorySegment) -> Int) {
         Arena.ofConfined().use { call ->
             val address = call.allocate(CoreAudioAbi.ADDRESS_SIZE, 4)
-            for (selector in intArrayOf(
-                CoreAudioAbi.PROPERTY_DEVICES,
-                CoreAudioAbi.PROPERTY_DEFAULT_OUTPUT_DEVICE,
-            )) {
+            for (selector in WATCHED_PROPERTIES) {
                 lib.address(address, selector, CoreAudioAbi.SCOPE_GLOBAL_SELECTOR)
                 body(address)
             }
@@ -268,6 +279,20 @@ internal class CoreAudioBackend private constructor(
 
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.CoreAudio")
+
+        /** Everything before the HAL is asked for a listener. */
+        private val BASE_CAPABILITIES = Capabilities.of(
+            Capability.DEVICE_ENUMERATION,
+            Capability.DEVICE_SELECTION,
+            Capability.DEVICE_EVENTS,
+            Capability.DEVICE_POSITION,
+        )
+
+        /** Named once: the count is what decides whether events can be claimed. */
+        val WATCHED_PROPERTIES: IntArray = intArrayOf(
+            CoreAudioAbi.PROPERTY_DEVICES,
+            CoreAudioAbi.PROPERTY_DEFAULT_OUTPUT_DEVICE,
+        )
 
         /**
          * What a sink can do, which is not what the backend can do. A sink

@@ -13,6 +13,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   instead of appearing as an anonymous client. Per-stream volume the desktop's
   mixer shows and follows, device enumeration and selection, and events when the
   default moves.
+- `libsound-audio`: the mixer -- every playback stream on the machine, its
+  volume, mute and device, with events and a per-stream level meter.
+  `VolumeMixer` rather than `AudioMixer`, because everywhere else in audio a
+  mixer sums streams into one and this one never touches a sample. It is the
+  single surface here that writes state outliving the process, so every change
+  is recorded against what it replaced and `close` puts back whatever was not
+  put back already.
+- `libsound-audio`: the Windows output channel and mixer over WASAPI, and the
+  macOS one over CoreAudio. The Windows ABI executes on every push against a
+  Windows JVM under wine, which checks the vtable slots and the interface
+  identifiers rather than the hardware; the CoreAudio contract suite runs
+  against a real output unit on a macOS runner.
+- `libsound-session`: the media session, both directions. MPRIS publishes a
+  player the desktop drives and reads everyone else's; SMTC and
+  MPNowPlayingInfoCenter publish on Windows and macOS. The assertions are made
+  through `gdbus` and `playerctl` rather than through our own marshalling,
+  which would pass on a message no reader could parse.
+- `docs/GUIDE.md`, with every example compiled: the samples live in the test
+  sources and the build fails when the page and the code drift apart.
+- `flake.nix`, a development shell carrying the JDK, a sound server, a session
+  bus and the library search path a store-only filesystem needs. CI enters it
+  on every push rather than trusting it.
 - `libsound-audio`: the JavaSound fallback, behind the same contract and
   reporting through its capability set exactly what it loses -- no stream
   identity, no system volume, no device selection. Its `flush` credits every

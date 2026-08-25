@@ -1,13 +1,13 @@
 package dev.hivens.libsound.audio
 
 import dev.hivens.libsound.AudioFormat
-import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.StreamEvent
 import dev.hivens.libsound.StreamId
+import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import io.kotest.matchers.floats.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe

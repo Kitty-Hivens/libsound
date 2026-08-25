@@ -16,7 +16,7 @@ rootProject.name = "libsound"
 
 // Three artifacts so a consumer pays only for what it uses: MPRIS without
 // libpulse, an output channel without D-Bus. The split is the reason the
-// modules exist -- see the plan, section 2.
+// modules exist; the README's module table says which is which.
 include(":libsound-core")
 include(":libsound-audio")
 include(":libsound-session")

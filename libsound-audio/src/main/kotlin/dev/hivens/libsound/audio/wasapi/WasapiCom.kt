@@ -133,45 +133,44 @@ internal class WasapiCom private constructor(
          * against a hex dump and why this is worth doing in one place.
          */
         fun guid(arena: Arena, text: String): MemorySegment {
-        val clean = text.replace("-", "")
-        require(clean.length == 32) { "not a GUID: $text" }
-        val segment = arena.allocate(GUID_LAYOUT)
-        segment.set(ValueLayout.JAVA_INT, 0, clean.substring(0, 8).toLong(16).toInt())
-        segment.set(ValueLayout.JAVA_SHORT, 4, clean.substring(8, 12).toInt(16).toShort())
-        segment.set(ValueLayout.JAVA_SHORT, 6, clean.substring(12, 16).toInt(16).toShort())
-        for (i in 0 until 8) {
-            val byte = clean.substring(16 + i * 2, 18 + i * 2).toInt(16).toByte()
-            segment.set(ValueLayout.JAVA_BYTE, 8L + i, byte)
-        }
-        return segment
+            val clean = text.replace("-", "")
+            require(clean.length == 32) { "not a GUID: $text" }
+            val segment = arena.allocate(GUID_LAYOUT)
+            segment.set(ValueLayout.JAVA_INT, 0, clean.substring(0, 8).toLong(16).toInt())
+            segment.set(ValueLayout.JAVA_SHORT, 4, clean.substring(8, 12).toInt(16).toShort())
+            segment.set(ValueLayout.JAVA_SHORT, 6, clean.substring(12, 16).toInt(16).toShort())
+            for (i in 0 until 8) {
+                val byte = clean.substring(16 + i * 2, 18 + i * 2).toInt(16).toByte()
+                segment.set(ValueLayout.JAVA_BYTE, 8L + i, byte)
+            }
+            return segment
         }
 
         // -- wide strings --------------------------------------------------------
 
         /** Allocate a NUL-terminated UTF-16LE string; every COM text argument is one. */
         fun wide(arena: Arena, text: String): MemorySegment {
-        val chars = text.toCharArray()
-        val segment = arena.allocate((chars.size + 1) * 2L, 2)
-        for (i in chars.indices) segment.set(ValueLayout.JAVA_CHAR, i * 2L, chars[i])
-        segment.set(ValueLayout.JAVA_CHAR, chars.size * 2L, NUL)
-        return segment
+            val chars = text.toCharArray()
+            val segment = arena.allocate((chars.size + 1) * 2L, 2)
+            for (i in chars.indices) segment.set(ValueLayout.JAVA_CHAR, i * 2L, chars[i])
+            segment.set(ValueLayout.JAVA_CHAR, chars.size * 2L, NUL)
+            return segment
         }
 
         /** Read a NUL-terminated UTF-16LE string, or null from a null pointer. */
         fun readWide(pointer: MemorySegment): String? {
-        if (pointer.address() == 0L) return null
-        val sized = pointer.reinterpret(MAX_WIDE_BYTES)
-        val builder = StringBuilder()
-        var offset = 0L
-        while (offset < MAX_WIDE_BYTES) {
-            val ch = sized.get(ValueLayout.JAVA_CHAR, offset)
-            if (ch == NUL) break
-            builder.append(ch)
-            offset += 2
+            if (pointer.address() == 0L) return null
+            val sized = pointer.reinterpret(MAX_WIDE_BYTES)
+            val builder = StringBuilder()
+            var offset = 0L
+            while (offset < MAX_WIDE_BYTES) {
+                val ch = sized.get(ValueLayout.JAVA_CHAR, offset)
+                if (ch == NUL) break
+                builder.append(ch)
+                offset += 2
+            }
+            return builder.toString()
         }
-        return builder.toString()
-        }
-
 
         /**
          * Named rather than written as a literal. The first cut of the two
