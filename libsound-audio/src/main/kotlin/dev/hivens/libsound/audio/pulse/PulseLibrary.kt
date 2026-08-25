@@ -39,8 +39,17 @@ internal class PulseLibrary private constructor(
     }
 
     companion object {
-        /** Exact soname first; the bare name only as a development courtesy. */
-        private val LIB_CANDIDATES = listOf("libpulse.so.0", "libpulse.so", "libpulse.0.dylib")
+        /**
+         * Loaded by soname, never by absolute path. Exact soname first; the
+         * bare name only as a development courtesy.
+         *
+         * Not only a style choice: a distribution that keeps no `/usr/lib` --
+         * NixOS and its kin -- can satisfy a soname through the search path its
+         * wrapper sets, and could never satisfy a hardcoded one. The cost is
+         * that an unwrapped process there finds nothing, which is why the
+         * failure says so rather than passing a silent null upward.
+         */
+        val LIB_CANDIDATES = listOf("libpulse.so.0", "libpulse.so", "libpulse.0.dylib")
 
         private val ADDR = ValueLayout.ADDRESS
         private val I32 = ValueLayout.JAVA_INT
