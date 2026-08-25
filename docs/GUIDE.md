@@ -113,7 +113,7 @@ mixer.restoreAll()
 Together, around the thing you were playing:
 
 ```kotlin
-val mixer = AudioMixers.open("Example")
+val mixer = VolumeMixers.open("Example")
 if (mixer == null) {
     // macOS has no per-application volume in any public API. The video
     // still plays; it just plays over the music.

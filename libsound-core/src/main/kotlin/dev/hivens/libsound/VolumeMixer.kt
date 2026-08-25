@@ -66,6 +66,11 @@ public sealed interface StreamEvent {
  * The half of the library a shell needs rather than a player: what is playing,
  * how loud, on which device, and the means to change all three.
  *
+ * Volume, not samples. Everywhere else in audio a mixer sums streams into one,
+ * and that is the single thing this does not do: it moves the sliders the
+ * desktop's own volume mixer moves, which is what Windows calls that panel and
+ * why the name says so.
+ *
  * ## What it leaves behind
  *
  * This is the one surface here that writes state outliving its process. A sound
@@ -81,7 +86,7 @@ public sealed interface StreamEvent {
  * role is not honoured, and [Capability.DUCKS_OTHERS] is how a consumer finds
  * out which situation it is in.
  */
-public interface AudioMixer : AutoCloseable {
+public interface VolumeMixer : AutoCloseable {
 
     public val capabilities: Capabilities
 

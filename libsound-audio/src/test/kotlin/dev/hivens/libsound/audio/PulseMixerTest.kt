@@ -1,7 +1,7 @@
 package dev.hivens.libsound.audio
 
 import dev.hivens.libsound.AudioFormat
-import dev.hivens.libsound.AudioMixer
+import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.MediaRole
@@ -39,7 +39,7 @@ class PulseMixerTest {
 
     private var backend: dev.hivens.libsound.AudioBackend? = null
     private var sink: AudioSink? = null
-    private var mixer: AudioMixer? = null
+    private var mixer: VolumeMixer? = null
 
     @BeforeEach
     fun open() {
@@ -51,7 +51,7 @@ class PulseMixerTest {
         // A stream only exists on the server once something has been written.
         val silence = ByteArray(format.sampleRate / 4 * format.bytesPerFrame)
         sink!!.write(silence, 0, silence.size)
-        mixer = AudioMixers.open("libsound mixer test")
+        mixer = VolumeMixers.open("libsound mixer test")
         AudioTestGate.require("pulse", mixer != null, "no mixer available")
     }
 
@@ -93,7 +93,7 @@ class PulseMixerTest {
         // Priming is waited on rather than fired and forgotten. Fired, the first
         // call reports a null device for every row, which a consumer cannot tell
         // apart from a backend that does not know how to answer.
-        val fresh = checkNotNull(AudioMixers.open("libsound mixer prime test"))
+        val fresh = checkNotNull(VolumeMixers.open("libsound mixer prime test"))
         try {
             fresh.streams().none { it.device == null } shouldBe true
         } finally {
