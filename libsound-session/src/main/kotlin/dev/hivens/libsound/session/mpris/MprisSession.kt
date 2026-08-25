@@ -192,7 +192,14 @@ internal class MprisSession private constructor(
             "Previous" -> SessionCommand.Previous
             "Seek" -> readSeek(message)
             "SetPosition" -> readSetPosition(message)
-            "OpenUri" -> null
+            // Advertised in the introspection XML because the spec puts it on
+            // the interface, and refused here because nothing acts on it. An
+            // empty reply is worse than an error: it tells a desktop the uri
+            // was opened, and the track it thinks is playing never starts.
+            "OpenUri" -> {
+                replyError(message, ERROR_NOT_SUPPORTED, "This player does not open uris")
+                return
+            }
             else -> {
                 replyUnknownMethod(message, Mpris.PLAYER_INTERFACE, member)
                 return
@@ -239,7 +246,7 @@ internal class MprisSession private constructor(
                 replyError(message, ERROR_INVALID_ARGS, "Get takes two strings")
                 return
             }
-            val reply = newReturn(call, message) ?: return
+            val reply = newReturn(message) ?: return
             val replyIter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(reply, replyIter) as Unit
             if (!appendProperty(call, replyIter, iface, property)) {
@@ -254,7 +261,10 @@ internal class MprisSession private constructor(
     private fun handleGetAll(message: MemorySegment) {
         Arena.ofConfined().use { call ->
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
-            symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int
+            if ((symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int) == 0) {
+                replyError(message, ERROR_INVALID_ARGS, "GetAll takes an interface name")
+                return
+            }
             val iface = symbols.readString(call, iter)
             val names = when (iface) {
                 Mpris.ROOT_INTERFACE -> ROOT_PROPERTIES
@@ -266,7 +276,7 @@ internal class MprisSession private constructor(
                     emptyList()
                 }
             }
-            val reply = newReturn(call, message) ?: return
+            val reply = newReturn(message) ?: return
             val replyIter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(reply, replyIter) as Unit
             symbols.dict(call, replyIter) { entries ->
@@ -406,7 +416,7 @@ internal class MprisSession private constructor(
 
     // -- replies ---------------------------------------------------------------
 
-    private fun newReturn(call: Arena, message: MemorySegment): MemorySegment? {
+    private fun newReturn(message: MemorySegment): MemorySegment? {
         val reply = symbols.handle("dbus_message_new_method_return").invokeExact(message) as MemorySegment
         return if (reply.address() == 0L) null else reply
     }
@@ -421,12 +431,12 @@ internal class MprisSession private constructor(
     }
 
     private fun replyEmpty(message: MemorySegment) {
-        Arena.ofConfined().use { call -> newReturn(call, message)?.let { bus.send(it) } }
+        newReturn(message)?.let { bus.send(it) }
     }
 
     private fun replyString(message: MemorySegment, value: String) {
         Arena.ofConfined().use { call ->
-            val reply = newReturn(call, message) ?: return
+            val reply = newReturn(message) ?: return
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(reply, iter) as Unit
             symbols.appendString(call, iter, DBusAbi.TYPE_STRING, value)

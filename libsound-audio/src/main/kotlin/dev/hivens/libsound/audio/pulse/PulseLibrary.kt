@@ -49,6 +49,9 @@ internal class PulseLibrary private constructor(
          * that an unwrapped process there finds nothing, which is why the
          * failure says so rather than passing a silent null upward.
          */
+        /** Longer than any libpulse error string; a ceiling, not an expectation. */
+        private const val STRERROR_MAX_BYTES = 4096L
+
         val LIB_CANDIDATES = listOf("libpulse.so.0", "libpulse.so", "libpulse.0.dylib")
 
         private val ADDR = ValueLayout.ADDRESS
@@ -59,7 +62,7 @@ internal class PulseLibrary private constructor(
         /**
          * name -> (return layout or null for void, argument layouts).
          *
-         * Roughly thirty symbols, as the plan budgeted. Expand deliberately:
+         * Roughly thirty symbols, and deliberately few. Expand deliberately:
          * every addition here is a new piece of ABI surface to keep correct.
          */
         private val LOAD_SET: List<Triple<String, MemoryLayout?, List<MemoryLayout>>> = listOf(
@@ -184,7 +187,11 @@ internal class PulseLibrary private constructor(
     /** `pa_strerror`, for the one log line that explains a refusal. */
     fun strerror(code: Int): String {
         val p = handle("pa_strerror").invokeExact(code) as MemorySegment
-        return if (p.address() == 0L) "errno $code" else p.reinterpret(Long.MAX_VALUE).getString(0)
+        if (p.address() == 0L) return "errno $code"
+        // Bounded, like every other C string read in this library: an error
+        // message is short, and an unbounded reinterpret on a bad pointer scans
+        // the address space instead of failing.
+        return runCatching { p.reinterpret(STRERROR_MAX_BYTES).getString(0) }.getOrElse { "errno $code" }
     }
 }
 

@@ -90,12 +90,36 @@ jobs:
           pactl info
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
 
+      # And a session bus, for the same reason one paragraph up.
+      #
+      # The sound server was added here after the first cut shipped a release
+      # built on a bare runner; the bus was not, so every D-Bus and MPRIS suite
+      # went on skipping on the one row that decides what reaches Central. Half
+      # a fix reads exactly like a whole one.
+      - name: A session bus, and the two clients that read it
+        run: |
+          sudo apt-get install -y dbus-x11 libglib2.0-bin playerctl
+          eval "$(dbus-launch --sh-syntax)"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          gdbus call --session --dest org.freedesktop.DBus \
+            --object-path /org/freedesktop/DBus \
+            --method org.freedesktop.DBus.ListNames > /dev/null
+          playerctl --version
+
       # The tag is what ships, so it is tested here rather than on the trust
       # that main was green when it was cut.
       - name: Build + test
         env:
-          LIBSOUND_REQUIRE: pulse,javasound
+          LIBSOUND_REQUIRE: pulse,javasound,dbus
         run: ./gradlew build --stacktrace
+
+      # The other half of the same guard. LIBSOUND_REQUIRE catches a backend
+      # that is missing; this catches a suite that reached zero tests with the
+      # backend present. A release is the last place to find that out.
+      - name: What each suite actually did
+        env:
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound,MprisSession,MprisReader,DBusConnection
+        run: python3 .github/test-summary.py
 
       - name: Publish
         env:

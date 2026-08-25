@@ -423,6 +423,19 @@ internal class PulseBackend private constructor(
     }
 }
 
-/** Read a `const char *` out of a pointer-valued field. */
-internal fun MemorySegment.readCString(): String? =
-    if (address() == 0L) null else reinterpret(Long.MAX_VALUE).getString(0)
+/**
+ * Read a `const char *` out of a pointer-valued field.
+ *
+ * Bounded rather than reinterpreted to `Long.MAX_VALUE`, which is what this did
+ * and what the WASAPI reader already refuses to do for the reason written
+ * there: a size is needed before the first read, and an unbounded one turns a
+ * stray pointer into a scan of the whole address space. Everything read here is
+ * a device name, a description or a proplist value, so the ceiling is a ceiling
+ * and not an expectation.
+ */
+internal fun MemorySegment.readCString(): String? {
+    if (address() == 0L) return null
+    return runCatching { reinterpret(MAX_C_STRING_BYTES).getString(0) }.getOrNull()
+}
+
+private const val MAX_C_STRING_BYTES = 64L * 1024

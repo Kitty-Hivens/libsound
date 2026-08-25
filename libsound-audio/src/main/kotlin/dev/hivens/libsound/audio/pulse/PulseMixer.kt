@@ -1,6 +1,5 @@
 package dev.hivens.libsound.audio.pulse
 
-import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
@@ -8,6 +7,7 @@ import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.StreamEvent
 import dev.hivens.libsound.StreamId
+import dev.hivens.libsound.VolumeMixer
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
