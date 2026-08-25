@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory
  * what a panel widget or a media-key handler is built on.
  *
  * Control here is not the same kind of act as changing a stream's volume through
- * [dev.hivens.libsound.AudioMixer]. A player publishes the methods it is willing
+ * [dev.hivens.libsound.VolumeMixer]. A player publishes the methods it is willing
  * to accept and advertises whether it will accept them; calling one is taking it
  * up on that offer, which is why [dev.hivens.libsound.ForeignPlayer.canControl]
  * exists and why a player that says no is left alone.

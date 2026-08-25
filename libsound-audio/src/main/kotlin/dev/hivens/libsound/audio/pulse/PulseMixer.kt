@@ -1,6 +1,6 @@
 package dev.hivens.libsound.audio.pulse
 
-import dev.hivens.libsound.AudioMixer
+import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
@@ -47,7 +47,7 @@ import kotlin.concurrent.withLock
  */
 internal class PulseMixer private constructor(
     private val pulse: PulseContext,
-) : AudioMixer {
+) : VolumeMixer {
 
     private val log = LoggerFactory.getLogger("libsound.Mixer")
 
@@ -659,7 +659,7 @@ internal class PulseMixer private constructor(
          * connection a sink is writing through puts introspection traffic on the
          * path that carries audio timing.
          */
-        fun openOrNull(applicationName: String): AudioMixer? {
+        fun openOrNull(applicationName: String): VolumeMixer? {
             val context = PulseContext.connectOrNull(applicationName) ?: return null
             return runCatching {
                 PulseMixer(context).apply {
