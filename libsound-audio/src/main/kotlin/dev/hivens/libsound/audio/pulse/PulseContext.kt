@@ -170,7 +170,18 @@ internal class PulseContext private constructor(
          */
         fun connectOrNull(applicationName: String): PulseContext? {
             val lib = PulseLibrary.loadOrNull() ?: run {
-                log.debug("libpulse not loadable")
+                // Info rather than debug, and it names the cause. The library
+                // is loaded by soname through dlopen, so this fires when
+                // libpulse is absent -- and equally when it is installed but not
+                // on the process's search path, which is the ordinary case on a
+                // distribution that has no /usr/lib. There the fix is the
+                // consumer's packaging, and a silent null gives them nothing to
+                // go on.
+                log.info(
+                    "libpulse could not be loaded by soname ({}). Either it is not installed, " +
+                        "or it is not on this process's library search path.",
+                    PulseLibrary.LIB_CANDIDATES.joinToString(", "),
+                )
                 return null
             }
             var mainloop = MemorySegment.NULL

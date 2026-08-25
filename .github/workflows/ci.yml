@@ -85,13 +85,37 @@ jobs:
           pactl info
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
 
+      # MPRIS is published on the session bus, and a hosted runner has none. So
+      # DBusConnectionTest, MprisReaderTest and MprisSessionTest skipped every
+      # test on every push -- eighteen of them, behind a green tick, on a row
+      # whose whole purpose is to run what a laptop cannot. LIBSOUND_EXPECT is
+      # the guard against exactly that and simply did not name them; both halves
+      # are closed below.
+      #
+      # gdbus and playerctl are the readers those suites assert through. A
+      # session that round-trips through our own marshalling proves nothing
+      # about a desktop, so the assertions are made by clients that know nothing
+      # about this implementation.
+      - name: A session bus, and the two clients that read it
+        run: |
+          sudo apt-get install -y dbus-x11 libglib2.0-bin playerctl
+          eval "$(dbus-launch --sh-syntax)"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          # Reach the bus through the same client the suites use, rather than
+          # printing a version: a version says the binary is installed, and what
+          # this step has to leave behind is a bus that answers.
+          gdbus call --session --dest org.freedesktop.DBus \
+            --object-path /org/freedesktop/DBus \
+            --method org.freedesktop.DBus.ListNames > /dev/null
+          playerctl --version
+
       # LIBSOUND_REQUIRE names what this row is for. A named backend that turns
       # out to be unavailable fails the build instead of skipping, because a
       # skipped hardware suite and a passing one are the same shade of green --
       # which is how skinema shipped a subtitle bundle that exported no symbols.
       - name: Build + test
         env:
-          LIBSOUND_REQUIRE: pulse,javasound
+          LIBSOUND_REQUIRE: pulse,javasound,dbus
         run: ./gradlew build --stacktrace
 
       # A green tick says the build did not fail; it does not say a hardware
@@ -100,7 +124,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       # The publishable artifacts, built before a release depends on them. The
@@ -136,6 +160,71 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-results
+          path: '**/build/reports/tests/test'
+          retention-days: 7
+
+  # musl, which is the one libc no other row here uses.
+  #
+  # The library ships no natives and opens every system library by soname --
+  # libpulse.so.0, libdbus-1.so.3 -- so the question is whether that resolves
+  # against a musl loader at all. A glibc runner cannot answer it, which is why
+  # this one runs inside Alpine.
+  #
+  # Pinned to a stable Alpine rather than edge: on a rolling base somebody
+  # else's package bump becomes a red build on an unrelated push. openjdk25
+  # because it is the JDK Alpine packages, which incidentally makes this the
+  # only row that builds three releases above the JDK 22 floor.
+  musl:
+    name: Build & test (musl, Alpine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Restored after the checkout, which would otherwise clean it away. Worth
+      # having: without it every push re-downloads the Gradle distribution and
+      # the whole dependency set inside the container.
+      - name: Cache the Gradle home the container uses
+        uses: actions/cache@v6
+        with:
+          path: .gradle-musl
+          key: gradle-musl-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+
+      - name: Build + test inside Alpine
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e GRADLE_USER_HOME=/src/.gradle-musl \
+            -e LIBSOUND_REQUIRE=pulse,javasound,dbus \
+            alpine:3.24 sh -euc '
+              apk add --no-cache bash openjdk25 pulseaudio pulseaudio-utils dbus glib playerctl
+              export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
+              export XDG_RUNTIME_DIR=/tmp/libsound-runtime
+              mkdir -p "$XDG_RUNTIME_DIR"
+              # Warns that it is running as root and then runs, which is what a
+              # container has. There is no unprivileged user here to drop to.
+              pulseaudio --start --exit-idle-time=-1
+              pactl load-module module-null-sink sink_name=libsound_test
+              pactl info
+              ldd /usr/bin/pactl | head -1
+              dbus-run-session -- ./gradlew --no-daemon build --stacktrace
+            '
+
+      # Root inside the container wrote the reports and the Gradle home; every
+      # step after this one, the cache upload included, is not root.
+      - name: Give the results back to the runner
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" .
+
+      - name: What each suite actually did
+        if: always()
+        env:
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound,MprisSession,MprisReader,DBusConnection
+        run: python3 .github/test-summary.py
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-musl
           path: '**/build/reports/tests/test'
           retention-days: 7
 
@@ -229,7 +318,7 @@ jobs:
       # 200 MB, and the same bytes on every run. Cached rather than fetched.
       - name: Cache the Windows JDK
         id: jdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/windows-jdk
           key: windows-jdk-22.0.2+9

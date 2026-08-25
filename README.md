@@ -104,6 +104,27 @@ because two grouping-parameter methods sit between it and the one before.
 Nothing checks a slot index at runtime.
 </details>
 
+<details>
+  <summary>Distributions: musl, and the ones with no /usr/lib</summary>
+
+Every Linux library is opened by **soname** -- `libpulse.so.0`, `libdbus-1.so.3`
+-- and never by absolute path. That is what lets a distribution which keeps no
+`/usr/lib` satisfy them through the search path its wrapper sets; a hardcoded
+`/usr/lib/...` would be permanently broken there. The cost is that an unwrapped
+process on such a system finds nothing, so the failure is logged at info and
+names the cause rather than passing a silent null upward.
+
+**musl is exercised, not assumed.** A CI row builds and tests inside Alpine on
+every push, against a real PulseAudio and a real session bus -- the same suites
+the glibc row runs, audio, mixer and MPRIS alike, and held to the same
+`LIBSOUND_REQUIRE`, so a backend that turns out to be unavailable fails the row
+instead of skipping it.
+
+Alpine is also the first machine on which `DUCKS_OTHERS` came back true, which
+is a useful accident: the same probe answers false on a PipeWire desktop, so it
+is reading the system rather than returning a constant.
+</details>
+
 <details id="status">
   <summary>Status</summary>
 
@@ -118,10 +139,11 @@ depend on this by accident. The API will still shift.
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
 | Windows audio (WASAPI) | Runs. Device enumeration, playback, playhead and volume execute on every push against a Windows JVM under wine -- which checks the ABI, not the hardware. Real devices still need [docs/TESTING.md](docs/TESTING.md). |
 | Windows mixer (IAudioSessionManager2) | Enumeration, volume, mute and the same restore obligation as the Linux mixer, executing under wine. Per-session events are still unexecuted: wine answers `E_NOTIMPL` to `RegisterSessionNotification`, so only hardware can exercise that path. No routing at all -- Windows exposes no way to move another application's session, so the capability is absent rather than faked. |
-| Linux session (MPRIS) | Done and exercised. Publishes a player `playerctl` and the desktop can drive, and reads and controls everyone else's. |
+| Linux session (MPRIS) | Done and exercised on every push, under both libcs, on a session bus CI starts. The assertions are made through `gdbus` and `playerctl` rather than through our own marshalling, which would pass on a message no reader could parse. |
 | Windows session (SMTC) | Written and executed once on a Windows JVM under wine: metadata, playback state, timeline and media keys. Whether the lock screen shows it needs a person. |
 | macOS session (MPNowPlayingInfoCenter) | Written, and its suite runs on every push against the real framework. A process with no bundle can publish -- measured before any of it was written. Whether the widget shows it, and whether a media key arrives, needs a person. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |
+| musl (Alpine) | The whole Linux surface -- audio, mixer and session -- built and tested inside Alpine on every push. Nothing native ships here, so what this row proves is that opening the system libraries by soname resolves under a musl loader too. |
 | macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`AudioMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/AudioMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux
