@@ -184,7 +184,7 @@ jobs:
       # having: without it every push re-downloads the Gradle distribution and
       # the whole dependency set inside the container.
       - name: Cache the Gradle home the container uses
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .gradle-musl
           key: gradle-musl-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
@@ -318,7 +318,7 @@ jobs:
       # 200 MB, and the same bytes on every run. Cached rather than fetched.
       - name: Cache the Windows JDK
         id: jdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/windows-jdk
           key: windows-jdk-22.0.2+9
