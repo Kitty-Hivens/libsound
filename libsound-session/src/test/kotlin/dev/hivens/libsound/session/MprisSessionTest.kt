@@ -170,8 +170,21 @@ class MprisSessionTest {
         (SessionCommand.PlayPause in received) shouldBe true
     }
 
+    /**
+     * Run a client and capture what it printed, with the charset pinned.
+     *
+     * glib converts a string to the locale's charset on its way to a pipe, so
+     * under a non-UTF-8 locale gdbus prints the title as `'???'` while the
+     * message on the wire was correct all along -- visible in the same reply,
+     * where the escaped track id still carries the right bytes. These
+     * assertions are about what MPRIS delivers, so the reader is given a
+     * charset that can render it instead of being asked what the machine
+     * happens to be set to.
+     */
     private fun run(command: List<String>): String = runCatching {
-        val process = ProcessBuilder(command).redirectErrorStream(true).start()
+        val builder = ProcessBuilder(command).redirectErrorStream(true)
+        builder.environment()["LC_ALL"] = "C.UTF-8"
+        val process = builder.start()
         val out = process.inputStream.readAllBytes().decodeToString()
         process.waitFor(10, TimeUnit.SECONDS)
         out
@@ -186,15 +199,9 @@ class MprisSessionTest {
         "--method", "org.freedesktop.DBus.Properties.GetAll", iface,
     )
 
-    private fun gdbus(vararg args: String): String = runCatching {
-        val process = ProcessBuilder(listOf("gdbus") + args + listOf("--session").let { emptyList() })
-            .command(mutableListOf("gdbus", args[0], "--session") + args.drop(1))
-            .redirectErrorStream(true)
-            .start()
-        val out = process.inputStream.readAllBytes().decodeToString()
-        process.waitFor(10, TimeUnit.SECONDS)
-        out
-    }.getOrElse { "" }
+    /** `--session` goes after the subcommand, which is where gdbus wants it. */
+    private fun gdbus(vararg args: String): String =
+        run(listOf("gdbus", args[0], "--session") + args.drop(1))
 
     private fun gdbusAvailable(): Boolean = runCatching {
         ProcessBuilder("gdbus", "--version").redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS)
