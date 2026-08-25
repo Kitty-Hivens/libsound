@@ -105,7 +105,7 @@ Nothing checks a slot index at runtime.
 </details>
 
 <details>
-  <summary>Distributions: musl, and the ones with no /usr/lib</summary>
+  <summary>Distributions: musl, NixOS, and anything else with no /usr/lib</summary>
 
 Every Linux library is opened by **soname** -- `libpulse.so.0`, `libdbus-1.so.3`
 -- and never by absolute path. That is what lets a distribution which keeps no
@@ -113,6 +113,27 @@ Every Linux library is opened by **soname** -- `libpulse.so.0`, `libdbus-1.so.3`
 `/usr/lib/...` would be permanently broken there. The cost is that an unwrapped
 process on such a system finds nothing, so the failure is logged at info and
 names the cause rather than passing a silent null upward.
+
+**NixOS, measured rather than reasoned about.** On a filesystem where
+`/usr/lib` and `/lib` carry no libpulse at all and the only copy is in the
+store, an unwrapped JVM finds nothing: `dlopen` on a bare soname searches
+`LD_LIBRARY_PATH`, then a cache and a `/usr/lib` that are not there. The library
+says exactly that at info and falls back. Point the search path at the store and
+the same tree runs every Pulse suite -- backend, mixer and contract -- without a
+failure.
+
+None of which is particular to this library: it is what any JVM program that
+opens a system library at runtime meets there, and packaging is where it is
+answered.
+
+```nix
+wrapProgram $out/bin/your-app \
+  --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libpulseaudio dbus ]}
+```
+
+Those two attributes resolve to the store directories holding `libpulse.so.0`
+and `libdbus-1.so.3`. For a process nobody packaged, `programs.nix-ld` covers
+the same ground.
 
 **musl is exercised, not assumed.** A CI row builds and tests inside Alpine on
 every push, against a real PulseAudio and a real session bus -- the same suites
