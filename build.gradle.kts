@@ -15,14 +15,20 @@ plugins {
 // Releases pass -PappVersion=<tag> (tag first, then publish -- the libtray
 // flow). The git-describe fallback keeps a local build honest about being a
 // build off some commit rather than claiming a release number.
-val appVersion: String = providers.gradleProperty("appVersion")
-    .orElse(
+//
+// runCatching because isIgnoreExitValue covers a git that answers non-zero and
+// not a git that is not on PATH at all: that one throws before there is an exit
+// code to ignore, and took the configuration phase down with it -- which is how
+// a build inside a container without the binary fails, nowhere near the version
+// string it was computing.
+val appVersion: String = providers.gradleProperty("appVersion").orNull
+    ?: runCatching {
         providers.exec {
             commandLine("git", "describe", "--tags", "--always", "--dirty")
             isIgnoreExitValue = true
-        }.standardOutput.asText.map { it.trim().ifEmpty { "0.0.0-SNAPSHOT" } },
-    )
-    .getOrElse("0.0.0-SNAPSHOT")
+        }.standardOutput.asText.get().trim()
+    }.getOrNull()?.ifEmpty { null }
+    ?: "0.0.0-SNAPSHOT"
 
 // Present only where the key cannot come from a keyring -- see the signing
 // block below.
