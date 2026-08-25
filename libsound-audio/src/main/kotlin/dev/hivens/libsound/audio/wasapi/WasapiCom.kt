@@ -53,6 +53,21 @@ internal class WasapiCom private constructor(
      * entry point rather than tracked by the caller.
      *
      * S_FALSE means already initialised on this thread, which is a success.
+     *
+     * ## The uninitialise that never comes
+     *
+     * COM asks for one `CoUninitialize` per successful initialise, on the same
+     * thread, and this library issues none. It cannot: the entry points above
+     * run on whatever thread the consumer calls from -- a write loop, a UI
+     * thread, a pool worker -- and a `ThreadLocal` has no hook that fires when
+     * one of them dies. A thread that exits without the balancing call leaves
+     * its apartment state allocated until the process does.
+     *
+     * The cost is small and bounded by how many distinct threads ever touch a
+     * sink; it is a real leak only for a consumer that spawns short-lived
+     * threads to play audio from. That is a stated limitation rather than an
+     * oversight, which is why `CoUninitialize` stays bound below: the day this
+     * is worth balancing, the binding is what makes it possible.
      */
     fun ensureComOnThisThread() {
         if (initialised.get()) return
@@ -213,6 +228,8 @@ internal class WasapiCom private constructor(
             // because every call here happens on threads we own and none of
             // them pumps a Windows message loop.
             Triple("CoInitializeEx", I32, listOf(ADDR, I32)),
+            // Bound and never called -- see ensureComOnThisThread for why the
+            // balance cannot be struck from here, and why the binding stays.
             Triple("CoUninitialize", null, emptyList()),
             Triple("CoCreateInstance", I32, listOf(ADDR, ADDR, I32, ADDR, ADDR)),
             Triple("CoTaskMemFree", null, listOf(ADDR)),

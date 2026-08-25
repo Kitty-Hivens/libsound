@@ -41,13 +41,6 @@ tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
-// Prints the test runtime classpath, so a scratch harness can run against the
-// module without a published artifact. Diagnostic only.
-tasks.register("printTestCp") {
-    val cp = sourceSets.test.map { it.runtimeClasspath }
-    doLast { println(cp.get().asPath) }
-}
-
 mavenPublishing {
     // What is in the artifact, not what is planned for it -- which is why this
     // line moved when SMTC and MPNowPlayingInfoCenter landed. Naming only MPRIS
