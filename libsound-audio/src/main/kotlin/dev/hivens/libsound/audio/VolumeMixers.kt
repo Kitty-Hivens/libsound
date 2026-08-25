@@ -1,6 +1,6 @@
 package dev.hivens.libsound.audio
 
-import dev.hivens.libsound.AudioMixer
+import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.audio.pulse.PulseMixer
 import dev.hivens.libsound.audio.wasapi.WasapiMixer
 import org.slf4j.LoggerFactory
@@ -20,11 +20,11 @@ import org.slf4j.LoggerFactory
  * [dev.hivens.libsound.Capability.STREAM_ENUMERATION] is how a consumer decides
  * whether to draw the screen at all.
  */
-public object AudioMixers {
+public object VolumeMixers {
 
     private val log = LoggerFactory.getLogger("libsound.Mixer")
 
-    public fun open(applicationName: String): AudioMixer? {
+    public fun open(applicationName: String): VolumeMixer? {
         val osName = System.getProperty("os.name", "").lowercase()
         val mixer = when {
             osName.contains("linux") || osName.contains("bsd") -> PulseMixer.openOrNull(applicationName)

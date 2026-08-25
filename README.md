@@ -144,7 +144,7 @@ depend on this by accident. The API will still shift.
 | macOS session (MPNowPlayingInfoCenter) | Written, and its suite runs on every push against the real framework. A process with no bundle can publish -- measured before any of it was written. Whether the widget shows it, and whether a media key arrives, needs a person. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |
 | musl (Alpine) | The whole Linux surface -- audio, mixer and session -- built and tested inside Alpine on every push. Nothing native ships here, so what this row proves is that opening the system libraries by soname resolves under a musl loader too. |
-| macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`AudioMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/AudioMixers.kt) answers null there rather than pretending. |
+| macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`VolumeMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/VolumeMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux
 backends pass the same contract suite, the mixer round-trips volume, mute and

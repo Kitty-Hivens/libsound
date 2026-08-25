@@ -152,7 +152,7 @@ class CoreAudioBackendTest {
         // Not a gap in this library. There is no per-application volume in any
         // public macOS API, so a null here is the platform's answer and
         // STREAM_ENUMERATION is how a consumer learns not to draw the screen.
-        AudioMixers.open(CORE_AUDIO_APP) shouldBe null
+        VolumeMixers.open(CORE_AUDIO_APP) shouldBe null
     }
 
     @Test
