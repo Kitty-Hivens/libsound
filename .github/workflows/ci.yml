@@ -280,8 +280,15 @@ jobs:
           docker run --rm -v "$PWD:/src" -v /tmp/nix-run.sh:/run.sh -w /src \
             -e GRADLE_USER_HOME=/src/.gradle-nix \
             -e LIBSOUND_REQUIRE=pulse,dbus \
-            nixos/nix nix --extra-experimental-features 'nix-command flakes' \
-              develop -c sh /run.sh
+            nixos/nix sh -euc '
+              # The checkout belongs to the runner and this container is root,
+              # so libgit2 refuses to read the flake out of the git tree at all.
+              # Marking it safe keeps the source the git tree, which is what
+              # somebody entering this shell by hand gets; the alternatives
+              # (path:, or chowning the checkout) change what nix reads.
+              git config --global --add safe.directory /src
+              nix --extra-experimental-features "nix-command flakes" develop -c sh /run.sh
+            '
 
       - name: Give the results back to the runner
         if: always()
