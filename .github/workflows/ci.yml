@@ -228,6 +228,84 @@ jobs:
           path: '**/build/reports/tests/test'
           retention-days: 7
 
+  # NixOS conditions, and the dev shell that answers them.
+  #
+  # Two things in one row. The nix image has no libpulse outside the store, so
+  # this is the only place a bare dlopen cannot quietly fall back on /usr/lib --
+  # it checks that the search path the flake sets is what makes the backend
+  # reachable at all, rather than taking the README's word for it.
+  #
+  # And it enters the dev shell rather than trusting it. Naming a package
+  # version is what makes a flake rot -- jdk23 left nixpkgs as end of life, and
+  # the unversioned jdk attribute is 21, below this project's floor -- so a
+  # shell nobody enters breaks silently and is discovered by whoever needed it.
+  nix:
+    name: Build & test (nix dev shell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache the Gradle home the container uses
+        uses: actions/cache@v6
+        with:
+          path: .gradle-nix
+          key: gradle-nix-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+
+      - name: Build + test inside the dev shell
+        run: |
+          # Written to a file rather than nested inside the docker argument: the
+          # quoting of a script inside a script inside YAML is where mistakes
+          # live, and this one has to be read by whoever changes it next.
+          cat > /tmp/nix-run.sh <<'SH'
+          set -eu
+          test -z "$(ls /usr/lib/libpulse* /lib/libpulse* 2>/dev/null)" \
+            || { echo "FAIL: libpulse exists outside the store, so this row proves nothing"; exit 1; }
+          export XDG_RUNTIME_DIR=/tmp/libsound-runtime
+          mkdir -p "$XDG_RUNTIME_DIR"
+          # -n and an explicit module list: the packaged default.pa loads
+          # hardware detection this container cannot satisfy, and --start dies
+          # on it rather than carrying on without.
+          pulseaudio -n --daemonize --exit-idle-time=-1 \
+            --load=module-native-protocol-unix \
+            --load="module-null-sink sink_name=libsound_test"
+          pactl info
+          # dbus-run-session reads /etc/dbus-1/session.conf, which a NixOS
+          # module writes and a bare container has not got. The package carries
+          # its own beside the binary, so this is a fact about the container
+          # rather than about NixOS.
+          dbus_root="$(dirname "$(dirname "$(command -v dbus-run-session)")")"
+          dbus-run-session --config-file="$dbus_root/share/dbus-1/session.conf" -- \
+            ./gradlew --no-daemon build --stacktrace
+          SH
+          docker run --rm -v "$PWD:/src" -v /tmp/nix-run.sh:/run.sh -w /src \
+            -e GRADLE_USER_HOME=/src/.gradle-nix \
+            -e LIBSOUND_REQUIRE=pulse,dbus \
+            nixos/nix nix --extra-experimental-features 'nix-command flakes' \
+              develop -c sh /run.sh
+
+      - name: Give the results back to the runner
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" .
+
+      - name: What each suite actually did
+        if: always()
+        env:
+          # No JavaSound here, and the omission is the point. This row exists
+          # for libraries opened by soname; JavaSound reaches ALSA through the
+          # JDK's own native and needs a routing config a bare container has no
+          # reason to carry. The Linux and musl rows require it, so it is not
+          # unwatched -- it is simply not what is being asked here.
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,MprisSession,MprisReader,DBusConnection
+        run: python3 .github/test-summary.py
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-nix
+          path: '**/build/reports/tests/test'
+          retention-days: 7
+
   # macOS runners have an output device that works -- "Apple Virtual Sound
   # Device", which the ABI oracle measured before any of the backend was
   # written. So the same contract suite every other backend passes runs here for
