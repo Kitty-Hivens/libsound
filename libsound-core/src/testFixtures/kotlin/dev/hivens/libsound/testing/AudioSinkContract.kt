@@ -84,6 +84,21 @@ public abstract class AudioSinkContract {
     }
 
     @Test
+    public fun `the sink accepts CD stereo, whatever else it prefers`() {
+        // AudioFormat.CD_STEREO carries the claim that every backend takes it,
+        // and until this test the claim was asserted nowhere: the suite runs at
+        // 48 kHz and no real backend was ever opened at 44.1. A consumer
+        // pushing a CD-rate track has no other way to find out.
+        val cd = AudioFormat.CD_STEREO
+        newSink().use { sink ->
+            sink.open(cd)
+            sink.format shouldBe cd
+            val half = ByteArray(cd.sampleRate / 2 * cd.bytesPerFrame)
+            sink.write(half, 0, half.size)
+        }
+    }
+
+    @Test
     public fun `open leaves the device running`() {
         // No start() anywhere in this test. If open only prepared the device,
         // the blocking write would never drain and the position would never
