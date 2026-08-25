@@ -1,10 +1,8 @@
 # Testing libsound by hand
 
-Two of the three platforms cannot be verified by CI. GitHub's Windows runners
+One platform of the three cannot be verified by CI. GitHub's Windows runners
 have no output device, so a sink cannot open there at all; its macOS runners do
-have one, which is why macOS is checked automatically and Windows is not. The
-Windows backend is written against Microsoft's documented COM vtables and an
-offset oracle, and it has never executed.
+have one, which is why macOS is checked automatically and Windows is not.
 
 That is what this page is for. It takes about ten minutes and needs no
 knowledge of the library.
@@ -16,6 +14,14 @@ cannot prove is anything about real hardware: whether sound comes out, what the
 latency feels like, how a Bluetooth or HDMI device behaves, and what the row
 actually looks like in the real volume mixer. Those are the questions below, and
 they are the reason a person is still needed.
+
+**And one thing nothing covers.** `WasapiSinkContractTest` -- the suite that
+asserts the eleven rules a consumer's audio/video clock depends on -- has never
+run anywhere. The wine row executes this audible check rather than the JUnit
+suite, and every other row skips it for want of a Windows endpoint, so on this
+one platform those rules are argued from the code rather than measured. A run of
+the check below exercises the same behaviours by hand, which is the nearest
+thing to closing it that exists without a Windows machine.
 
 ## What you need
 
@@ -54,7 +60,7 @@ Press Enter when it is open, and watch it while the tone plays.
 
 ## What to report
 
-Copy the whole output of the run. Then answer the four questions it asks, which
+Copy the whole output of the run. Then answer the five questions it asks, which
 are the ones no automatic check can answer:
 
 1. **Did you hear the tone?** A steady, clean 440 Hz note for about three

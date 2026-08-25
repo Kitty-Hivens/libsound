@@ -169,6 +169,13 @@ public interface MediaSession : AutoCloseable {
      * Subscribe to commands. The handler runs on the session's own dispatch
      * thread; hop before touching UI state. The returned function unsubscribes
      * and is idempotent.
+     *
+     * Register before the first [publish] if the desktop is meant to offer
+     * transport controls. MPRIS answers `CanControl` from whether anything is
+     * listening at all, and the specification treats that property as one which
+     * does not change, so no notification is emitted when it does: a reader
+     * that asked before the first handler arrived can go on showing dead
+     * buttons for the life of the session.
      */
     public fun onCommand(handler: (SessionCommand) -> Unit): () -> Unit
 

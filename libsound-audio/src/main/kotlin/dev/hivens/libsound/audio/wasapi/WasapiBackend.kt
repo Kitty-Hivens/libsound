@@ -41,19 +41,19 @@ internal class WasapiBackend private constructor(
     override val name: String = "wasapi"
 
     /**
-     * Everything, and honestly. WASAPI is the one backend in this library with
-     * no gaps: a sample-accurate playhead, per-application volume the system
-     * mixer follows, a named session, a device list worth offering, and events
-     * when it changes.
+     * Everything WASAPI offers, minus whatever this machine refused.
+     *
+     * [Capability.DEVICE_EVENTS] is the one entry that cannot be decided by
+     * what the code can do: `RegisterEndpointNotificationCallback` may fail,
+     * and it does under some wine builds. Reported from a constant it claimed
+     * events on a backend where none would ever arrive -- the
+     * discovered-by-failing case the whole enum exists to prevent, and the same
+     * mistake the sink here already corrects for its own volume interface.
+     *
+     * Set once, by [installNotificationClient], before anything can read it.
      */
-    override val capabilities: Capabilities = Capabilities.of(
-        Capability.STREAM_VOLUME,
-        Capability.STREAM_IDENTITY,
-        Capability.DEVICE_ENUMERATION,
-        Capability.DEVICE_SELECTION,
-        Capability.DEVICE_EVENTS,
-        Capability.DEVICE_POSITION,
-    )
+    override var capabilities: Capabilities = BASE_CAPABILITIES
+        private set
 
     private val closed = AtomicBoolean(false)
     private val sinks = CopyOnWriteArrayList<WasapiSink>()
@@ -283,6 +283,7 @@ internal class WasapiBackend private constructor(
         if (hr < 0) {
             log.info("device notifications unavailable: 0x{}", Integer.toHexString(hr))
             notificationClient = MemorySegment.NULL
+            capabilities = Capabilities(BASE_CAPABILITIES.supported - Capability.DEVICE_EVENTS)
         }
     }
 
@@ -419,6 +420,16 @@ internal class WasapiBackend private constructor(
 
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.Wasapi")
+
+        /** Everything before the endpoint notification is asked for. */
+        private val BASE_CAPABILITIES = Capabilities.of(
+            Capability.STREAM_VOLUME,
+            Capability.STREAM_IDENTITY,
+            Capability.DEVICE_ENUMERATION,
+            Capability.DEVICE_SELECTION,
+            Capability.DEVICE_EVENTS,
+            Capability.DEVICE_POSITION,
+        )
 
         private const val STGM_READ = 0
         // Narrowed from the hex, never negated by hand -- see WasapiAbi.

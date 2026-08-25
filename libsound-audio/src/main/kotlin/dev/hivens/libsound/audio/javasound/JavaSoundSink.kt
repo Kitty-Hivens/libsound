@@ -146,7 +146,11 @@ internal class JavaSoundSink(
             if (accepted <= 0) {
                 if (closed || line == null) throw AudioException("sink closed while writing")
                 // A stopped or flushed line accepts nothing until it runs
-                // again; keep waiting, because close is what breaks this.
+                // again; keep waiting, because close is what breaks this. The
+                // wait has to cost something, though: spinning here burns a
+                // core for as long as the line stays stopped, which is the
+                // failure the WASAPI sink already sleeps to avoid.
+                Thread.sleep(STALLED_POLL_MILLIS)
                 continue
             }
             written += accepted
@@ -249,5 +253,13 @@ internal class JavaSoundSink(
          * meant to avoid. A deterministic 200 ms beats a load-dependent freeze.
          */
         const val DEFAULT_BUFFER_NANOS: Long = 200_000_000L
+
+        /**
+         * How long to wait when the line accepts nothing.
+         *
+         * Short enough that a restarted line is fed within a frame of video,
+         * long enough that a line left stopped costs nothing measurable.
+         */
+        private const val STALLED_POLL_MILLIS = 2L
     }
 }
