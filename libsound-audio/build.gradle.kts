@@ -36,7 +36,12 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:${libs.versions.junit.get()}"))
     testImplementation(libs.junit.jupiter)
-    testRuntimeOnly(libs.junit.platform.launcher)
+    // On the compile classpath rather than runtime-only, and only in this
+    // module: ContractRunner starts a suite through the launcher API by hand,
+    // which is the one way the Windows contract suite can execute at all. It
+    // was already on the test runtime classpath -- nothing new is fetched, and
+    // nothing here reaches the published jar.
+    testImplementation(libs.junit.platform.launcher)
     testRuntimeOnly(libs.slf4j.simple)
     testImplementation(libs.kotest.assertions)
     testImplementation(testFixtures(project(":libsound-core")))
