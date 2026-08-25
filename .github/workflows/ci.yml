@@ -470,10 +470,38 @@ jobs:
           echo "WASAPI output path executed; session enumeration is unverified here"
           echo "(wine 9.0 gap, not a claim about Windows -- see docs/TESTING.md)"
 
+      # The sink contract, on the same Windows JVM, and the reason this step is
+      # new rather than old: the suite is a JUnit class Gradle launches, Gradle
+      # cannot run here, and so a Windows JVM carrying the test classes sat a
+      # metre from a suite nothing on it knew how to start. ContractRunner is
+      # that missing start, through a launcher API already on this classpath.
+      #
+      # LIBSOUND_REQUIRE names wasapi so a run without an endpoint fails rather
+      # than reporting eleven skips as a pass, and the runner fails a discovery
+      # of zero for the same reason.
+      #
+      # Still wine, still not hardware: what this proves is that the rules a
+      # clock rides on hold against a real WASAPI implementation, not that they
+      # hold against a sound card.
+      - name: The sink contract, on a Windows JVM
+        env:
+          LIBSOUND_REQUIRE: wasapi
+        run: |
+          set -o pipefail
+          java_exe=$(find ~/windows-jdk -name java.exe | head -1)
+          classpath=$(while read -r entry; do winepath -w "$entry"; done \
+            < libsound-audio/build/smoke-classpath.txt | paste -sd';')
+          xvfb-run -a wine "$java_exe" --enable-native-access=ALL-UNNAMED \
+            -cp "$classpath" dev.hivens.libsound.audio.contract.ContractRunnerKt \
+            dev.hivens.libsound.audio.WasapiSinkContractTest \
+            < /dev/null 2>&1 | tr -d '\r' | tee /tmp/contract.log
+
       - name: Upload the transcript
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: windows-abi-smoke-log
-          path: /tmp/smoke.log
+          path: |
+            /tmp/smoke.log
+            /tmp/contract.log
           retention-days: 7

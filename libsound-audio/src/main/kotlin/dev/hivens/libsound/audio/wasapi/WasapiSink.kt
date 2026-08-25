@@ -49,6 +49,24 @@ internal class WasapiSink(
     private val log = LoggerFactory.getLogger("libsound.Wasapi")
 
     private val closed = AtomicBoolean(false)
+
+    /**
+     * Held whenever a pointer below is dereferenced, and not merely while one
+     * is assigned.
+     *
+     * The contract requires [close] to break a [write] that is in flight, so
+     * the two run concurrently by design. Reading a pointer into a local and
+     * calling through it afterwards is safe in the JavaSound sink, where the
+     * local keeps a Java object alive; here the local is an address and
+     * `Release` is what decides whether the object behind it still exists.
+     *
+     * That is not a theoretical difference. Closing against four writers over
+     * five hundred opens, on a Windows JVM under wine, took the process down
+     * with `EXCEPTION_ACCESS_VIOLATION` inside `write` -- on the copy into the
+     * buffer `IAudioRenderClient::GetBuffer` had handed back, from a render
+     * client released underneath it. The same run against the code below
+     * survives every round.
+     */
     private val interfaceLock = Any()
 
     // Every one of these is a COM interface pointer, released in reverse order.
@@ -145,16 +163,20 @@ internal class WasapiSink(
                         if (services.session == null) remove(Capability.STREAM_IDENTITY)
                     },
                 )
-            }
-            bufferFrames = readBufferSize(call, audioClient)
-            clockFrequency = readClockFrequency(call, services.clock)
-            openFormat = format
+                bufferFrames = readBufferSize(call, audioClient)
+                clockFrequency = readClockFrequency(call, services.clock)
+                openFormat = format
 
-            nameTheSession(call)
-            applyVolume()
-            // The contract's first rule: open starts the device.
-            hr(callClient(WasapiAbi.CLIENT_START), "IAudioClient::Start")
-            running = true
+                // Inside the same section that published the pointers: naming
+                // the session and starting the device dereference them, and a
+                // close arriving between the publish and the start would have
+                // released them out from under both.
+                nameTheSession(call)
+                applyVolumeLocked()
+                // The contract's first rule: open starts the device.
+                hr(callClient(WasapiAbi.CLIENT_START), "IAudioClient::Start")
+                running = true
+            }
         }
         log.debug("stream open: {} buffer={} frames, clock={} Hz", format, bufferFrames, clockFrequency)
     }
@@ -173,52 +195,69 @@ internal class WasapiSink(
         val totalFrames = format.framesIn(length.toLong())
         while (writtenFrames < totalFrames) {
             if (closed.get()) throw AudioException("sink closed while writing")
-            val renderClient = render
-            val audioClient = client
-            if (renderClient.address() == 0L || audioClient.address() == 0L) {
-                throw AudioException("write on a disconnected stream")
-            }
-            Arena.ofConfined().use { call ->
-                val padding = readPadding(call, audioClient)
-                val free = (bufferFrames - padding).coerceAtLeast(0)
-                if (free == 0) {
-                    // The pacing. WASAPI has no blocking write, so the wait is
-                    // ours to build: sleep a fraction of the buffer rather than
-                    // spin, because a busy loop here is a core burnt per stream.
-                    Thread.sleep(pollIntervalMillis(format))
-                    return@use
+            var waitMillis = 0L
+            // The COM work runs under the lock; the wait below does not. A
+            // close is then delayed by one buffer round trip at most, and can
+            // never land between reading a pointer and calling through it.
+            synchronized(interfaceLock) {
+                val renderClient = render
+                val audioClient = client
+                if (renderClient.address() == 0L || audioClient.address() == 0L) {
+                    throw AudioException("write on a disconnected stream")
                 }
-                val chunkFrames = minOf(free.toLong(), totalFrames - writtenFrames)
-                val buffer = getBuffer(call, renderClient, chunkFrames.toInt())
-                val bytes = (chunkFrames * format.bytesPerFrame).toInt()
-                MemorySegment.copy(
-                    data, (offset + writtenFrames * format.bytesPerFrame).toInt(),
-                    buffer.reinterpret(bytes.toLong()), ValueLayout.JAVA_BYTE, 0L, bytes,
-                )
-                releaseBuffer(renderClient, chunkFrames.toInt())
-                writtenFrames += chunkFrames
+                Arena.ofConfined().use { call ->
+                    val padding = readPadding(call, audioClient)
+                    val free = (bufferFrames - padding).coerceAtLeast(0)
+                    if (free == 0) {
+                        waitMillis = pollIntervalMillis(format)
+                        return@use
+                    }
+                    val chunkFrames = minOf(free.toLong(), totalFrames - writtenFrames)
+                    val buffer = getBuffer(call, renderClient, chunkFrames.toInt())
+                    val bytes = (chunkFrames * format.bytesPerFrame).toInt()
+                    MemorySegment.copy(
+                        data, (offset + writtenFrames * format.bytesPerFrame).toInt(),
+                        buffer.reinterpret(bytes.toLong()), ValueLayout.JAVA_BYTE, 0L, bytes,
+                    )
+                    releaseBuffer(renderClient, chunkFrames.toInt())
+                    writtenFrames += chunkFrames
+                }
             }
+            // The pacing. WASAPI has no blocking write, so the wait is ours to
+            // build: sleep a fraction of the buffer rather than spin, because a
+            // busy loop here is a core burnt per stream. Outside the lock, so a
+            // close does not queue behind it.
+            if (waitMillis > 0) Thread.sleep(waitMillis)
         }
     }
 
     override fun start() {
-        if (running || client.address() == 0L) return
         com.ensureComOnThisThread()
-        hr(callClient(WasapiAbi.CLIENT_START), "IAudioClient::Start")
-        running = true
+        synchronized(interfaceLock) {
+            if (running || client.address() == 0L) return
+            hr(callClient(WasapiAbi.CLIENT_START), "IAudioClient::Start")
+            running = true
+        }
     }
 
     override fun stop() {
-        if (!running || client.address() == 0L) return
         com.ensureComOnThisThread()
-        hr(callClient(WasapiAbi.CLIENT_STOP), "IAudioClient::Stop")
-        running = false
+        synchronized(interfaceLock) {
+            if (!running || client.address() == 0L) return
+            hr(callClient(WasapiAbi.CLIENT_STOP), "IAudioClient::Stop")
+            running = false
+        }
     }
 
     override fun flush() {
+        com.ensureComOnThisThread()
+        synchronized(interfaceLock) { flushLocked() }
+    }
+
+    /** Caller holds [interfaceLock]. */
+    private fun flushLocked() {
         val audioClient = client
         if (audioClient.address() == 0L) return
-        com.ensureComOnThisThread()
         val wasRunning = running
         // Reset refuses a running client, so the stop is part of the operation
         // rather than something the caller has to remember.
@@ -235,7 +274,7 @@ internal class WasapiSink(
         }
     }
 
-    override fun framePosition(): Long {
+    override fun framePosition(): Long = synchronized(interfaceLock) {
         val audioClock = clock
         val format = openFormat ?: return 0L
         if (audioClock.address() == 0L || clockFrequency == 0L) return positionBase
@@ -259,7 +298,7 @@ internal class WasapiSink(
         }
     }
 
-    override fun latencyNanos(): Long {
+    override fun latencyNanos(): Long = synchronized(interfaceLock) {
         val audioClient = client
         val format = openFormat ?: return 0L
         if (audioClient.address() == 0L) return 0L
@@ -282,9 +321,9 @@ internal class WasapiSink(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         runCatching {
-            if (running && client.address() != 0L) {
-                com.ensureComOnThisThread()
-                callClient(WasapiAbi.CLIENT_STOP)
+            com.ensureComOnThisThread()
+            synchronized(interfaceLock) {
+                if (running && client.address() != 0L) callClient(WasapiAbi.CLIENT_STOP)
             }
         }
         running = false
@@ -486,6 +525,11 @@ internal class WasapiSink(
     }
 
     private fun applyVolume() {
+        synchronized(interfaceLock) { applyVolumeLocked() }
+    }
+
+    /** Caller holds [interfaceLock]. */
+    private fun applyVolumeLocked() {
         val volume = simpleVolume
         if (volume.address() == 0L) return
         runCatching {
@@ -497,7 +541,7 @@ internal class WasapiSink(
     }
 
     private fun releaseInterfaces() {
-        val toRelease = synchronized(interfaceLock) {
+        synchronized(interfaceLock) {
             val held = listOf(sessionControl, simpleVolume, clock, render, client, device)
             sessionControl = MemorySegment.NULL
             simpleVolume = MemorySegment.NULL
@@ -505,11 +549,15 @@ internal class WasapiSink(
             render = MemorySegment.NULL
             client = MemorySegment.NULL
             device = MemorySegment.NULL
-            held
+            // Released inside the lock rather than after it. Nulling the fields
+            // stops the next caller from finding a pointer; it does nothing for
+            // the caller already holding one, and that is the caller a release
+            // outside the lock would pull the object out from under.
+            //
+            // Reverse order of acquisition: the services come from the client,
+            // so they go first.
+            held.forEach { com.release(it) }
         }
-        // Reverse order of acquisition: the services come from the client, so
-        // they go first.
-        toRelease.forEach { com.release(it) }
     }
 
     private fun hr(result: Int, what: String) {
