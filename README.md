@@ -104,6 +104,25 @@ because two grouping-parameter methods sit between it and the one before.
 Nothing checks a slot index at runtime.
 </details>
 
+<details>
+  <summary>Distributions: musl, and the ones with no /usr/lib</summary>
+
+Every Linux library is opened by **soname** -- `libpulse.so.0`, `libdbus-1.so.3`
+-- and never by absolute path. That is what lets a distribution which keeps no
+`/usr/lib` satisfy them through the search path its wrapper sets; a hardcoded
+`/usr/lib/...` would be permanently broken there. The cost is that an unwrapped
+process on such a system finds nothing, so the failure is logged at info and
+names the cause rather than passing a silent null upward.
+
+**musl is exercised, not assumed.** The audible check has been run on Alpine
+against a real PulseAudio: twenty checks, backend and mixer, everything the
+glibc row reports. It is also the first machine on which `DUCKS_OTHERS` came
+back true, which is a useful accident -- the same probe answers false on a
+PipeWire desktop, so it is reading the system rather than returning a constant.
+
+No runner repeats it, so that is a measurement and not a standing guarantee.
+</details>
+
 <details id="status">
   <summary>Status</summary>
 
