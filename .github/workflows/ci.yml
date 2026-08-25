@@ -101,7 +101,12 @@ jobs:
           sudo apt-get install -y dbus-x11 libglib2.0-bin playerctl
           eval "$(dbus-launch --sh-syntax)"
           echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
-          gdbus --version
+          # Reach the bus through the same client the suites use, rather than
+          # printing a version: a version says the binary is installed, and what
+          # this step has to leave behind is a bus that answers.
+          gdbus call --session --dest org.freedesktop.DBus \
+            --object-path /org/freedesktop/DBus \
+            --method org.freedesktop.DBus.ListNames > /dev/null
           playerctl --version
 
       # LIBSOUND_REQUIRE names what this row is for. A named backend that turns
