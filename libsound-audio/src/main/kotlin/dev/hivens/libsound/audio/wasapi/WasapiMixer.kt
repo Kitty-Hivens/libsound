@@ -1,6 +1,6 @@
 package dev.hivens.libsound.audio.wasapi
 
-import dev.hivens.libsound.AudioMixer
+import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
@@ -49,7 +49,7 @@ import kotlin.concurrent.withLock
 internal class WasapiMixer private constructor(
     private val com: WasapiCom,
     private val enumerator: MemorySegment,
-) : AudioMixer {
+) : VolumeMixer {
 
     private val log = LoggerFactory.getLogger("libsound.Mixer")
 
@@ -883,7 +883,7 @@ internal class WasapiMixer private constructor(
         private const val EVENT_CONTEXT = "6F3A1B4C-2E5D-4A87-9C10-1B7E9D4A5C22"
 
         /** Open a mixer, or null anywhere that is not a Windows with an audio service. */
-        fun openOrNull(): AudioMixer? {
+        fun openOrNull(): VolumeMixer? {
             val com = WasapiCom.loadOrNull() ?: return null
             return runCatching {
                 com.ensureComOnThisThread()

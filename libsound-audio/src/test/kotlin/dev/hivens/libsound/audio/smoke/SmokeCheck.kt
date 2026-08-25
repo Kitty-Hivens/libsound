@@ -2,13 +2,13 @@ package dev.hivens.libsound.audio.smoke
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioFormat
-import dev.hivens.libsound.AudioMixer
+import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.audio.AudioBackends
-import dev.hivens.libsound.audio.AudioMixers
+import dev.hivens.libsound.audio.VolumeMixers
 import kotlin.math.PI
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -183,7 +183,7 @@ private fun checkCloseIsIdempotent(sink: AudioSink) {
 
 private fun mixer(backend: AudioBackend) {
     banner("mixer")
-    val mixer: AudioMixer? = AudioMixers.open(APP)
+    val mixer: VolumeMixer? = VolumeMixers.open(APP)
     if (mixer == null) {
         println("(no mixer here. Expected on macOS, which has no per-application")
         println(" volume in any public API; anywhere else it is a finding.)")

@@ -2,13 +2,13 @@ package dev.hivens.libsound.audio.samples
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioFormat
-import dev.hivens.libsound.AudioMixer
+import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.audio.AudioBackends
-import dev.hivens.libsound.audio.AudioMixers
+import dev.hivens.libsound.audio.VolumeMixers
 
 /**
  * Every audio example in `docs/GUIDE.md`, as code that compiles.
@@ -58,14 +58,14 @@ internal object AudioSamples {
 
     // -- quieting everyone else while a video plays --------------------------
 
-    fun duckOthers(mixer: AudioMixer, factor: Float) {
+    fun duckOthers(mixer: VolumeMixer, factor: Float) {
         if (Capability.STREAM_CONTROL !in mixer.capabilities) return
         mixer.streams()
             .filter { !it.isOurs && it.active }
             .forEach { mixer.setVolume(it.id, it.volume * factor) }
     }
 
-    fun stopDucking(mixer: AudioMixer) {
+    fun stopDucking(mixer: VolumeMixer) {
         // Undoes every change this process made and has not already undone.
         // close() calls it too, but a feature that ends with the video should
         // not wait for the process to end.
@@ -73,7 +73,7 @@ internal object AudioSamples {
     }
 
     fun duckAroundAVideo(playVideo: () -> Unit) {
-        val mixer = AudioMixers.open("Example")
+        val mixer = VolumeMixers.open("Example")
         if (mixer == null) {
             // macOS has no per-application volume in any public API. The video
             // still plays; it just plays over the music.
