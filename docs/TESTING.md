@@ -15,13 +15,11 @@ latency feels like, how a Bluetooth or HDMI device behaves, and what the row
 actually looks like in the real volume mixer. Those are the questions below, and
 they are the reason a person is still needed.
 
-**And one thing nothing covers.** `WasapiSinkContractTest` -- the suite that
-asserts the eleven rules a consumer's audio/video clock depends on -- has never
-run anywhere. The wine row executes this audible check rather than the JUnit
-suite, and every other row skips it for want of a Windows endpoint, so on this
-one platform those rules are argued from the code rather than measured. A run of
-the check below exercises the same behaviours by hand, which is the nearest
-thing to closing it that exists without a Windows machine.
+`WasapiSinkContractTest` -- the eleven rules a consumer's audio/video clock
+depends on -- runs there too, started through the JUnit launcher because Gradle
+cannot run on that JVM. It went unexecuted for a while on the assumption that it
+needed a Windows machine, which turned out to be false: the Windows JVM was
+already there, and so was the launcher.
 
 ## What you need
 
