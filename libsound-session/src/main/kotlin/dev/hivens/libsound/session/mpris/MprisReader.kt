@@ -69,6 +69,9 @@ internal class MprisReader private constructor(
     /** Last known state per bus name, so a change signal can be merged into it. */
     private val known = HashMap<String, ForeignPlayer>()
 
+    /** Unique sender to well-known name. Fixed for as long as a player lives. */
+    private val owners = ConcurrentHashMap<String, String>()
+
     /**
      * Events reach consumers here, never on the bus thread.
      *
@@ -175,6 +178,14 @@ internal class MprisReader private constructor(
             symbols.next(iter)
             val newOwner = symbols.readString(call, iter)
 
+            // This signal carries both halves of the mapping every later
+            // PropertiesChanged has to resolve, so record it here. Without it
+            // the first change from each player costs a GetNameOwner round trip
+            // per player already known -- on the bus thread, inside a handler
+            // that is documented not to block.
+            oldOwner?.takeIf { it.isNotEmpty() }?.let { owners.remove(it) }
+            newOwner?.takeIf { it.isNotEmpty() }?.let { owners[it] = name }
+
             if (newOwner.isNullOrEmpty()) {
                 synchronized(known) { known.remove(name) }
                 emit(PlayerEvent.Gone(name))
@@ -204,11 +215,10 @@ internal class MprisReader private constructor(
             val changed = readVariantDict(call, iter)
             if (changed.isEmpty()) return
 
-            // The signal comes from a unique name; the map is keyed by the
-            // well-known one, which is what a consumer was handed.
-            val id = synchronized(known) {
-                known.keys.firstOrNull { it == sender } ?: knownIdForOwner(sender)
-            } ?: return
+            // The signal comes from a unique name and the map is keyed by the
+            // well-known one, so there is no cheaper branch to try first: a
+            // sender can never equal a key here.
+            val id = knownIdForOwner(sender) ?: return
             val merged = synchronized(known) {
                 val previous = known[id] ?: return@synchronized null
                 val updated = merge(previous, changed)
@@ -251,8 +261,6 @@ internal class MprisReader private constructor(
         if (resolved != null) owners[sender] = resolved
         return resolved
     }
-
-    private val owners = ConcurrentHashMap<String, String>()
 
     // -- reads -----------------------------------------------------------------
 
