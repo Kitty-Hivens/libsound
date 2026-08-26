@@ -207,8 +207,22 @@ internal class DBusConnection private constructor(
         }
     }
 
-    /** Subscribe to a class of signals. Failure is logged, not fatal. */
+    /**
+     * Subscribe to a class of signals. Failure is logged, not fatal.
+     *
+     * On the I/O thread like every other call that expects an answer, and this
+     * one does: `dbus_bus_add_match` given a non-null error blocks for the
+     * daemon's reply, and the loop pops replies straight off the incoming queue.
+     * Called from the caller's thread -- which is where the reader used to call
+     * it, just after starting the loop -- the reply was the loop's to steal, and
+     * the caller then waited out libdbus's own timeout for an answer already
+     * thrown away.
+     */
     fun addMatch(rule: String) {
+        onIoThread { addMatchHere(rule) }
+    }
+
+    private fun addMatchHere(rule: String) {
         Arena.ofConfined().use { call ->
             val error = call.allocate(DBusAbi.ERROR_LAYOUT)
             symbols.handle("dbus_error_init").invokeExact(error) as Unit
@@ -229,6 +243,15 @@ internal class DBusConnection private constructor(
         while (true) {
             val leftover = outgoing.poll() ?: break
             runCatching { symbols.handle("dbus_message_unref").invokeExact(leftover) as Unit }
+        }
+
+        // And the round trips nobody will run now. Left alone, each one's caller
+        // waits out its whole timeout for a thread that has stopped -- seven
+        // seconds of nothing, on a path taken during shutdown.
+        while (true) {
+            val orphan = tasks.poll() ?: break
+            runCatching { orphan.run() }
+                .onFailure { log.debug("queued bus task failed during shutdown: {}", it.message) }
         }
 
         // Everything below frees memory the I/O thread may still be reading. A
