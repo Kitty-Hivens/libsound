@@ -38,7 +38,7 @@ mistakes. As written today:
 | Buffer target | 200 ms on every backend | Measured for the JavaSound fallback, where it is the right answer, and then applied to three backends that can do far better. One number across four very different paths. |
 | `PA_STREAM_ADJUST_LATENCY` | Set on the metering stream, not on the playback stream | Without it `tlength` is a buffer size hint. The server does not shorten its own path to meet it. The flag is bound and proven to work, on the one stream where latency does not matter. |
 | `minreq` | Left at server default | It decides how often the server asks for data, which is the other half of the latency. |
-| PipeWire quantum | Never requested | `node.latency` in the stream properties is the single most effective lever on a PipeWire desktop, and nothing sets it. |
+| What reaches PipeWire | A 200 ms request | pipewire-pulse translates the pulse latency request into the graph node's latency, measured in 4.4. Asking for 200 ms is therefore asking the graph for 80. |
 | Writer thread priority | Ordinary JVM thread | A 5 ms buffer needs a thread that wakes on time under load. This one does not. |
 | Underruns | Not counted | A latency target nobody can validate is a setting, not a guarantee. |
 
@@ -111,6 +111,11 @@ At 48 kHz, one buffer of:
 | 256 | 5.3 ms | A game, a synth, anything a keypress should be heard in. |
 | 128 | 2.7 ms | What the hardware can do, and what a loaded machine will underrun on. |
 
+The quantum is a floor, not a suggestion: a client asking for less than the
+graph's `clock.quantum` gets the quantum. 1024 is PipeWire's default and desktops
+configured for audio work run lower, so the reachable floor is a property of the
+machine rather than of this library. Section 4.4 has the measurement.
+
 A round trip through capture and back out is roughly twice the number plus the
 device's own path, so a voice application aiming to feel live is aiming at 256
 or below on each side.
@@ -180,35 +185,50 @@ pa_stream_get_buffer_attr        <- already bound
 pa_stream_get_latency            <- already bound
 ```
 
-### 4.4 PipeWire: request the quantum
+### 4.4 PipeWire: what the lever actually is
 
-On a PipeWire desktop the buffer attributes above are advisory. The graph runs
-at a global quantum, and a client asks to change it through node properties
-which `pipewire-pulse` reads straight out of the stream proplist.
+An earlier draft of this section said `node.latency` in the stream proplist is
+how a client asks PipeWire for a quantum. That is wrong, and the measurement
+takes a minute to repeat.
 
-libsound already sets proplist properties on every stream: application name,
-identifier, icon and media role. The quantum request is one more entry in the
-same call.
+`PULSE_PROP` puts arbitrary properties on a stream's proplist and they arrive
+intact: an invented `libsound.probe` key shows up in `pactl list sink-inputs`
+exactly as set, and so does `media.role`. `node.latency` set the same way does
+not survive. pipewire-pulse computes it from the pulse latency request and
+overwrites whatever the client wrote.
 
-```
-node.latency      = "<frames>/<rate>"    e.g. 256/48000
-node.rate         = "1/<rate>"           the rate the client wants the graph at
-node.lock-quantum = "true"               only where a caller demands it
-```
+| Latency asked for through the pulse API | What the graph ended up with |
+|---|---|
+| 200 ms | `node.latency = 3840/48000`, 80 ms |
+| 40 ms | `node.latency = 480/48000`, 10 ms |
+| 10 ms | `node.latency = 256/48000`, 5.3 ms |
 
-`node.latency` is set from the profile. `node.lock-quantum` is deliberately not
-set by default: locking the graph quantum affects every other client on the
-machine, and a library that quietly degrades a user's whole desktop to serve one
-application is doing something it was not asked to do. It is exposed, documented
-as antisocial, and off.
+`node.latency=128/48000` was set in the proplist for all three and ignored in
+all three.
 
-The same properties apply to a capture stream.
+So there is no separate PipeWire path to write. The lever is the one section 4.3
+already describes: ask through `tlength` with `ADJUST_LATENCY`, and
+pipewire-pulse does the translation. That makes 4.3 more important rather than
+less, and it removes a section of work from this plan.
 
-**How the result is verified.** `pa_stream_get_buffer_attr` after the stream is
-ready reports what was actually granted, which is not always what was asked for.
-The sink logs the difference once, at info, the same way the backend logs which
-one it selected. A consumer that asked for `LOWEST` and got 21 ms should be able
-to find out why without a packet trace.
+**The graph quantum is a floor.** The third row asked for 10 ms and got 5.3,
+which is `clock.quantum` of 256 frames on the machine it was measured on. A
+client does not get below the quantum by asking politely. PipeWire's own default
+is 1024, which is 21 ms, so on a desktop nobody has configured, the `LOW` and
+`LOWEST` profiles of 4.2 are not reachable by a client at all.
+
+Going below the quantum means `node.force-quantum` or `node.lock-quantum`, which
+change the graph for every other application on the machine. Both are exposed,
+documented as antisocial, and off. A library that quietly reconfigures a user's
+whole desktop to serve one application is doing something it was not asked to
+do.
+
+**Which is why a profile is a request and a ceiling, not a promise.** The sink
+reports what it was actually granted, through `latencyNanos` and through one
+line at open, so a consumer that asked for `LOWEST` on a 1024-quantum desktop
+can find out it got 21 ms without a packet trace.
+`pa_stream_get_buffer_attr` after the stream is ready is where that number comes
+from.
 
 ### 4.5 The thread has to be real-time
 
@@ -877,7 +897,7 @@ seam is public so somebody else's project can go further.
 | Question | Blocks | How it gets answered |
 |---|---|---|
 | Where does `libsound-audio` get a D-Bus connection for RealtimeKit? | 4.5 | Three options: move the D-Bus layer to a shared internal module, give the audio module its own minimal client, or make `libsound-session` an optional dependency. The first is cleanest and the largest change. |
-| Does `ADJUST_LATENCY` behave the same through `pipewire-pulse` as on PulseAudio? | 4.3 | Measured on both, with `pa_stream_get_buffer_attr` reporting what was granted. This is a measurement, not a reading. |
+| Does `ADJUST_LATENCY` behave the same through `pipewire-pulse` as on PulseAudio? | 4.3 | Half answered: 4.4 measures that pipewire-pulse translates the pulse latency request into the node's latency, so the request is honoured in shape. Whether the flag itself changes the result on each server is still a measurement to make. |
 | What is the lowest profile that survives on an ordinary desktop? | 4.2 | A soak with underrun counting at each profile, on a loaded machine and an idle one. The numbers in 4.1 are arithmetic, not measurements. |
 | Does `IAudioSessionManager2` enumerate capture sessions? | 6.2 | A probe in `tools/`, run under wine, before anything is written. |
 | Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | Measured against a live server, the way the monitor path was. |
