@@ -11,7 +11,7 @@
 </div>
 
 <div align="center">
-  <h3>Audio output channel and media session for JVM 22+ via Project Panama.</h3>
+  <h3>Low-latency audio, the system mixer, and a media session for JVM 22+ via Project Panama.</h3>
 </div>
 
 ---
@@ -23,6 +23,24 @@ mixer surface for everyone else's streams, and a media session the desktop can
 see and control. It does **not** decode, resample, or run effects -- that is
 [`skinema`](https://github.com/Kitty-Hivens/skinema)'s job, and duplicating it
 would be a defect.
+
+Three things it is for, in this order. **Low latency**, because audio arriving a
+fifth of a second late is audio that arrived wrong. **PipeWire asked properly**,
+rather than treated as a PulseAudio that happens to answer. And **MPRIS**, in
+both directions.
+
+| Platform | Tier |
+|---|---|
+| Linux | First class. Every feature lands here first and stays supported. |
+| Windows | Experimental. Ships, reports its capabilities honestly, never blocks a release. |
+| macOS | Output only. The CoreAudio sink stays and stays tested on every push, and nothing new is added there. |
+
+The latency half is the newest of the three and the least finished. Buffers
+default to 200 ms, which is the measured right answer for the JavaSound fallback
+and far more than libpulse needs, and the writing thread has no priority to
+speak of. [docs/PLAN.md](docs/PLAN.md) specifies what closes that, along with
+capture, device and card control, and the parts of MPRIS this does not publish
+yet. Everything described below is in and exercised.
 
 For any JVM desktop application that draws its own UI -- whether it wants to be a
 first-class citizen of the desktop's audio stack rather than an anonymous client
@@ -171,6 +189,9 @@ depend on this by accident. The API will still shift.
 | macOS session (MPNowPlayingInfoCenter) | Written, and its suite runs on every push against the real framework. A process with no bundle can publish -- measured before any of it was written. Whether the widget shows it, and whether a media key arrives, needs a person. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |
 | musl (Alpine) | The whole Linux surface -- audio, mixer and session -- built and tested inside Alpine on every push. Nothing native ships here, so what this row proves is that opening the system libraries by soname resolves under a musl loader too. |
+| Low latency | Specified, not built. Buffer targets, the PipeWire quantum request and a real-time writing thread are [docs/PLAN.md](docs/PLAN.md) section 4. What exists today is correct and slow. |
+| Capture | Absent. No source, no capture stream, no capture device, on any platform. Specified in [docs/PLAN.md](docs/PLAN.md) section 5. |
+| Device and card control | Absent. A stream's volume can be changed, the device it plays to cannot, and card profiles are out of reach -- which is the bluetooth headset that sounds good or has a working microphone, and nothing here can choose. |
 | macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`VolumeMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/VolumeMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux
@@ -189,9 +210,10 @@ A backend that no runner can exercise reaches a release having never executed,
 and a hardware suite that skips is the same shade of green as one that passes.
 So `./gradlew smoke` is an audible check a person runs: it exercises the same
 rules the contract asserts, prints a pass or failure for each, and then asks the
-four questions no assertion can answer -- whether a tone was audible, whether
+five questions no assertion can answer -- whether a tone was audible, whether
 the desktop's mixer shows the stream under our name, whether the slider moves
-with our volume, and whether stopping actually silenced the device.
+with our volume, whether stopping actually silenced the device, and whether the
+applications it lists are the ones the system mixer shows.
 
 [docs/TESTING.md](docs/TESTING.md) is written for somebody who has never seen
 this repository.
