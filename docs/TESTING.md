@@ -90,6 +90,39 @@ The last line prints `N passed, M failed`. **A run that fails is still a useful
 run** -- it is more useful than a passing one, and the output is exactly what is
 needed to fix it. Please send it either way.
 
+## Suites that do not run unless you ask for them
+
+Three of them, and all three are about not doing something to your machine
+without being asked.
+
+**The JavaSound capture suite records whatever the JVM calls the default
+input**, which on an ordinary machine is a microphone in a room. It is skipped
+unless a run names it:
+
+```
+LIBSOUND_REQUIRE=javasound-capture ./gradlew test
+```
+
+CI names it, because a container's default input is a null sink's monitor and
+there is nothing there to overhear.
+
+**The libpulse capture suites record a monitor** rather than a microphone, for
+the same reason: a monitor is what the machine is playing, which the suite put
+there itself. `LIBSOUND_CAPTURE_DEVICE=<source name>` points them at a real
+input for a run that means to exercise one, and `pactl list short sources`
+lists the names.
+
+**The real-time suite needs RealtimeKit**, which most desktops have and no
+hosted runner does. It skips where the service is absent and fails loudly where
+a run named it:
+
+```
+LIBSOUND_REQUIRE=rtkit ./gradlew test
+```
+
+Worth running on a machine with the service, because what it asserts is the
+kernel's own answer read back out of `/proc` rather than the daemon's reply.
+
 ## If it will not start at all
 
 - `error: invalid source release: 22` or similar means the JDK is too old.
