@@ -107,14 +107,18 @@ class DBusConnection private constructor(
      * resolving a signal's sender back to a well-known name is an obvious thing
      * to do, and it hung for the whole timeout every time.
      */
-    fun call(message: MemorySegment, timeoutMillis: Int = DEFAULT_REPLY_TIMEOUT_MS): MemorySegment? {
+    fun call(
+        message: MemorySegment,
+        timeoutMillis: Int = DEFAULT_REPLY_TIMEOUT_MS,
+        onError: ((String) -> Unit)? = null,
+    ): MemorySegment? {
         if (!open.get()) {
             runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
             return null
         }
-        if (Thread.currentThread() === ioThread) return blockingCall(message, timeoutMillis)
+        if (Thread.currentThread() === ioThread) return blockingCall(message, timeoutMillis, onError)
         val future = CompletableFuture<MemorySegment?>()
-        tasks.put(Runnable { future.complete(runCatching { blockingCall(message, timeoutMillis) }.getOrNull()) })
+        tasks.put(Runnable { future.complete(runCatching { blockingCall(message, timeoutMillis, onError) }.getOrNull()) })
         return runCatching {
             // Past the peer's own timeout, plus slack for the loop to pick the
             // task up. A caller that waits forever here is a caller the I/O
@@ -126,15 +130,28 @@ class DBusConnection private constructor(
         }
     }
 
-    /** The round trip itself, only ever on the I/O thread. */
-    private fun blockingCall(message: MemorySegment, timeoutMillis: Int): MemorySegment? =
+    /**
+     * The round trip itself, only ever on the I/O thread.
+     *
+     * [onError] gets the peer's own words for a refusal. A caller that has to
+     * explain the failure to a user needs them: "org.freedesktop.DBus.Error
+     * .AccessDenied" is an answer, and a null reply on its own is not.
+     */
+    private fun blockingCall(
+        message: MemorySegment,
+        timeoutMillis: Int,
+        onError: ((String) -> Unit)? = null,
+    ): MemorySegment? =
         Arena.ofConfined().use { call ->
             val error = call.allocate(DBusAbi.ERROR_LAYOUT)
             symbols.handle("dbus_error_init").invokeExact(error) as Unit
             try {
                 val reply = symbols.handle("dbus_connection_send_with_reply_and_block")
                     .invokeExact(connection, message, timeoutMillis, error) as MemorySegment
-                takeError(symbols, error)?.let { log.debug("round trip answered with an error: {}", it) }
+                takeError(symbols, error)?.let {
+                    log.debug("round trip answered with an error: {}", it)
+                    onError?.invoke(it)
+                }
                 if (reply.address() == 0L) null else reply
             } finally {
                 runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
