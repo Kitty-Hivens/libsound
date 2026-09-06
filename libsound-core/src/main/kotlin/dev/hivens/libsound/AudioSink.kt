@@ -64,6 +64,40 @@ package dev.hivens.libsound
  * rescue it is the one already blocked. A watchdog closes the sink to free it,
  * so [close] must break a pending [write] rather than wait for it.
  *
+ * ## What a wrapper owes
+ *
+ * A sink can wrap another sink, and that is how processing is meant to be
+ * added: a gain, a filter, a limiter, published separately and depending on
+ * this contract alone. It works today because this is an interface, and it is
+ * a trap today because the contract says nothing about what a wrapper owes.
+ * Four rules, asserted by the decorator fixture beside the contract suite.
+ *
+ * 1. **[write] still blocks until the device took the audio.** A decorator may
+ *    buffer internally, but it may not return before the frames it produced
+ *    have been consumed by the sink it wraps. Returning early turns the
+ *    consumer's decode loop into a busy loop and makes a stall watchdog fire
+ *    during healthy playback.
+ *
+ * 2. **[framePosition] delegates unchanged.** It counts frames the device has
+ *    played, and a decorator has played nothing. Adding its own buffered
+ *    frames would report audio nobody has heard.
+ *
+ * 3. **A decorator that changes the frame count has to say so.** Resampling
+ *    and time-stretching produce a different number of frames than they
+ *    consume, so the wrapped sink's position stops counting the consumer's
+ *    frames. Such a decorator either scales the position back into the
+ *    consumer's frames or declares itself unusable as a clock source by
+ *    withholding [Capability.DEVICE_POSITION]. There is no third option that
+ *    keeps audio and video in sync.
+ *
+ * 4. **[flush] drops the decorator's own buffer too, and [close] closes what it
+ *    wraps.** A seek that leaves stale samples in a filter plays the old
+ *    position for as long as the filter is deep.
+ *
+ * And [latencyNanos] includes the decorator's own buffer on top of what it
+ * wraps. A filter that hides its depth makes every consumer's synchronisation
+ * wrong by exactly that much.
+ *
  * ## Failure policy
  *
  * Unlike the tray and notification libraries, this one does not degrade
@@ -119,8 +153,31 @@ public interface AudioSink : AutoCloseable {
      * How far ahead of the speaker the write head currently is, in nanoseconds.
      * Zero when the backend cannot tell -- which is itself information, so it is
      * not an error.
+     *
+     * The whole path, and this is the number a consumer needs rather than the
+     * one that is easiest to produce: what is queued here, plus what the server
+     * holds, plus the device's own. A pacer that had to add its own estimate of
+     * the server's share would get it wrong differently on every machine. It is
+     * also how a consumer finds out what its [SinkConfig.latency] request was
+     * actually granted, since a profile is a request and the graph's quantum is
+     * a floor under it.
      */
     public fun latencyNanos(): Long
+
+    /**
+     * Times the device ran dry since [open]. Monotonic within one open.
+     *
+     * A low-latency target nobody can validate is a setting rather than a
+     * guarantee: this is the number a consumer watches to find out that it
+     * asked for too much, and backs its profile off when it climbs. The
+     * vocabulary is [PcmRingBuffer]'s on purpose, which counts the same event
+     * one layer up.
+     *
+     * Zero where the backend does not count them, which is not the same as
+     * never having run dry. [Capability.UNDERRUN_COUNT] is how the two are told
+     * apart.
+     */
+    public fun underrunCount(): Long
 
     /**
      * Linear volume in 0..1. Applied to the stream at the system level when

@@ -2,11 +2,16 @@ package dev.hivens.libsound.audio.wasapi
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
+import dev.hivens.libsound.AudioException
+import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -114,6 +119,31 @@ internal class WasapiBackend private constructor(
         val id = defaultDeviceId() ?: return null
         return devices().firstOrNull { it.id.value == id }
     }
+
+    /**
+     * No capture here, and this is a gap in the backend rather than in the
+     * platform: `EnumAudioEndpoints` takes eCapture as readily as eRender, and
+     * `IAudioCaptureClient` is the neighbour of the render client already
+     * bound. What is missing is the oracle run that prints its vtable slots,
+     * and a slot index read off a documentation page is the one thing this
+     * library will not write. Windows is the experimental tier, so the Linux
+     * capture path goes first and this follows it.
+     */
+    override fun createSource(config: SourceConfig): AudioSource =
+        throw AudioException("the WASAPI backend cannot capture yet")
+
+    override fun captureDevices(): List<AudioDevice> = emptyList()
+
+    override fun defaultCaptureDevice(): AudioDevice? = null
+
+    /**
+     * No sample cache. It is a PulseAudio idea, and Windows has no equivalent
+     * to bind: the nearest thing is playing a file, which is a stream like any
+     * other and buys none of what the cache exists for.
+     */
+    override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
+
+    override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean = false
 
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit {
         deviceListeners.add(handler)

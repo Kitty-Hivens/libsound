@@ -289,6 +289,8 @@ internal class PulseSink(
         }
     }
 
+    override fun underrunCount(): Long = 0L
+
     override fun setVolume(volume: Float) {
         volumeValue = volume.coerceIn(0f, 1f)
         applyVolume()

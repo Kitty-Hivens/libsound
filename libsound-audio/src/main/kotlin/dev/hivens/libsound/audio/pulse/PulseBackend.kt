@@ -2,11 +2,16 @@ package dev.hivens.libsound.audio.pulse
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
+import dev.hivens.libsound.AudioException
+import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
 import org.slf4j.LoggerFactory
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
@@ -150,6 +155,17 @@ internal class PulseBackend private constructor(
 
     /** The list already carries the answer, so asking the server twice buys nothing. */
     override fun defaultDevice(): AudioDevice? = devices().firstOrNull { it.isDefault }
+
+    override fun createSource(config: SourceConfig): AudioSource =
+        throw AudioException("this backend cannot capture yet")
+
+    override fun captureDevices(): List<AudioDevice> = emptyList()
+
+    override fun defaultCaptureDevice(): AudioDevice? = null
+
+    override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
+
+    override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean = false
 
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit {
         deviceListeners.add(handler)
