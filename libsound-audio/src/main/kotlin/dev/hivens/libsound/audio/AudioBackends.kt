@@ -53,7 +53,10 @@ public object AudioBackends {
             log.warn("no audio backend available on this machine")
         } else {
             log.info("audio backend: {} {}", backend.name, backend.capabilities)
-            if (backend.name == "coreaudio") log.info(MACOS_SCOPE)
+            // The type rather than the name: two string literals in two files
+            // that have to agree is a note that stops printing the day somebody
+            // renames the backend, and nothing would say so.
+            if (backend is CoreAudioBackend) log.info(MACOS_SCOPE)
         }
         return backend
     }
