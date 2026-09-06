@@ -620,20 +620,30 @@ internal class PulseMixer private constructor(
     private class DeviceRow(val device: AudioDevice, val channels: Int)
 
     /**
-     * The row for a device, refreshing the cache once if the name is new.
+     * The row for a device, refreshing the cache once if the name is new or
+     * what was cached is not usable.
      *
      * A name that is in neither facility after a refresh is a device that is
      * gone, and every control on it answers false rather than guessing which
      * call to make.
+     *
+     * A channel count of zero is the case worth refreshing for. A device that
+     * has just been created is registered before its volume is, so a walk that
+     * catches it in between caches a row whose cvolume carries no channels at
+     * all, and a control built on that count is one the server accepts and
+     * applies to nothing.
      */
     private fun deviceRow(device: DeviceId): DeviceRow? {
-        deviceRows[device.value]?.let { return it }
+        deviceRows[device.value]?.takeIf { it.channels > 0 }?.let { return it }
         primeDeviceNames()
         return deviceRows[device.value]
     }
 
     private fun applyDeviceVolume(device: DeviceId, row: DeviceRow, volume: Float): Boolean {
-        val channels = row.channels.coerceIn(1, PulseAbi.CHANNELS_MAX)
+        // Stereo where the count is not usable, which is the same fallback the
+        // stream side takes and for the same reason: one channel of two is a
+        // request the server accepts and a user hears half of.
+        val channels = row.channels.takeIf { it in 1..PulseAbi.CHANNELS_MAX } ?: FALLBACK_CHANNELS
         val symbol = when (row.device.direction) {
             StreamDirection.PLAYBACK -> "pa_context_set_sink_volume_by_name"
             StreamDirection.CAPTURE -> "pa_context_set_source_volume_by_name"
