@@ -105,6 +105,17 @@ internal class PulseLibrary private constructor(
             Triple("pa_sw_volume_to_linear", F64, listOf(I32)),
             Triple("pa_cvolume_max", I32, listOf(ADDR)),
 
+            // The capture half: the same introspection shape as the sinks, one
+            // facility along. pa_stream_connect_record is already bound below,
+            // for the meter, which is what makes the record path the smaller
+            // half of this work.
+            Triple("pa_context_get_source_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_context_get_source_info_by_index", ADDR, listOf(ADDR, I32, ADDR, ADDR)),
+            Triple("pa_context_get_source_output_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_source_output_volume", ADDR, listOf(ADDR, I32, ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_source_output_mute", ADDR, listOf(ADDR, I32, I32, ADDR, ADDR)),
+            Triple("pa_context_move_source_output_by_name", ADDR, listOf(ADDR, I32, ADDR, ADDR, ADDR)),
+
             // Peak metering: a recording stream on a sink's monitor source,
             // aimed at one sink input rather than at everything the sink plays.
             Triple("pa_stream_connect_record", I32, listOf(ADDR, ADDR, ADDR, I32)),

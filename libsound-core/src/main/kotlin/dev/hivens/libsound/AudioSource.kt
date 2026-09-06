@@ -17,10 +17,16 @@ package dev.hivens.libsound
  * immediately afterwards. A source that opened idle would strand a recorder
  * waiting for frames that never come.
  *
- * ### open() resets the frame position to zero
+ * ### open() starts the frame position from zero
  *
  * A recorder writing a file counts from the start of the take, and a reopen is
  * a new take.
+ *
+ * Not exactly zero at the instant it is read, and the difference is the device
+ * rather than the bookkeeping: a source is capturing from the moment it opens,
+ * so by the time the question is asked a fraction of a millisecond has already
+ * gone by. What the rule forbids is a count carried over from an earlier take,
+ * which is seconds rather than frames.
  *
  * ### read() blocks until the device has produced the frames
  *

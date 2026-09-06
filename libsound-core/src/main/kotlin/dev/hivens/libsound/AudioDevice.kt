@@ -90,6 +90,16 @@ public data class AudioDevice(
      * looking at a silent device wants to know which kind of silence it is.
      */
     public val isSuspended: Boolean = false,
+    /**
+     * True when this is a playback device's monitor rather than a microphone.
+     *
+     * A monitor is what a machine is playing, offered back as something to
+     * record. Both are legitimate things to capture and they are not
+     * interchangeable: a device menu that lists "Monitor of Built-in Audio"
+     * among the microphones confuses everyone who reads it, and one that hides
+     * it cannot record what the speakers are playing.
+     */
+    public val isMonitor: Boolean = false,
     /** The connectors this device offers, empty where the backend cannot list them. */
     public val ports: List<DevicePort> = emptyList(),
     /** Which of [ports] is in use, by name, or null when the backend cannot tell. */

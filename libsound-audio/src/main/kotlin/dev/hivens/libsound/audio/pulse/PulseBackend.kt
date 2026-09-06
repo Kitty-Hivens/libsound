@@ -12,6 +12,7 @@ import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.StreamDirection
 import org.slf4j.LoggerFactory
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
@@ -65,6 +66,7 @@ internal class PulseBackend private constructor(
                 add(Capability.DEVICE_SELECTION)
                 add(Capability.DEVICE_EVENTS)
                 add(Capability.DEVICE_POSITION)
+                add(Capability.CAPTURE)
                 add(Capability.LOW_LATENCY)
                 add(Capability.UNDERRUN_COUNT)
                 if (rolePolicyLoaded) add(Capability.DUCKS_OTHERS)
@@ -86,6 +88,7 @@ internal class PulseBackend private constructor(
     }
 
     private val sinks = CopyOnWriteArrayList<PulseSink>()
+    private val sources = CopyOnWriteArrayList<PulseSource>()
     private val deviceListeners = CopyOnWriteArrayList<() -> Unit>()
 
     /**
@@ -118,6 +121,9 @@ internal class PulseBackend private constructor(
     private var defaultSinkName: String? = null
 
     @Volatile
+    private var defaultSourceName: String? = null
+
+    @Volatile
     private var serverInfoComplete = false
 
     @Volatile
@@ -128,6 +134,7 @@ internal class PulseBackend private constructor(
     private var rolePolicyLoaded = false
 
     private lateinit var sinkInfoStub: MemorySegment
+    private lateinit var sourceInfoStub: MemorySegment
     private lateinit var serverInfoStub: MemorySegment
     private lateinit var subscribeStub: MemorySegment
     private lateinit var moduleInfoStub: MemorySegment
@@ -158,12 +165,39 @@ internal class PulseBackend private constructor(
     /** The list already carries the answer, so asking the server twice buys nothing. */
     override fun defaultDevice(): AudioDevice? = devices().firstOrNull { it.isDefault }
 
-    override fun createSource(config: SourceConfig): AudioSource =
-        throw AudioException("this backend cannot capture yet")
+    override fun createSource(config: SourceConfig): AudioSource {
+        if (closed.get()) throw AudioException("backend is closed")
+        val source = PulseSource(pulse, config, SOURCE_CAPABILITIES)
+        sources.add(source)
+        return source
+    }
 
-    override fun captureDevices(): List<AudioDevice> = emptyList()
+    /**
+     * Sources, monitors included and marked as such.
+     *
+     * A monitor is a sink's output offered back as something to record, which is
+     * a legitimate thing to want and not a microphone. Both are listed, with
+     * [AudioDevice.isMonitor] telling them apart, because filtering here would
+     * take away the per-application recording this library can actually do.
+     */
+    override fun captureDevices(): List<AudioDevice> {
+        if (closed.get()) return emptyList()
+        return roundTrip.withLock {
+            val default = queryDefaultSourceName()
+            pulse.locked {
+                collected.clear()
+                collectComplete = false
+                val op = lib.handle("pa_context_get_source_info_list")
+                    .invokeExact(pulse.context, sourceInfoStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked emptyList()
+                pulse.releaseOperation(op)
+                if (!awaitFlag { collectComplete }) return@locked emptyList()
+                collected.map { it.copy(isDefault = it.id.value == default) }
+            }
+        }
+    }
 
-    override fun defaultCaptureDevice(): AudioDevice? = null
+    override fun defaultCaptureDevice(): AudioDevice? = captureDevices().firstOrNull { it.isDefault }
 
     override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
 
@@ -178,6 +212,8 @@ internal class PulseBackend private constructor(
         if (!closed.compareAndSet(false, true)) return
         sinks.forEach { runCatching { it.close() } }
         sinks.clear()
+        sources.forEach { runCatching { it.close() } }
+        sources.clear()
         deviceListeners.clear()
         // Drained, not killed. A handler runs on this thread and its natural
         // first move is to re-read the device list, which parks on the mainloop
@@ -219,15 +255,35 @@ internal class PulseBackend private constructor(
         }.onFailure { log.warn("sink info callback threw: {}", it.message) }
     }
 
+    fun onSourceInfo(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            if (eol != 0) {
+                if (eol < 0) log.debug("source info list ended with {}", eol)
+                collectComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            if (info.address() == 0L) return@runCatching
+            val head = info.reinterpret(PulseAbi.SOURCE_INFO_HEAD)
+            val sourceName = head.get(ValueLayout.ADDRESS, PulseAbi.SOURCE_INFO_NAME).readCString() ?: return@runCatching
+            val description = head.get(ValueLayout.ADDRESS, PulseAbi.SOURCE_INFO_DESCRIPTION).readCString()
+            collected.add(
+                AudioDevice(
+                    id = DeviceId(sourceName),
+                    name = description ?: sourceName,
+                    direction = StreamDirection.CAPTURE,
+                    isMonitor = head.get(ValueLayout.JAVA_INT, PulseAbi.SOURCE_INFO_MONITOR_OF_SINK) !=
+                        PulseAbi.INVALID_INDEX,
+                ),
+            )
+        }.onFailure { log.warn("source info callback threw: {}", it.message) }
+    }
+
     fun onServerInfo(unusedContext: MemorySegment, info: MemorySegment, unusedUserData: MemorySegment) {
         runCatching {
-            defaultSinkName = if (info.address() == 0L) {
-                null
-            } else {
-                info.reinterpret(SERVER_INFO_HEAD)
-                    .get(ValueLayout.ADDRESS, PulseAbi.SERVER_INFO_DEFAULT_SINK_NAME)
-                    .readCString()
-            }
+            val head = if (info.address() == 0L) null else info.reinterpret(SERVER_INFO_HEAD)
+            defaultSinkName = head?.get(ValueLayout.ADDRESS, PulseAbi.SERVER_INFO_DEFAULT_SINK_NAME)?.readCString()
+            defaultSourceName = head?.get(ValueLayout.ADDRESS, PulseAbi.SERVER_INFO_DEFAULT_SOURCE_NAME)?.readCString()
             serverInfoComplete = true
             pulse.signal()
         }.onFailure { log.warn("server info callback threw: {}", it.message) }
@@ -274,14 +330,25 @@ internal class PulseBackend private constructor(
     // -- internals -----------------------------------------------------------
 
     /** Caller holds [roundTrip]. */
-    private fun queryDefaultSinkName(): String? = pulse.locked {
+    private fun queryDefaultSinkName(): String? = queryServerInfo()?.let { defaultSinkName }
+
+    /** Caller holds [roundTrip]. */
+    private fun queryDefaultSourceName(): String? = queryServerInfo()?.let { defaultSourceName }
+
+    /**
+     * One round trip that answers both defaults, because the server sends both
+     * in one struct and asking twice would be two round trips for one fact.
+     * Caller holds [roundTrip].
+     */
+    private fun queryServerInfo(): Unit? = pulse.locked {
         defaultSinkName = null
+        defaultSourceName = null
         serverInfoComplete = false
         val op = lib.handle("pa_context_get_server_info")
             .invokeExact(pulse.context, serverInfoStub, MemorySegment.NULL) as MemorySegment
         if (op.address() == 0L) return@locked null
         pulse.releaseOperation(op)
-        if (!awaitFlag { serverInfoComplete }) null else defaultSinkName
+        if (!awaitFlag { serverInfoComplete }) null else Unit
     }
 
     /**
@@ -344,14 +411,17 @@ internal class PulseBackend private constructor(
         val addr = ValueLayout.ADDRESS
         val i32 = ValueLayout.JAVA_INT
 
+        val infoType = MethodType.methodType(
+            Void.TYPE, MemorySegment::class.java, MemorySegment::class.java,
+            Int::class.javaPrimitiveType, MemorySegment::class.java,
+        )
         sinkInfoStub = linker.upcallStub(
-            lookup.findVirtual(
-                PulseBackend::class.java, "onSinkInfo",
-                MethodType.methodType(
-                    Void.TYPE, MemorySegment::class.java, MemorySegment::class.java,
-                    Int::class.javaPrimitiveType, MemorySegment::class.java,
-                ),
-            ).bindTo(this),
+            lookup.findVirtual(PulseBackend::class.java, "onSinkInfo", infoType).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, addr, i32, addr),
+            lib.arena,
+        )
+        sourceInfoStub = linker.upcallStub(
+            lookup.findVirtual(PulseBackend::class.java, "onSourceInfo", infoType).bindTo(this),
             FunctionDescriptor.ofVoid(addr, addr, i32, addr),
             lib.arena,
         )
@@ -393,7 +463,12 @@ internal class PulseBackend private constructor(
         pulse.locked {
             lib.handle("pa_context_set_subscribe_callback")
                 .invokeExact(pulse.context, subscribeStub, MemorySegment.NULL) as Unit
-            val mask = PulseAbi.SUBSCRIPTION_MASK_SINK or PulseAbi.SUBSCRIPTION_MASK_SERVER
+            // Sources as well as sinks: onDevicesChanged covers both
+            // directions, and a microphone appearing is exactly the event a
+            // consumer that draws an input menu is waiting for.
+            val mask = PulseAbi.SUBSCRIPTION_MASK_SINK or
+                PulseAbi.SUBSCRIPTION_MASK_SOURCE or
+                PulseAbi.SUBSCRIPTION_MASK_SERVER
             val op = lib.handle("pa_context_subscribe")
                 .invokeExact(pulse.context, mask, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
             pulse.releaseOperation(op)
@@ -415,6 +490,19 @@ internal class PulseBackend private constructor(
          * no way to change the device it was created against -- handing it the
          * backend's set claimed all three.
          */
+        /**
+         * What a source can do. The same shape as a sink's set and for the same
+         * reason: it can name itself and set its own volume, and it can neither
+         * enumerate devices nor subscribe to their events.
+         */
+        private val SOURCE_CAPABILITIES = Capabilities.of(
+            Capability.CAPTURE,
+            Capability.STREAM_VOLUME,
+            Capability.STREAM_IDENTITY,
+            Capability.DEVICE_POSITION,
+            Capability.LOW_LATENCY,
+        )
+
         private val SINK_CAPABILITIES = Capabilities.of(
             Capability.STREAM_VOLUME,
             Capability.STREAM_IDENTITY,

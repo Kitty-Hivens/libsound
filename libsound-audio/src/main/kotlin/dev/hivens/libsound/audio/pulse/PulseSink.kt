@@ -239,7 +239,7 @@ internal class PulseSink(
                 lib.handle("pa_stream_set_state_callback")
                     .invokeExact(fresh, pulse.notifyStub, MemorySegment.NULL) as Unit
                 lib.handle("pa_stream_set_write_callback")
-                    .invokeExact(fresh, pulse.writeRequestStub, MemorySegment.NULL) as Unit
+                    .invokeExact(fresh, pulse.requestStub, MemorySegment.NULL) as Unit
                 lib.handle("pa_stream_set_underflow_callback")
                     .invokeExact(fresh, underflowStub, MemorySegment.NULL) as Unit
                 lib.handle("pa_stream_set_overflow_callback")
