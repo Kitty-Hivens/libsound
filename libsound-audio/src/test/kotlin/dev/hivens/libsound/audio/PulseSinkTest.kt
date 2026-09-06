@@ -258,9 +258,13 @@ class PulseBackendTest {
         // the machine. What must hold everywhere is that asking for less gets
         // less.
         (low < relaxed) shouldBe true
-        // And RELAXED is still the old behaviour, so a consumer that wants the
-        // 200 ms this library used to give everybody can have it exactly.
-        (relaxed > 100_000_000L) shouldBe true
+        // And nothing absolute beyond that. What this reads is how much is
+        // queued at one instant, which is a fill level rather than the buffer
+        // that was granted: on a device with a long path of its own it sits
+        // near the target, and against a null sink it sits well under. An
+        // assertion on the number would be an assertion about the device. The
+        // granted size is in the line the sink logs at open, and reading it
+        // back is what grantedTlengthBytes does.
     }
 
     @Test

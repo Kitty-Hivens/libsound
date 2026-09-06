@@ -236,6 +236,83 @@ jobs:
           path: '**/build/reports/tests/test'
           retention-days: 7
 
+  # PipeWire, which is what a desktop actually runs, and which no other row
+  # here was talking to.
+  #
+  # The three Linux rows above all install pulseaudio, so every push exercised
+  # the reference implementation and never the server most consumers will meet.
+  # One libpulse reaches both, because pipewire-pulse speaks the same protocol,
+  # and the two do not answer the same: DUCKS_OTHERS is true on one and false
+  # on the other, an uploaded sample outlives its uploader on one and does not
+  # on the other, and a latency request is granted different numbers. This row
+  # is where those differences become a red build rather than a surprise.
+  pipewire:
+    name: Build & test (PipeWire, not PulseAudio)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: A PipeWire graph, its pulse server, and the clients that read them
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pipewire pipewire-pulse wireplumber \
+            pulseaudio-utils dbus-x11 libglib2.0-bin playerctl
+
+      # Servers and build in one step. pipewire has no daemonise flag of its
+      # own, so the session that owns the graph has to be the session that runs
+      # the suites, which is also the shape this was measured in.
+      - name: Build + test against pipewire-pulse
+        env:
+          # No javasound named here, and the omission is the point: routing
+          # ALSA's default into the graph is a second thing to configure, and
+          # the rows above already require that suite. What this row is for is
+          # the pulse protocol reaching a PipeWire server.
+          LIBSOUND_REQUIRE: pulse,dbus
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/libsound-runtime
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          cat > /tmp/pipewire-run.sh <<'SH'
+          set -eu
+          pipewire &
+          sleep 1
+          wireplumber &
+          pipewire-pulse &
+          sleep 3
+          # A runner has no card, so the graph is given a device the same way
+          # the other rows give one to PulseAudio.
+          pactl load-module module-null-sink sink_name=libsound_test
+          pactl info
+          # The whole reason this row exists. A pipewire-pulse that failed to
+          # start would leave PulseAudio answering, and the row would pass
+          # while proving what the rows above already prove.
+          pactl info | grep -q "on PipeWire" || {
+            echo "FAIL: this row is talking to a PulseAudio, not a PipeWire"
+            exit 1
+          }
+          ./gradlew --no-daemon build --stacktrace
+          SH
+          dbus-run-session -- bash /tmp/pipewire-run.sh
+
+      - name: What each suite actually did
+        if: always()
+        env:
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,PulseDeviceControl,PulsePerStreamCapture,PulseSampleCache,MprisSession,MprisReader,DBusConnection
+        run: python3 .github/test-summary.py
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-pipewire
+          path: '**/build/reports/tests/test'
+          retention-days: 7
+
   # NixOS conditions, and the dev shell that answers them.
   #
   # Two things in one row. The nix image has no libpulse outside the store, so
