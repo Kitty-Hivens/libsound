@@ -1,4 +1,4 @@
-package dev.hivens.libsound.session.dbus
+package dev.hivens.libsound.dbus
 
 import java.lang.foreign.MemoryLayout
 import java.lang.foreign.ValueLayout
@@ -33,7 +33,8 @@ import java.lang.foreign.ValueLayout
  * is only byte-aligned as far as the API is concerned, while libdbus writes
  * pointers into it -- which x86_64 tolerates and aarch64 need not.
  */
-internal object DBusAbi {
+@InternalDBusApi
+object DBusAbi {
 
     // -- the two structs a caller allocates -----------------------------------
 
