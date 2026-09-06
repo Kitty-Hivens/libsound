@@ -1,8 +1,10 @@
 package dev.hivens.libsound.audio.pulse
 
+import dev.hivens.libsound.AudioCard
 import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.CardId
 import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.StreamEvent
@@ -210,6 +212,24 @@ internal class PulseMixer private constructor(
             ) as MemorySegment
         }
     }
+
+    override fun setDeviceVolume(device: DeviceId, volume: Float): Boolean = false
+
+    override fun setDeviceMuted(device: DeviceId, muted: Boolean): Boolean = false
+
+    override fun setDefaultDevice(device: DeviceId): Boolean = false
+
+    override fun cards(): List<AudioCard> = emptyList()
+
+    override fun setCardProfile(card: CardId, profile: String): Boolean = false
+
+    override fun setDevicePort(device: DeviceId, port: String): Boolean = false
+
+    override fun createVirtualSink(name: String, channels: Int): DeviceId? = null
+
+    override fun removeVirtualSink(id: DeviceId): Boolean = false
+
+    override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? = null
 
     override fun restoreAll() {
         val volumes = originalVolumes.entries.map { it.key to it.value }

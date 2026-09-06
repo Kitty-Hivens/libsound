@@ -2,9 +2,15 @@ package dev.hivens.libsound.audio.javasound
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
+import dev.hivens.libsound.AudioException
+import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capabilities
+import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
 import org.slf4j.LoggerFactory
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
@@ -57,6 +63,18 @@ internal class JavaSoundBackend private constructor(
     override fun devices(): List<AudioDevice> = emptyList()
 
     override fun defaultDevice(): AudioDevice? = null
+
+    override fun createSource(config: SourceConfig): AudioSource =
+        throw AudioException("the JavaSound fallback cannot capture yet")
+
+    override fun captureDevices(): List<AudioDevice> = emptyList()
+
+    override fun defaultCaptureDevice(): AudioDevice? = null
+
+    /** Nothing on a JVM holds a sound for a server to trigger by name. */
+    override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
+
+    override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean = false
 
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit = {}
 

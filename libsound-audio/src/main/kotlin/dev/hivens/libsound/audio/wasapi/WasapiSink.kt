@@ -311,6 +311,17 @@ internal class WasapiSink(
         }
     }
 
+    /**
+     * Always zero, which [Capability.UNDERRUN_COUNT] is absent to say.
+     *
+     * WASAPI keeps no underrun counter. The padding says what is queued at the
+     * instant it is read, and a client that only looks when it writes cannot
+     * tell a device that ran dry between two writes from one that did not.
+     * Counting from that would produce a number shaped like a measurement and
+     * filled with a guess.
+     */
+    override fun underrunCount(): Long = 0L
+
     override fun setVolume(volume: Float) {
         volumeValue = volume.coerceIn(0f, 1f)
         applyVolume()

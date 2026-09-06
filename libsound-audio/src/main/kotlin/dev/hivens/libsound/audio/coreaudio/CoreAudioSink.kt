@@ -95,6 +95,16 @@ internal class CoreAudioSink(
      */
     private val framesRendered = AtomicLong(0)
 
+    /**
+     * Periods the callback could not fill from the ring.
+     *
+     * Counted where it happens rather than derived from the ring's byte
+     * counters, because what a consumer backing off a latency profile watches
+     * is how often the device went hungry, not how many bytes of silence that
+     * came to.
+     */
+    private val underruns = AtomicLong(0)
+
     /** Read by the render callback; replaced wholesale on each open. */
     @Volatile
     private var ring: PcmRingBuffer? = null
@@ -154,6 +164,7 @@ internal class CoreAudioSink(
         ring = PcmRingBuffer((depthFrames * frameBytes).toInt(), frameBytes)
         scratch = ByteArray(MAX_FRAMES_PER_SLICE * frameBytes)
         framesRendered.set(0)
+        underruns.set(0)
 
         // 'ahal' only where a device was named: 'def ' follows the system
         // default and keeps following it when the default moves, which is what
@@ -304,6 +315,8 @@ internal class CoreAudioSink(
         return format.nanosFor((buffered / format.bytesPerFrame).toLong())
     }
 
+    override fun underrunCount(): Long = underruns.get()
+
     override fun setVolume(volume: Float) {
         volumeValue = volume.coerceIn(0f, 1f)
         applyVolume()
@@ -377,6 +390,10 @@ internal class CoreAudioSink(
                 data.reinterpret(capacity.toLong()).asSlice(wanted.toLong()).fill(0)
             }
             if (real > 0) framesRendered.addAndGet((real / bytesPerFrame).toLong()) else markSilence(actionFlags)
+            // A short read is the device asking for audio nobody had ready. One
+            // atomic increment, which is what this may cost on a real-time
+            // thread.
+            if (real < wanted) underruns.incrementAndGet()
         } catch (e: Throwable) {
             // A throw crossing an upcall boundary is undefined; nothing here is
             // worth risking that for, and a period of silence is survivable.

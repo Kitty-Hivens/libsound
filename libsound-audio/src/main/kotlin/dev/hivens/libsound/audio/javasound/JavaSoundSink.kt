@@ -193,6 +193,16 @@ internal class JavaSoundSink(
         return format.nanosFor(format.framesIn(buffered.toLong()))
     }
 
+    /**
+     * Always zero, which [Capability.UNDERRUN_COUNT] is absent to say.
+     *
+     * A `SourceDataLine` exposes how much room it has and never how often it
+     * ran out. The line draining to empty is visible only to whoever happens to
+     * look at that moment, and a count assembled from that would be a count of
+     * how often this code looked.
+     */
+    override fun underrunCount(): Long = 0L
+
     override fun setVolume(volume: Float) {
         volumeValue = volume.coerceIn(0f, 1f)
         applyVolume()
