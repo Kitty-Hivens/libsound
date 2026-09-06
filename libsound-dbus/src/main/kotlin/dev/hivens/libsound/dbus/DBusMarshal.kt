@@ -45,6 +45,13 @@ fun DBusSymbols.appendUint32(call: Arena, iter: MemorySegment, value: Int) {
     handle("dbus_message_iter_append_basic").invokeExact(iter, DBusAbi.TYPE_UINT32.toInt(), buffer) as Int
 }
 
+/** `t` on the wire, which is where a kernel thread id goes. */
+fun DBusSymbols.appendUint64(call: Arena, iter: MemorySegment, value: Long) {
+    val buffer = call.allocate(ValueLayout.JAVA_LONG)
+    buffer.set(ValueLayout.JAVA_LONG, 0, value)
+    handle("dbus_message_iter_append_basic").invokeExact(iter, DBusAbi.TYPE_UINT64.toInt(), buffer) as Int
+}
+
 fun DBusSymbols.appendInt64(call: Arena, iter: MemorySegment, value: Long) {
     val buffer = call.allocate(ValueLayout.JAVA_LONG)
     buffer.set(ValueLayout.JAVA_LONG, 0, value)
@@ -237,6 +244,14 @@ fun DBusSymbols.readInt64(call: Arena, iter: MemorySegment): Long? {
     val out = call.allocate(ValueLayout.JAVA_LONG)
     handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
     return out.get(ValueLayout.JAVA_LONG, 0)
+}
+
+fun DBusSymbols.readInt32(call: Arena, iter: MemorySegment): Int? {
+    val type = argType(iter)
+    if (type != DBusAbi.TYPE_INT32 && type != DBusAbi.TYPE_UINT32) return null
+    val out = call.allocate(ValueLayout.JAVA_INT)
+    handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
+    return out.get(ValueLayout.JAVA_INT, 0)
 }
 
 fun DBusSymbols.readDouble(call: Arena, iter: MemorySegment): Double? {

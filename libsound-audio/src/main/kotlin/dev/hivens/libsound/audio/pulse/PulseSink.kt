@@ -4,8 +4,10 @@ import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capabilities
+import dev.hivens.libsound.Capability
 import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.audio.realtime.RealtimeThreads
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -34,8 +36,23 @@ import java.util.concurrent.atomic.AtomicLong
 internal class PulseSink(
     private val pulse: PulseContext,
     private val config: SinkConfig,
-    override val capabilities: Capabilities,
+    private val baseCapabilities: Capabilities,
 ) : AudioSink {
+
+    /**
+     * The base set, plus the one entry that is decided per thread at runtime.
+     *
+     * [Capability.REALTIME_THREAD] cannot be a constant: whether the writer
+     * runs at a priority that will not be preempted depends on a caller asking
+     * for it and a system service agreeing, and a consumer offering the lowest
+     * latency profile needs to know which of those happened.
+     */
+    override val capabilities: Capabilities
+        get() = if (realtimeGranted) {
+            Capabilities(baseCapabilities.supported + Capability.REALTIME_THREAD)
+        } else {
+            baseCapabilities
+        }
 
     private val log = LoggerFactory.getLogger("libsound.Pulse")
 
@@ -109,6 +126,21 @@ internal class PulseSink(
     /** What the server granted, so the log line at open can say it. */
     @Volatile
     private var grantedNanos = 0L
+
+    /**
+     * One promotion attempt per thread, successful or not.
+     *
+     * The thread that matters is the one that writes, which is the consumer's
+     * own and need not be the one that opened the sink. A thread-local is what
+     * makes "promote whoever turns up, once" the whole of the bookkeeping.
+     */
+    private val promotionAttempted = ThreadLocal.withInitial { false }
+
+    @Volatile
+    private var realtimeGranted = false
+
+    /** So a machine without RealtimeKit says so once rather than per write. */
+    private val realtimeRefusalLogged = AtomicBoolean(false)
 
     /** Native scratch for the copy into `pa_stream_write`; reallocated per open. */
     private var scratchArena: Arena? = null
@@ -263,6 +295,10 @@ internal class PulseSink(
         scratch = arena.allocate(maxOf(granted, MIN_SCRATCH_BYTES).toLong(), 8)
 
         awaitTimingInfo()
+        // Attempted here as well as on the first write, so a consumer reading
+        // capabilities straight after open gets a truthful answer rather than
+        // one that only becomes true once audio is flowing.
+        if (config.realtime) promoteThisThread()
         // The contract's first rule: open starts the device.
         cork(false)
         applyVolume()
@@ -284,6 +320,7 @@ internal class PulseSink(
         require(length % format.bytesPerFrame == 0) {
             "length ($length) must be a whole number of frames (${format.bytesPerFrame})"
         }
+        if (config.realtime) promoteThisThread()
         var written = 0L
         pulse.lock()
         try {
@@ -406,6 +443,30 @@ internal class PulseSink(
     }
 
     // -- internals -----------------------------------------------------------
+
+    /**
+     * Ask for real-time priority for whichever thread is here, once.
+     *
+     * Failure is not fatal and not silent: the reason goes out once, and
+     * [Capability.REALTIME_THREAD] stays absent so a settings screen can say
+     * why the lowest profile is not on offer instead of letting a user pick one
+     * that crackles.
+     */
+    private fun promoteThisThread() {
+        if (promotionAttempted.get()) return
+        promotionAttempted.set(true)
+        val refusal = RealtimeThreads.promoteCurrentThread()
+        if (refusal == null) {
+            realtimeGranted = true
+            log.info("the writer thread runs at real-time priority")
+        } else if (realtimeRefusalLogged.compareAndSet(false, true)) {
+            log.info(
+                "no real-time priority for the writer thread ({}); the lowest latency profiles will underrun " +
+                    "under load",
+                refusal,
+            )
+        }
+    }
 
     private fun cork(on: Boolean) {
         val current = stream
