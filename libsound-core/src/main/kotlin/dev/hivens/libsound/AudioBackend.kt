@@ -85,6 +85,21 @@ public data class SourceConfig(
     public val mediaRole: MediaRole = MediaRole.MUSIC,
     /** Null follows the system default input, including when the default moves. */
     public val device: DeviceId? = null,
+    /**
+     * Record one application's output instead of a device.
+     *
+     * The id comes from [VolumeMixer.streams], and what arrives is that
+     * stream's audio and nothing else: not the desktop, not whatever else is
+     * playing through the same speakers. A game recorded while a voice chat
+     * plays over it, one browser tab, one application fed into another: all of
+     * it is this field.
+     *
+     * Only where [Capability.PER_STREAM_CAPTURE] is present, and [device] is
+     * ignored when it is set, because the device is then whichever one the
+     * target stream is playing to. Worth stating plainly for what it is: this
+     * reads another application's audio, and that application is not told.
+     */
+    public val captureStream: StreamId? = null,
     public val latency: LatencyProfile = LatencyProfile.BALANCED,
     /** Overrides [latency], for a caller that knows the number it wants. */
     public val bufferNanos: Long? = null,

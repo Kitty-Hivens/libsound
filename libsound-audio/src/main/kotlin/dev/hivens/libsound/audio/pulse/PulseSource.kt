@@ -47,7 +47,20 @@ internal class PulseSource(
     private val pulse: PulseContext,
     private val config: SourceConfig,
     private val baseCapabilities: Capabilities,
+    private val monitor: MonitorTarget? = null,
 ) : AudioSource {
+
+    /**
+     * One application's output, rather than a device's input.
+     *
+     * A sink's monitor carries everything that sink plays, and
+     * `pa_stream_set_monitor_stream` narrows it to a single sink input before
+     * the stream connects. That is per-application recording with no virtual
+     * device, no routing, and nothing the target application can see, which is
+     * why it is behind [Capability.PER_STREAM_CAPTURE] and documented for what
+     * it is.
+     */
+    internal class MonitorTarget(val sourceName: String, val sinkInputIndex: Int)
 
     private val log = LoggerFactory.getLogger("libsound.Pulse")
 
@@ -145,7 +158,11 @@ internal class PulseSource(
             propSet(setup, proplist, PulseAbi.PROP_MEDIA_ROLE, config.mediaRole.wireName)
 
             val streamName = setup.allocateUtf8(config.applicationName)
-            val deviceName = config.device?.let { setup.allocateUtf8(it.value) } ?: MemorySegment.NULL
+            // A monitor target decides the device: the audio wanted is on the
+            // sink the target stream is playing to, so a device asked for
+            // alongside it would be a contradiction rather than a preference.
+            val target = monitor?.sourceName ?: config.device?.value
+            val deviceName = target?.let { setup.allocateUtf8(it) } ?: MemorySegment.NULL
 
             pulse.lock()
             try {
@@ -163,9 +180,24 @@ internal class PulseSource(
                 lib.handle("pa_stream_set_read_callback")
                     .invokeExact(fresh, pulse.requestStub, MemorySegment.NULL) as Unit
 
+                if (monitor != null) {
+                    // Before connecting, or the stream is already listening to
+                    // the whole sink and the narrowing arrives too late.
+                    val aimed = lib.handle("pa_stream_set_monitor_stream")
+                        .invokeExact(fresh, monitor.sinkInputIndex) as Int
+                    if (aimed < 0) {
+                        lib.handle("pa_stream_unref").invokeExact(fresh) as Unit
+                        throw AudioException("pa_stream_set_monitor_stream: ${pulse.lastError()}")
+                    }
+                }
+
                 val flags = PulseAbi.STREAM_START_CORKED or
                     PulseAbi.STREAM_TIMING_FLAGS or
-                    PulseAbi.STREAM_ADJUST_LATENCY
+                    PulseAbi.STREAM_ADJUST_LATENCY or
+                    // A monitor must stay on the sink it was aimed at: if the
+                    // target application moves to another device, following it
+                    // would quietly start recording something else.
+                    (if (monitor != null) PulseAbi.STREAM_DONT_MOVE else 0)
                 val rc = lib.handle("pa_stream_connect_record")
                     .invokeExact(fresh, deviceName, attr, flags) as Int
                 if (rc < 0) {
@@ -198,8 +230,9 @@ internal class PulseSource(
         cork(false)
         applyVolume()
         log.info(
-            "capture open: {} asked for {} ms fragments ({} bytes)",
+            "capture open: {} asked for {} ms fragments ({} bytes){}",
             format, targetNanos / 1_000_000, fragsize,
+            monitor?.let { ", recording stream ${it.sinkInputIndex}" } ?: "",
         )
     }
 

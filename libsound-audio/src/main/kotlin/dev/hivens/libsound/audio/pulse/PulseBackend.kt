@@ -9,10 +9,14 @@ import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.StreamDirection
+import dev.hivens.libsound.StreamId
 import org.slf4j.LoggerFactory
+import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
 import java.lang.foreign.MemorySegment
@@ -69,8 +73,10 @@ internal class PulseBackend private constructor(
                 add(Capability.DEVICE_EVENTS)
                 add(Capability.DEVICE_POSITION)
                 add(Capability.CAPTURE)
+                add(Capability.PER_STREAM_CAPTURE)
                 add(Capability.DEVICE_VOLUME)
                 add(Capability.LOW_LATENCY)
+                if (sampleCacheWorks) add(Capability.SAMPLE_CACHE)
                 add(Capability.UNDERRUN_COUNT)
                 if (rolePolicyLoaded) add(Capability.DUCKS_OTHERS)
             },
@@ -92,6 +98,15 @@ internal class PulseBackend private constructor(
 
     private val sinks = CopyOnWriteArrayList<PulseSink>()
     private val sources = CopyOnWriteArrayList<PulseSource>()
+
+    /**
+     * Samples this process uploaded, removed on close.
+     *
+     * The same obligation as everything else here that outlives a process: a
+     * sound left in the server's cache is state a user did not ask for and
+     * cannot see.
+     */
+    private val ownedSamples = CopyOnWriteArrayList<String>()
     private val deviceListeners = CopyOnWriteArrayList<() -> Unit>()
 
     /**
@@ -136,8 +151,42 @@ internal class PulseBackend private constructor(
     @Volatile
     private var rolePolicyLoaded = false
 
+    /** True once an upload has been proven to survive being uploaded. */
+    @Volatile
+    private var sampleCacheWorks = false
+
     private lateinit var sinkInfoStub: MemorySegment
     private lateinit var sourceInfoStub: MemorySegment
+    private lateinit var successStub: MemorySegment
+
+    @Volatile
+    private var controlPending = false
+
+    private var controlSuccess = false
+
+    @Volatile
+    private var sampleFound = false
+
+    @Volatile
+    private var sampleLookupComplete = false
+
+    private lateinit var sampleInfoStub: MemorySegment
+
+    /** Which sink a single sink input is playing to, and that sink's monitor. */
+    @Volatile
+    private var sinkInputSinkIndex = PulseAbi.INVALID_INDEX
+
+    @Volatile
+    private var sinkInputLookupComplete = false
+
+    @Volatile
+    private var monitorSourceName: String? = null
+
+    @Volatile
+    private var monitorLookupComplete = false
+
+    private lateinit var sinkInputStub: MemorySegment
+    private lateinit var monitorSinkStub: MemorySegment
     private lateinit var serverInfoStub: MemorySegment
     private lateinit var subscribeStub: MemorySegment
     private lateinit var moduleInfoStub: MemorySegment
@@ -170,9 +219,48 @@ internal class PulseBackend private constructor(
 
     override fun createSource(config: SourceConfig): AudioSource {
         if (closed.get()) throw AudioException("backend is closed")
-        val source = PulseSource(pulse, config, SOURCE_CAPABILITIES)
+        val monitor = config.captureStream?.let { stream ->
+            monitorTargetFor(stream)
+                ?: throw AudioException("no playback stream $stream to record")
+        }
+        val source = PulseSource(pulse, config, SOURCE_CAPABILITIES, monitor)
         sources.add(source)
         return source
+    }
+
+    /**
+     * Where one application's audio can be listened to: the monitor of the sink
+     * it is playing to, narrowed to that stream.
+     *
+     * Two round trips, because the server answers two questions and neither
+     * alone is enough. Null for a stream that is not playing, is not there, or
+     * is on a device with no monitor.
+     */
+    private fun monitorTargetFor(id: StreamId): PulseSource.MonitorTarget? {
+        val handle = PulseStreamHandle.parse(id) ?: return null
+        if (handle.direction != StreamDirection.PLAYBACK) return null
+        return roundTrip.withLock {
+            val sinkIndex = pulse.locked {
+                sinkInputSinkIndex = PulseAbi.INVALID_INDEX
+                sinkInputLookupComplete = false
+                val op = lib.handle("pa_context_get_sink_input_info")
+                    .invokeExact(pulse.context, handle.index, sinkInputStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked PulseAbi.INVALID_INDEX
+                pulse.releaseOperation(op)
+                if (!awaitFlag { sinkInputLookupComplete }) PulseAbi.INVALID_INDEX else sinkInputSinkIndex
+            }
+            if (sinkIndex == PulseAbi.INVALID_INDEX) return@withLock null
+            val monitor = pulse.locked {
+                monitorSourceName = null
+                monitorLookupComplete = false
+                val op = lib.handle("pa_context_get_sink_info_by_index")
+                    .invokeExact(pulse.context, sinkIndex, monitorSinkStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked null
+                pulse.releaseOperation(op)
+                if (!awaitFlag { monitorLookupComplete }) null else monitorSourceName
+            } ?: return@withLock null
+            PulseSource.MonitorTarget(monitor, handle.index)
+        }
     }
 
     /**
@@ -202,9 +290,37 @@ internal class PulseBackend private constructor(
 
     override fun defaultCaptureDevice(): AudioDevice? = captureDevices().firstOrNull { it.isDefault }
 
-    override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
+    /**
+     * Upload the sound once, on the connection this backend already has.
+     *
+     * The upload is a stream like any other and lives only long enough to carry
+     * the bytes: connect, write all of them, finish, let go. What is left
+     * behind is a name the server answers to, which is the whole point of the
+     * cache: triggering it costs no stream setup, no buffer to fill and no
+     * scheduling, so a click is heard when it is clicked.
+     */
+    override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? {
+        if (closed.get()) return null
+        if (name.isBlank() || pcm.isEmpty()) return null
+        if (pcm.size % format.bytesPerFrame != 0) return null
+        val uploaded = roundTrip.withLock { upload(name, format, pcm) }
+        if (!uploaded) return null
+        ownedSamples.addIfAbsent(name)
+        return SampleId(name)
+    }
 
-    override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean = false
+    override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean {
+        if (closed.get()) return false
+        return awaitSuccess { call ->
+            val level = lib.handle("pa_sw_volume_from_linear")
+                .invokeExact(volume.coerceIn(0f, 1f).toDouble()) as Int
+            lib.handle("pa_context_play_sample").invokeExact(
+                pulse.context, call.allocateUtf8(id.value),
+                device?.let { call.allocateUtf8(it.value) } ?: MemorySegment.NULL,
+                level, successStub, MemorySegment.NULL,
+            ) as MemorySegment
+        }
+    }
 
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit {
         deviceListeners.add(handler)
@@ -213,6 +329,7 @@ internal class PulseBackend private constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        removeOwnedSamples()
         sinks.forEach { runCatching { it.close() } }
         sinks.clear()
         sources.forEach { runCatching { it.close() } }
@@ -264,6 +381,54 @@ internal class PulseBackend private constructor(
         }.onFailure { log.warn("source info callback threw: {}", it.message) }
     }
 
+    /** One sink input, read for the single field that says where it is playing. */
+    fun onSinkInput(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            if (eol != 0) {
+                sinkInputLookupComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            if (info.address() == 0L) return@runCatching
+            sinkInputSinkIndex = info.reinterpret(PulseAbi.SINK_INPUT_HEAD)
+                .get(ValueLayout.JAVA_INT, PulseAbi.SINK_INPUT_SINK)
+        }.onFailure { log.warn("sink input callback threw: {}", it.message) }
+    }
+
+    /** One sink, read for the name of the source that carries what it plays. */
+    fun onMonitorSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            if (eol != 0) {
+                monitorLookupComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            if (info.address() == 0L) return@runCatching
+            monitorSourceName = info.reinterpret(PulseAbi.SINK_INFO_MONITOR_HEAD)
+                .get(ValueLayout.ADDRESS, PulseAbi.SINK_INFO_MONITOR_SOURCE_NAME).readCString()
+        }.onFailure { log.warn("monitor sink callback threw: {}", it.message) }
+    }
+
+    fun onControlSuccess(unusedContext: MemorySegment, success: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            controlSuccess = success != 0
+            controlPending = false
+            pulse.signal()
+        }
+    }
+
+    /** One reply per existing sample, then an end of list; absence is the answer. */
+    fun onSampleInfo(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            if (eol != 0) {
+                sampleLookupComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            if (info.address() != 0L) sampleFound = true
+        }.onFailure { log.warn("sample info callback threw: {}", it.message) }
+    }
+
     fun onServerInfo(unusedContext: MemorySegment, info: MemorySegment, unusedUserData: MemorySegment) {
         runCatching {
             val head = if (info.address() == 0L) null else info.reinterpret(SERVER_INFO_HEAD)
@@ -313,6 +478,156 @@ internal class PulseBackend private constructor(
     }
 
     // -- internals -----------------------------------------------------------
+
+    /**
+     * The upload stream, start to finish. Caller holds [roundTrip].
+     *
+     * False for every refusal, and the refusals are ordinary: a server that
+     * keeps no sample cache is one this returns false on rather than one this
+     * throws at.
+     */
+    private fun upload(name: String, format: AudioFormat, pcm: ByteArray): Boolean = pulse.locked {
+        Arena.ofConfined().use { call ->
+            val spec = call.allocate(PulseAbi.SAMPLE_SPEC_SIZE, 4)
+            spec.set(ValueLayout.JAVA_INT, PulseAbi.SAMPLE_SPEC_FORMAT, encodingOf(format) ?: return@locked false)
+            spec.set(ValueLayout.JAVA_INT, PulseAbi.SAMPLE_SPEC_RATE, format.sampleRate)
+            spec.set(ValueLayout.JAVA_BYTE, PulseAbi.SAMPLE_SPEC_CHANNELS, format.channels.toByte())
+
+            val stream = lib.handle("pa_stream_new_with_proplist").invokeExact(
+                pulse.context, call.allocateUtf8(name), spec, MemorySegment.NULL, MemorySegment.NULL,
+            ) as MemorySegment
+            if (stream.address() == 0L) return@locked false
+            var finished = false
+            try {
+                lib.handle("pa_stream_set_state_callback")
+                    .invokeExact(stream, pulse.notifyStub, MemorySegment.NULL) as Unit
+                val rc = lib.handle("pa_stream_connect_upload").invokeExact(stream, pcm.size.toLong()) as Int
+                if (rc < 0) return@locked false
+                if (!awaitStreamReady(stream)) return@locked false
+
+                val buffer = call.allocate(pcm.size.toLong(), 8)
+                MemorySegment.copy(pcm, 0, buffer, ValueLayout.JAVA_BYTE, 0L, pcm.size)
+                val written = lib.handle("pa_stream_write").invokeExact(
+                    stream, buffer, pcm.size.toLong(), MemorySegment.NULL, 0L, PulseAbi.SEEK_RELATIVE,
+                ) as Int
+                if (written < 0) return@locked false
+                // finish_upload is what makes the bytes a sample; it also
+                // disconnects the stream, which is why nothing below
+                // disconnects it again.
+                finished = (lib.handle("pa_stream_finish_upload").invokeExact(stream) as Int) == 0
+                finished
+            } finally {
+                lib.handle("pa_stream_set_state_callback")
+                    .invokeExact(stream, MemorySegment.NULL, MemorySegment.NULL) as Unit
+                if (!finished) runCatching { lib.handle("pa_stream_disconnect").invokeExact(stream) as Int }
+                lib.handle("pa_stream_unref").invokeExact(stream) as Unit
+            }
+        }
+    }
+
+    /** Caller holds the mainloop lock. */
+    private fun awaitStreamReady(stream: MemorySegment): Boolean {
+        val deadline = System.nanoTime() + INTROSPECT_TIMEOUT_NANOS
+        while (true) {
+            val state = lib.handle("pa_stream_get_state").invokeExact(stream) as Int
+            if (state == PulseAbi.STREAM_READY) return true
+            if (state == PulseAbi.STREAM_FAILED || state == PulseAbi.STREAM_TERMINATED) return false
+            if (System.nanoTime() > deadline) return false
+            pulse.await()
+        }
+    }
+
+    private fun removeOwnedSamples() {
+        val owned = ownedSamples.toList()
+        ownedSamples.clear()
+        if (owned.isEmpty()) return
+        log.info("removing {} cached sample(s) this process uploaded", owned.size)
+        owned.forEach { name ->
+            runCatching {
+                awaitSuccess { call ->
+                    lib.handle("pa_context_remove_sample").invokeExact(
+                        pulse.context, call.allocateUtf8(name), successStub, MemorySegment.NULL,
+                    ) as MemorySegment
+                }
+            }.onFailure { log.debug("could not remove the sample {}: {}", name, it.message) }
+        }
+    }
+
+    /**
+     * Issue an operation and answer what the server said about it, rather than
+     * that the request went out. The same shape the mixer uses, and for the
+     * same reason: libpulse hands back a live operation for a name that does
+     * not exist and reports the refusal a moment later.
+     */
+    private fun awaitSuccess(issue: (Arena) -> MemorySegment): Boolean = roundTrip.withLock {
+        pulse.locked {
+            Arena.ofConfined().use { call ->
+                controlSuccess = false
+                controlPending = true
+                val op = runCatching { issue(call) }.getOrElse {
+                    controlPending = false
+                    throw it
+                }
+                if (op.address() == 0L) {
+                    controlPending = false
+                    return@locked false
+                }
+                pulse.releaseOperation(op)
+                if (!awaitFlag { !controlPending }) return@locked false
+                controlSuccess
+            }
+        }
+    }
+
+    private fun encodingOf(format: AudioFormat): Int? = when (format.encoding) {
+        PcmEncoding.S16LE -> PulseAbi.SAMPLE_S16LE
+        PcmEncoding.F32LE -> PulseAbi.SAMPLE_FLOAT32LE
+    }
+
+    /**
+     * Whether this server keeps a sample cache at all, asked rather than
+     * assumed.
+     *
+     * A silent frame is uploaded and looked up by name, then removed. Nothing
+     * is played, so the probe is inaudible, and the answer is the one thing
+     * that cannot be inferred from the protocol version: pipewire-pulse accepts
+     * an upload and a client cannot tell from the reply whether anything was
+     * kept.
+     */
+    private fun probeSampleCache() {
+        val format = AudioFormat(48_000, 1)
+        val silence = ByteArray(format.bytesPerFrame * SAMPLE_PROBE_FRAMES)
+        val uploaded = roundTrip.withLock { upload(SAMPLE_PROBE_NAME, format, silence) }
+        if (!uploaded) {
+            log.debug("this server refused a sample upload; the cache is not offered")
+            return
+        }
+        sampleCacheWorks = lookUpSample(SAMPLE_PROBE_NAME)
+        runCatching {
+            awaitSuccess { call ->
+                lib.handle("pa_context_remove_sample").invokeExact(
+                    pulse.context, call.allocateUtf8(SAMPLE_PROBE_NAME), successStub, MemorySegment.NULL,
+                ) as MemorySegment
+            }
+        }
+        log.debug("the sample cache keeps what it is given here: {}", sampleCacheWorks)
+    }
+
+    private fun lookUpSample(name: String): Boolean = roundTrip.withLock {
+        pulse.locked {
+            sampleFound = false
+            sampleLookupComplete = false
+            Arena.ofConfined().use { call ->
+                val op = lib.handle("pa_context_get_sample_info_by_name").invokeExact(
+                    pulse.context, call.allocateUtf8(name), sampleInfoStub, MemorySegment.NULL,
+                ) as MemorySegment
+                if (op.address() == 0L) return@locked false
+                pulse.releaseOperation(op)
+                if (!awaitFlag { sampleLookupComplete }) return@locked false
+                sampleFound
+            }
+        }
+    }
 
     /** Caller holds [roundTrip]. */
     private fun queryDefaultSinkName(): String? = queryServerInfo()?.let { defaultSinkName }
@@ -431,6 +746,32 @@ internal class PulseBackend private constructor(
             FunctionDescriptor.ofVoid(addr, addr, i32, addr),
             lib.arena,
         )
+        successStub = linker.upcallStub(
+            lookup.findVirtual(
+                PulseBackend::class.java, "onControlSuccess",
+                MethodType.methodType(
+                    Void.TYPE, MemorySegment::class.java, Int::class.javaPrimitiveType,
+                    MemorySegment::class.java,
+                ),
+            ).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, i32, addr),
+            lib.arena,
+        )
+        sinkInputStub = linker.upcallStub(
+            lookup.findVirtual(PulseBackend::class.java, "onSinkInput", infoType).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, addr, i32, addr),
+            lib.arena,
+        )
+        monitorSinkStub = linker.upcallStub(
+            lookup.findVirtual(PulseBackend::class.java, "onMonitorSink", infoType).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, addr, i32, addr),
+            lib.arena,
+        )
+        sampleInfoStub = linker.upcallStub(
+            lookup.findVirtual(PulseBackend::class.java, "onSampleInfo", infoType).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, addr, i32, addr),
+            lib.arena,
+        )
         subscribeStub = linker.upcallStub(
             lookup.findVirtual(
                 PulseBackend::class.java, "onSubscribe",
@@ -466,6 +807,10 @@ internal class PulseBackend private constructor(
         private const val SERVER_INFO_HEAD = 64L
 
         private const val INTROSPECT_TIMEOUT_NANOS = 2_000_000_000L
+
+        /** Silent, inaudible, and long enough that no server rounds it away. */
+        private const val SAMPLE_PROBE_FRAMES = 480
+        private const val SAMPLE_PROBE_NAME = "libsound-cache-probe"
 
         /**
          * What a *sink* can do, which is not what the backend can do. A sink
@@ -506,6 +851,7 @@ internal class PulseBackend private constructor(
                     // Before anything reads capabilities: the set is fixed at
                     // construction and DUCKS_OTHERS is the server's answer.
                     probeRolePolicy()
+                    probeSampleCache()
                     subscribe()
                 }
             }.getOrElse {

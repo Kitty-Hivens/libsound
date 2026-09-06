@@ -71,8 +71,8 @@ internal class PulseMixer private constructor(
      * touched -- lower somebody's volume, and an unrelated mute the user set
      * afterwards would be undone along with it.
      */
-    private val originalVolumes = ConcurrentHashMap<Handle, Float>()
-    private val originalMutes = ConcurrentHashMap<Handle, Boolean>()
+    private val originalVolumes = ConcurrentHashMap<PulseStreamHandle, Float>()
+    private val originalMutes = ConcurrentHashMap<PulseStreamHandle, Boolean>()
 
     /**
      * Channel count per stream. A cvolume carries its own channel count and the
@@ -80,7 +80,7 @@ internal class PulseMixer private constructor(
      * stream is a request a strict server is entitled to reject, and half the
      * streams on a desktop are mono.
      */
-    private val channelCounts = ConcurrentHashMap<Handle, Int>()
+    private val channelCounts = ConcurrentHashMap<PulseStreamHandle, Int>()
 
     private val sinkNames = ConcurrentHashMap<Int, String>()
 
@@ -103,7 +103,7 @@ internal class PulseMixer private constructor(
     private val originalDeviceMutes = ConcurrentHashMap<String, Boolean>()
 
     /** Which device each stream was last seen on, so a meter knows where to listen. */
-    private val lastDeviceIndexes = ConcurrentHashMap<Handle, Int>()
+    private val lastDeviceIndexes = ConcurrentHashMap<PulseStreamHandle, Int>()
 
     /** Live meters, closed with the mixer so none outlives the connection. */
     private val meters = CopyOnWriteArrayList<PulseMeter>()
@@ -258,7 +258,7 @@ internal class PulseMixer private constructor(
     }
 
     override fun setVolume(id: StreamId, volume: Float): Boolean {
-        val handle = Handle.parse(id) ?: return false
+        val handle = PulseStreamHandle.parse(id) ?: return false
         if (closed.get()) return false
         return roundTrip.withLock {
             rememberVolume(handle)
@@ -267,7 +267,7 @@ internal class PulseMixer private constructor(
     }
 
     override fun setMuted(id: StreamId, muted: Boolean): Boolean {
-        val handle = Handle.parse(id) ?: return false
+        val handle = PulseStreamHandle.parse(id) ?: return false
         if (closed.get()) return false
         return roundTrip.withLock {
             rememberMute(handle)
@@ -277,7 +277,7 @@ internal class PulseMixer private constructor(
 
     /** A capture stream moves to another input; the call differs, the shape does not. */
     override fun moveTo(id: StreamId, device: DeviceId): Boolean {
-        val handle = Handle.parse(id) ?: return false
+        val handle = PulseStreamHandle.parse(id) ?: return false
         if (closed.get()) return false
         val symbol = when (handle.direction) {
             StreamDirection.PLAYBACK -> "pa_context_move_sink_input_by_name"
@@ -435,7 +435,7 @@ internal class PulseMixer private constructor(
      * and the more important for running at [PulseAbi.METER_RATE] a second.
      */
     override fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit {
-        val handle = Handle.parse(id) ?: return {}
+        val handle = PulseStreamHandle.parse(id) ?: return {}
         if (closed.get()) return {}
         // Playback only, and Capability.CAPTURE_METERING is absent to say so.
         // The narrowing this is built on, pa_stream_set_monitor_stream, takes a
@@ -471,7 +471,7 @@ internal class PulseMixer private constructor(
      * questions: which sink, then that sink's monitor. A stream that is not
      * routed anywhere has neither.
      */
-    private fun monitorSourceFor(handle: Handle): String? {
+    private fun monitorSourceFor(handle: PulseStreamHandle): String? {
         val sinkIndex = rowSinkIndex(handle) ?: return null
         return roundTrip.withLock {
             monitorName = null
@@ -488,7 +488,7 @@ internal class PulseMixer private constructor(
     }
 
     /** Which device a stream is on, from the last walk rather than a fresh one. */
-    private fun rowSinkIndex(handle: Handle): Int? {
+    private fun rowSinkIndex(handle: PulseStreamHandle): Int? {
         streams()
         return lastDeviceIndexes[handle]
     }
@@ -674,7 +674,7 @@ internal class PulseMixer private constructor(
 
     // -- control, each waiting for the server's own answer ----------------------
 
-    private fun applyVolume(handle: Handle, volume: Float): Boolean {
+    private fun applyVolume(handle: PulseStreamHandle, volume: Float): Boolean {
         // The channel count comes from the cache rather than a fresh
         // enumeration: this runs during close(), when streams() answers empty
         // by design. Anything we are restoring was enumerated when we recorded
@@ -695,7 +695,7 @@ internal class PulseMixer private constructor(
         }
     }
 
-    private fun applyMute(handle: Handle, muted: Boolean): Boolean {
+    private fun applyMute(handle: PulseStreamHandle, muted: Boolean): Boolean {
         val symbol = when (handle.direction) {
             StreamDirection.PLAYBACK -> "pa_context_set_sink_input_mute"
             StreamDirection.CAPTURE -> "pa_context_set_source_output_mute"
@@ -736,13 +736,13 @@ internal class PulseMixer private constructor(
         }
     }
 
-    private fun rememberVolume(handle: Handle) {
+    private fun rememberVolume(handle: PulseStreamHandle) {
         if (originalVolumes.containsKey(handle)) return
         val current = find(handle.id()) ?: return
         originalVolumes.putIfAbsent(handle, current.volume)
     }
 
-    private fun rememberMute(handle: Handle) {
+    private fun rememberMute(handle: PulseStreamHandle) {
         if (originalMutes.containsKey(handle)) return
         val current = find(handle.id()) ?: return
         originalMutes.putIfAbsent(handle, current.muted)
@@ -907,7 +907,7 @@ internal class PulseMixer private constructor(
             PulseAbi.SUBSCRIPTION_EVENT_SOURCE_OUTPUT -> StreamDirection.CAPTURE
             else -> return
         }
-        val handle = Handle(direction, index)
+        val handle = PulseStreamHandle(direction, index)
         val kind = event and PulseAbi.SUBSCRIPTION_EVENT_TYPE_MASK
         val snapshot = listeners.toList()
         if (snapshot.isEmpty()) return
@@ -935,34 +935,6 @@ internal class PulseMixer private constructor(
 
     // -- internals --------------------------------------------------------------
 
-    /**
-     * A stream, and which facility it came from.
-     *
-     * The pair is the identity: a sink input and a source output can carry the
-     * same index at the same time, so an index alone would have a microphone
-     * row and a playback row answering to one id.
-     */
-    private data class Handle(val direction: StreamDirection, val index: Int) {
-        fun id(): StreamId = StreamId("${prefix(direction)}:$index")
-
-        override fun toString(): String = id().value
-
-        companion object {
-            fun prefix(direction: StreamDirection): String = when (direction) {
-                StreamDirection.PLAYBACK -> "sink-input"
-                StreamDirection.CAPTURE -> "source-output"
-            }
-
-            /** Null for anything this mixer did not hand out. */
-            fun parse(id: StreamId): Handle? {
-                val facility = id.value.substringBefore(':', missingDelimiterValue = "")
-                val index = id.value.substringAfter(':', missingDelimiterValue = "").toIntOrNull() ?: return null
-                val direction = StreamDirection.entries.firstOrNull { prefix(it) == facility } ?: return null
-                return Handle(direction, index)
-            }
-        }
-    }
-
     /** One row as the callback read it, before the device index has a name. */
     private class Row(
         val direction: StreamDirection,
@@ -979,7 +951,7 @@ internal class PulseMixer private constructor(
         val active: Boolean,
         val ours: Boolean,
     ) {
-        val handle: Handle get() = Handle(direction, index)
+        val handle: PulseStreamHandle get() = PulseStreamHandle(direction, index)
     }
 
     private fun Row.toStream() = AudioStream(
