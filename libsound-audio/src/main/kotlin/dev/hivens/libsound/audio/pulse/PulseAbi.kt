@@ -59,7 +59,27 @@ internal object PulseAbi {
      * a few bytes a second instead of a copy of the stream.
      */
     const val STREAM_PEAK_DETECT = 2_048
+
+    /**
+     * Turns `tlength` from a buffer size into a latency request: the server
+     * shortens everything it controls to meet it, rather than treating the
+     * number as a hint about how much to hold. Without it a client asking for
+     * five milliseconds gets a five millisecond buffer at the end of a path the
+     * server sized for itself.
+     */
     const val STREAM_ADJUST_LATENCY = 8_192
+
+    /**
+     * Bound, printed by the oracle, and deliberately never set.
+     *
+     * libpulse documents it as mutually exclusive with [STREAM_ADJUST_LATENCY]
+     * and as a compatibility mode for clients that sleep on a timer instead of
+     * on the device. This backend does the opposite: its write parks in
+     * `pa_threaded_mainloop_wait` until the server asks for data, so early
+     * requests would buy nothing and would cost the flag that actually shortens
+     * the path.
+     */
+    const val STREAM_EARLY_REQUESTS = 16_384
 
     /** The monitor must stay on the sink it was aimed at, or the meter follows the wrong audio. */
     const val STREAM_DONT_MOVE = 512
