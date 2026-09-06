@@ -46,8 +46,8 @@ public abstract class AudioSinkDecoratorContract {
      *
      * The identity by default, which is rule two. A decorator that changes the
      * frame count and scales positions back into the consumer's frames
-     * overrides this with its ratio; one that cannot scale withholds
-     * [Capability.DEVICE_POSITION] instead and this is never consulted.
+     * overrides this with its ratio. One that cannot scale withholds
+     * [Capability.DEVICE_POSITION] instead, and this is never consulted.
      */
     protected open fun expectedPosition(innerFrames: Long): Long = innerFrames
 

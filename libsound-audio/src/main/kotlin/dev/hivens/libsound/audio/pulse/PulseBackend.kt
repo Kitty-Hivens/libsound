@@ -511,7 +511,7 @@ internal class PulseBackend private constructor(
                     stream, buffer, pcm.size.toLong(), MemorySegment.NULL, 0L, PulseAbi.SEEK_RELATIVE,
                 ) as Int
                 if (written < 0) return@locked false
-                // finish_upload is what makes the bytes a sample; it also
+                // finish_upload is what makes the bytes a sample. It also
                 // disconnects the stream, which is why nothing below
                 // disconnects it again.
                 finished = (lib.handle("pa_stream_finish_upload").invokeExact(stream) as Int) == 0
@@ -810,7 +810,13 @@ internal class PulseBackend private constructor(
 
         /** Silent, inaudible, and long enough that no server rounds it away. */
         private const val SAMPLE_PROBE_FRAMES = 480
-        private const val SAMPLE_PROBE_NAME = "libsound-cache-probe"
+
+        /**
+         * Per process, because two of them starting at once would otherwise
+         * collide on the name and one would read the collision as a server
+         * that keeps no cache.
+         */
+        private val SAMPLE_PROBE_NAME = "libsound-cache-probe-${ProcessHandle.current().pid()}"
 
         /**
          * What a *sink* can do, which is not what the backend can do. A sink

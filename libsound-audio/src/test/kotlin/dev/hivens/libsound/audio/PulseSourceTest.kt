@@ -173,8 +173,8 @@ class PulseCaptureTest {
             (elapsedMillis > 50) shouldBe true
             source.framePosition() shouldBeGreaterThan 0L
             val latency = source.latencyNanos()
-            // Zero would mean the timing info never arrived; a second would mean
-            // the fragment size was ignored.
+            // Zero would mean the timing info never arrived, and a second
+            // would mean the fragment size was ignored.
             (latency in 0..1_000_000_000L) shouldBe true
             source.overrunFrames() shouldBe 0L
         }

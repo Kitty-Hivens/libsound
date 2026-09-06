@@ -101,8 +101,8 @@ internal class PulseSource(
      * The tail of a fragment the last read could not fit.
      *
      * A fragment is the server's unit and a read's length is the caller's, and
-     * they have no reason to match. Dropping the remainder would lose audio;
-     * holding the peek open until it is consumed would stall the stream.
+     * they have no reason to match. Dropping the remainder would lose audio,
+     * and holding the peek open until it is consumed would stall the stream.
      */
     private var leftover: ByteArray = ByteArray(0)
     private var leftoverOffset = 0

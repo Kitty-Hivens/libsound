@@ -9,7 +9,7 @@ class LatencyProfileTest {
     fun `the default is BALANCED, which is not the old default`() {
         // The behaviour change, asserted rather than only written down. 200 ms
         // was measured for the JavaSound fallback and then applied to every
-        // backend; a library whose first purpose is latency cannot keep it as
+        // backend. A library whose first purpose is latency cannot keep it as
         // the default, and a consumer that wants it asks for RELAXED and gets
         // exactly the old number.
         SinkConfig(applicationName = "Example").latency shouldBe LatencyProfile.BALANCED
