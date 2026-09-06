@@ -117,6 +117,10 @@ internal class PulseLibrary private constructor(
             Triple("pa_stream_new_with_proplist", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
             Triple("pa_stream_set_state_callback", null, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_stream_set_write_callback", null, listOf(ADDR, ADDR, ADDR)),
+            // What the device did rather than what was asked for: a latency
+            // target nobody can validate is a setting, not a guarantee.
+            Triple("pa_stream_set_underflow_callback", null, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_stream_set_overflow_callback", null, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_stream_connect_playback", I32, listOf(ADDR, ADDR, ADDR, I32, ADDR, ADDR)),
             Triple("pa_stream_disconnect", I32, listOf(ADDR)),
             Triple("pa_stream_unref", null, listOf(ADDR)),

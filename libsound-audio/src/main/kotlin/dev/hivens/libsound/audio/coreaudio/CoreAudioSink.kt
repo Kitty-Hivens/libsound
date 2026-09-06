@@ -159,6 +159,10 @@ internal class CoreAudioSink(
         ring?.close()
 
         frameBytes = format.bytesPerFrame
+        // The profile is not honoured here either, and for the reason the
+        // constant already gives: the ring depth that survives a garbage
+        // collection on this platform has not been measured, and no runner this
+        // library has can measure it. Capability.LOW_LATENCY is absent.
         val depthFrames = format.framesFor(config.bufferNanos ?: DEFAULT_BUFFER_NANOS)
             .coerceAtLeast(MAX_FRAMES_PER_SLICE.toLong())
         ring = PcmRingBuffer((depthFrames * frameBytes).toInt(), frameBytes)

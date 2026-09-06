@@ -65,6 +65,8 @@ internal class PulseBackend private constructor(
                 add(Capability.DEVICE_SELECTION)
                 add(Capability.DEVICE_EVENTS)
                 add(Capability.DEVICE_POSITION)
+                add(Capability.LOW_LATENCY)
+                add(Capability.UNDERRUN_COUNT)
                 if (rolePolicyLoaded) add(Capability.DUCKS_OTHERS)
             },
         )
@@ -417,6 +419,11 @@ internal class PulseBackend private constructor(
             Capability.STREAM_VOLUME,
             Capability.STREAM_IDENTITY,
             Capability.DEVICE_POSITION,
+            // The two that make a latency profile mean something: the server
+            // shortens its own path to meet the request, and it says when it
+            // ran dry trying.
+            Capability.LOW_LATENCY,
+            Capability.UNDERRUN_COUNT,
         )
 
         /** Connect and return the backend, or null when there is no sound server. */

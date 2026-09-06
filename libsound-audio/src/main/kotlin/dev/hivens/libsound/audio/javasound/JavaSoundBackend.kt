@@ -53,6 +53,13 @@ internal class JavaSoundBackend private constructor(
         // config carries an application name, an icon and a role. None of them
         // can be attached to a JavaSound line; they are dropped here rather
         // than approximated, and STREAM_IDENTITY says so.
+        //
+        // config.latency goes the same way. 200 ms is this backend's measured
+        // floor rather than a preference, and honouring a shorter profile here
+        // would buy an underrun, which freezes a clock exactly like the stall
+        // it was meant to avoid. Capability.LOW_LATENCY is absent to say so.
+        // An explicit bufferNanos is still taken exactly: a caller naming a
+        // number has said it knows what it is asking for.
         val sink = JavaSoundSink(
             bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSink.DEFAULT_BUFFER_NANOS,
         )

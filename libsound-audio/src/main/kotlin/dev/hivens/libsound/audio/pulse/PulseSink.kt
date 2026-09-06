@@ -8,9 +8,14 @@ import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
+import java.lang.foreign.FunctionDescriptor
+import java.lang.foreign.Linker
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.MethodType
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * An [AudioSink] over a `pa_stream` on the shared [PulseContext].
@@ -84,9 +89,61 @@ internal class PulseSink(
     @Volatile
     private var volumeValue = 1f
 
+    /**
+     * Times the server ran out of audio to play since the last [open].
+     *
+     * Written from the mainloop thread by the underflow callback and read by
+     * whoever is watching, which is what makes it an atomic rather than a
+     * volatile increment.
+     */
+    private val underruns = AtomicLong(0)
+
+    /**
+     * The other direction: audio written faster than the server could take it,
+     * which means a producer ignoring what the write returned. Counted for the
+     * one debug line at close rather than exposed, because the interface has no
+     * question it answers.
+     */
+    private val overflows = AtomicLong(0)
+
+    /** What the server granted, so the log line at open can say it. */
+    @Volatile
+    private var grantedNanos = 0L
+
     /** Native scratch for the copy into `pa_stream_write`; reallocated per open. */
     private var scratchArena: Arena? = null
     private var scratch: MemorySegment = MemorySegment.NULL
+
+    /**
+     * Built once per sink and reused across reopens.
+     *
+     * The arena is the library's, which outlives the mainloop thread, and a
+     * stub allocated per open would leave one behind on every track change.
+     */
+    private val underflowStub: MemorySegment by lazy { notifyStub("onUnderflow") }
+
+    private val overflowStub: MemorySegment by lazy { notifyStub("onOverflow") }
+
+    private fun notifyStub(method: String): MemorySegment = Linker.nativeLinker().upcallStub(
+        MethodHandles.lookup().findVirtual(
+            PulseSink::class.java, method,
+            MethodType.methodType(Void.TYPE, MemorySegment::class.java, MemorySegment::class.java),
+        ).bindTo(this),
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+        lib.arena,
+    )
+
+    // Public rather than internal although nothing outside calls them: Kotlin
+    // mangles an internal name and findVirtual looks up what is written.
+
+    /** On the mainloop thread. Counts, and does nothing else. */
+    fun onUnderflow(unusedStream: MemorySegment, unusedUserData: MemorySegment) {
+        underruns.incrementAndGet()
+    }
+
+    fun onOverflow(unusedStream: MemorySegment, unusedUserData: MemorySegment) {
+        overflows.incrementAndGet()
+    }
 
     override val format: AudioFormat? get() = openFormat
 
@@ -101,9 +158,17 @@ internal class PulseSink(
         abort = false
         lastKnownFrames = 0
         framesWritten = 0
+        underruns.set(0)
+        overflows.set(0)
 
-        val targetNanos = config.bufferNanos ?: DEFAULT_BUFFER_NANOS
+        val targetNanos = config.targetNanos
         val tlength = format.bytesFor(format.framesFor(targetNanos)).toInt()
+            .coerceAtLeast(format.bytesPerFrame)
+        // A quarter of the target, which is the usual relationship, and never
+        // below a frame. minreq is how much the server asks for at a time, so
+        // leaving it at the default leaves half the latency to the server.
+        val minreq = (tlength / MINREQ_DIVISOR)
+            .let { it - it % format.bytesPerFrame }
             .coerceAtLeast(format.bytesPerFrame)
 
         Arena.ofConfined().use { setup ->
@@ -113,10 +178,13 @@ internal class PulseSink(
             spec.set(ValueLayout.JAVA_BYTE, PulseAbi.SAMPLE_SPEC_CHANNELS, format.channels.toByte())
 
             val attr = setup.allocate(PulseAbi.BUFFER_ATTR_SIZE, 4)
-            attr.set(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_MAXLENGTH, tlength * 2)
+            // Left to the server, not tlength * 2: with ADJUST_LATENCY the
+            // server sizes the shared buffer itself to meet the target, and a
+            // client number fights it.
+            attr.set(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_MAXLENGTH, PulseAbi.ATTR_DEFAULT)
             attr.set(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_TLENGTH, tlength)
             attr.set(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_PREBUF, PulseAbi.ATTR_DEFAULT)
-            attr.set(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_MINREQ, PulseAbi.ATTR_DEFAULT)
+            attr.set(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_MINREQ, minreq)
             attr.set(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_FRAGSIZE, PulseAbi.ATTR_DEFAULT)
 
             val proplist = lib.handle("pa_proplist_new").invokeExact() as MemorySegment
@@ -140,11 +208,24 @@ internal class PulseSink(
                     .invokeExact(fresh, pulse.notifyStub, MemorySegment.NULL) as Unit
                 lib.handle("pa_stream_set_write_callback")
                     .invokeExact(fresh, pulse.writeRequestStub, MemorySegment.NULL) as Unit
+                lib.handle("pa_stream_set_underflow_callback")
+                    .invokeExact(fresh, underflowStub, MemorySegment.NULL) as Unit
+                lib.handle("pa_stream_set_overflow_callback")
+                    .invokeExact(fresh, overflowStub, MemorySegment.NULL) as Unit
 
                 // START_CORKED, then uncork below. Connecting already running
                 // would let the server pull from an empty buffer before the
                 // first write, which is an underrun on the very first frame.
-                val flags = PulseAbi.STREAM_START_CORKED or PulseAbi.STREAM_TIMING_FLAGS
+                //
+                // ADJUST_LATENCY is the line this section is about: it is what
+                // makes tlength a latency the server shortens its own path to
+                // meet, and it is what pipewire-pulse translates into the
+                // graph node's quantum. Without it the number above is a
+                // buffer size and the path in front of it stays whatever the
+                // server chose.
+                val flags = PulseAbi.STREAM_START_CORKED or
+                    PulseAbi.STREAM_TIMING_FLAGS or
+                    PulseAbi.STREAM_ADJUST_LATENCY
                 val rc = lib.handle("pa_stream_connect_playback")
                     .invokeExact(fresh, deviceName, attr, flags, MemorySegment.NULL, MemorySegment.NULL) as Int
                 if (rc < 0) {
@@ -171,18 +252,27 @@ internal class PulseSink(
         }
 
         openFormat = format
+        val granted = grantedTlengthBytes() ?: tlength
+        grantedNanos = format.nanosFor(format.framesIn(granted.toLong()))
         val arena = Arena.ofShared()
         scratchArena?.let { runCatching { it.close() } }
         scratchArena = arena
-        scratch = arena.allocate(tlength.toLong(), 8)
+        // Sized from what the server granted rather than what was asked for,
+        // and floored: at five milliseconds the request is under a kilobyte,
+        // and a scratch that small turns one write into a hundred copies.
+        scratch = arena.allocate(maxOf(granted, MIN_SCRATCH_BYTES).toLong(), 8)
 
         awaitTimingInfo()
         // The contract's first rule: open starts the device.
         cork(false)
         applyVolume()
-        log.debug(
-            "stream open: {} tlength={} bytes ({} ms)",
-            format, tlength, targetNanos / 1_000_000,
+        // A profile is a request and the graph's quantum is a floor under it,
+        // so what was granted is worth one line: a consumer that asked for five
+        // milliseconds on a desktop nobody configured for audio work gets
+        // twenty, and this is where that stops being invisible.
+        log.info(
+            "stream open: {} asked for {} ms, granted {} ms ({} bytes)",
+            format, targetNanos / 1_000_000, grantedNanos / 1_000_000, granted,
         )
     }
 
@@ -289,7 +379,7 @@ internal class PulseSink(
         }
     }
 
-    override fun underrunCount(): Long = 0L
+    override fun underrunCount(): Long = underruns.get()
 
     override fun setVolume(volume: Float) {
         volumeValue = volume.coerceIn(0f, 1f)
@@ -306,6 +396,9 @@ internal class PulseSink(
         // waiting on a stream we are about to destroy.
         runCatching { pulse.locked { pulse.signal() } }
         disconnectStream()
+        if (overflows.get() > 0) {
+            log.debug("the server refused audio {} time(s): a producer wrote past what write returned", overflows.get())
+        }
         scratchArena?.let { runCatching { it.close() } }
         scratchArena = null
         scratch = MemorySegment.NULL
@@ -398,10 +491,32 @@ internal class PulseSink(
                     .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as Unit
                 lib.handle("pa_stream_set_write_callback")
                     .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as Unit
+                lib.handle("pa_stream_set_underflow_callback")
+                    .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as Unit
+                lib.handle("pa_stream_set_overflow_callback")
+                    .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as Unit
                 lib.handle("pa_stream_disconnect").invokeExact(current) as Int
                 lib.handle("pa_stream_unref").invokeExact(current) as Unit
             }
         }.onFailure { log.warn("stream teardown threw: {}", it.message) }
+    }
+
+    /**
+     * The tlength the server actually settled on, read once the stream is
+     * ready. Null when the query fails, which leaves the request as the best
+     * available answer.
+     */
+    private fun grantedTlengthBytes(): Int? {
+        val current = stream
+        if (current.address() == 0L) return null
+        return pulse.locked {
+            val attr = lib.handle("pa_stream_get_buffer_attr").invokeExact(current) as MemorySegment
+            if (attr.address() == 0L) return@locked null
+            runCatching {
+                attr.reinterpret(PulseAbi.BUFFER_ATTR_SIZE)
+                    .get(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_TLENGTH)
+            }.getOrNull()?.takeIf { it > 0 }
+        }
     }
 
     private fun propSet(arena: Arena, proplist: MemorySegment, key: String, value: String) {
@@ -416,12 +531,15 @@ internal class PulseSink(
 
     private companion object {
         /**
-         * 200 ms unless the caller says otherwise. libpulse can go lower than
-         * JavaSound's measured floor, but the number that survives load has not
-         * been measured yet, and guessing it in the wrong direction buys an
-         * underrun -- which freezes a clock exactly like the stall it replaces.
+         * How much of the target the server may ask for at a time. A quarter is
+         * the usual relationship: large enough that the request rate stays
+         * sane, small enough that the server is not holding a third of the
+         * latency budget as one lump.
          */
-        const val DEFAULT_BUFFER_NANOS = 200_000_000L
+        const val MINREQ_DIVISOR = 4
+
+        /** Eight kilobytes, which is 21 ms of 48 kHz stereo. A floor, not a target. */
+        const val MIN_SCRATCH_BYTES = 8_192
 
         const val TIMING_TIMEOUT_NANOS = 1_000_000_000L
         const val TIMING_POLL_MILLIS = 5L

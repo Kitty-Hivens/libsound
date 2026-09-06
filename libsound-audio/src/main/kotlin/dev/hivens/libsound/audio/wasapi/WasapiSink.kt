@@ -397,6 +397,11 @@ internal class WasapiSink(
         )
         wfx.set(ValueLayout.JAVA_SHORT, WasapiAbi.WFX_CB_SIZE, 0)
 
+        // The profile is not honoured here, and Capability.LOW_LATENCY is
+        // absent to say so. Windows has its own path to a short buffer,
+        // IAudioClient3 with the engine period it reports, and that is
+        // experimental-tier work that follows the Linux one rather than being
+        // guessed at alongside it.
         val bufferNanos = config.bufferNanos ?: DEFAULT_BUFFER_NANOS
         val duration = bufferNanos / WasapiAbi.NANOS_PER_REFTIME
 
