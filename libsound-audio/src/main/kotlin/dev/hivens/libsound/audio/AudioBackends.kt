@@ -53,9 +53,28 @@ public object AudioBackends {
             log.warn("no audio backend available on this machine")
         } else {
             log.info("audio backend: {} {}", backend.name, backend.capabilities)
+            // The type rather than the name: two string literals in two files
+            // that have to agree is a note that stops printing the day somebody
+            // renames the backend, and nothing would say so.
+            if (backend is CoreAudioBackend) log.info(MACOS_SCOPE)
         }
         return backend
     }
+
+    /**
+     * Said once, beside the line that names the backend, because a consumer
+     * meeting macOS should not have to read a capability set to find out that
+     * half the library is not there.
+     *
+     * Not a warning: the sink is held to the same contract every other backend
+     * passes and its suite runs on every push against a real output unit. What
+     * is narrow here is the platform, and the two things it costs are worth
+     * naming rather than discovering.
+     */
+    private const val MACOS_SCOPE =
+        "coreaudio is the whole of libsound on macOS: the platform has no per-application " +
+            "volume in any public API, so no mixer exists here and none will, and a published " +
+            "media session has never been confirmed to appear anywhere by a person."
 
     private fun fallback(reason: String): AudioBackend? {
         log.debug("falling back to JavaSound: {}", reason)
