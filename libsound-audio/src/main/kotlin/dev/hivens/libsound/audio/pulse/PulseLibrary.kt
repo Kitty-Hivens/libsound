@@ -140,6 +140,14 @@ internal class PulseLibrary private constructor(
             Triple("pa_context_load_module", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
             Triple("pa_context_unload_module", ADDR, listOf(ADDR, I32, ADDR, ADDR)),
 
+            // The sample cache: a short sound uploaded once and triggered by
+            // name afterwards, with no stream to set up and no buffer to fill.
+            Triple("pa_stream_connect_upload", I32, listOf(ADDR, I64)),
+            Triple("pa_stream_finish_upload", I32, listOf(ADDR)),
+            Triple("pa_context_play_sample", ADDR, listOf(ADDR, ADDR, ADDR, I32, ADDR, ADDR)),
+            Triple("pa_context_remove_sample", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_get_sample_info_by_name", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
+
             // Peak metering: a recording stream on a sink's monitor source,
             // aimed at one sink input rather than at everything the sink plays.
             Triple("pa_stream_connect_record", I32, listOf(ADDR, ADDR, ADDR, I32)),
