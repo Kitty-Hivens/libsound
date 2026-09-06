@@ -110,6 +110,97 @@ int main(void) {
     P(offsetof(pa_sink_input_info, volume_writable));
     P(sizeof(pa_sink_input_info));
 
+    /* The capture half. pa_source_info is the microphone list, and
+     * monitor_of_sink is what separates a real input from a sink's monitor:
+     * offering "Monitor of Built-in Audio" as a microphone confuses everyone
+     * who reads the list, and both are legitimate things to want. */
+    SECTION("pa_source_info (capture enumeration)");
+    P(offsetof(pa_source_info, name));
+    P(offsetof(pa_source_info, index));
+    P(offsetof(pa_source_info, description));
+    P(offsetof(pa_source_info, volume));
+    P(offsetof(pa_source_info, mute));
+    P(offsetof(pa_source_info, monitor_of_sink));
+    P(offsetof(pa_source_info, monitor_of_sink_name));
+    P(offsetof(pa_source_info, proplist));
+    P(offsetof(pa_source_info, state));
+    P(offsetof(pa_source_info, card));
+    P(offsetof(pa_source_info, n_ports));
+    P(offsetof(pa_source_info, ports));
+    P(offsetof(pa_source_info, active_port));
+    P(sizeof(pa_source_info));
+
+    SECTION("pa_source_output_info (somebody else's capture stream)");
+    P(offsetof(pa_source_output_info, index));
+    P(offsetof(pa_source_output_info, name));
+    P(offsetof(pa_source_output_info, client));
+    P(offsetof(pa_source_output_info, source));
+    P(offsetof(pa_source_output_info, proplist));
+    P(offsetof(pa_source_output_info, corked));
+    P(offsetof(pa_source_output_info, volume));
+    P(offsetof(pa_source_output_info, mute));
+    P(offsetof(pa_source_output_info, has_volume));
+    P(offsetof(pa_source_output_info, volume_writable));
+    P(sizeof(pa_source_output_info));
+
+    /* Which device is suspended, and which port it is playing out of. Both
+     * live at the tail of the info structs, past everything already read. */
+    SECTION("pa_sink_info, the device half");
+    P(offsetof(pa_sink_info, volume));
+    P(offsetof(pa_sink_info, mute));
+    P(offsetof(pa_sink_info, state));
+    P(offsetof(pa_sink_info, card));
+    P(offsetof(pa_sink_info, n_ports));
+    P(offsetof(pa_sink_info, ports));
+    P(offsetof(pa_sink_info, active_port));
+
+    SECTION("ports, one struct per direction with the same shape");
+    P(offsetof(pa_sink_port_info, name));
+    P(offsetof(pa_sink_port_info, description));
+    P(offsetof(pa_sink_port_info, priority));
+    P(offsetof(pa_sink_port_info, available));
+    P(sizeof(pa_sink_port_info));
+    P(offsetof(pa_source_port_info, name));
+    P(offsetof(pa_source_port_info, description));
+    P(offsetof(pa_source_port_info, priority));
+    P(offsetof(pa_source_port_info, available));
+    P(sizeof(pa_source_port_info));
+    P(PA_PORT_AVAILABLE_UNKNOWN);
+    P(PA_PORT_AVAILABLE_NO);
+    P(PA_PORT_AVAILABLE_YES);
+
+    /* Cards carry the profiles: headphones against speakers on one card, and
+     * the bluetooth switch between high quality playback and the low quality
+     * mode that has a microphone. profiles2 rather than profiles, which is
+     * deprecated and carries no availability flag. */
+    SECTION("pa_card_info and its profiles");
+    P(offsetof(pa_card_info, index));
+    P(offsetof(pa_card_info, name));
+    P(offsetof(pa_card_info, driver));
+    P(offsetof(pa_card_info, n_profiles));
+    P(offsetof(pa_card_info, proplist));
+    P(offsetof(pa_card_info, n_ports));
+    P(offsetof(pa_card_info, ports));
+    P(offsetof(pa_card_info, profiles2));
+    P(offsetof(pa_card_info, active_profile2));
+    P(sizeof(pa_card_info));
+    P(offsetof(pa_card_profile_info2, name));
+    P(offsetof(pa_card_profile_info2, description));
+    P(offsetof(pa_card_profile_info2, n_sinks));
+    P(offsetof(pa_card_profile_info2, n_sources));
+    P(offsetof(pa_card_profile_info2, priority));
+    P(offsetof(pa_card_profile_info2, available));
+    P(sizeof(pa_card_profile_info2));
+
+    SECTION("device state (is it suspended)");
+    P(PA_SINK_INVALID_STATE);
+    P(PA_SINK_RUNNING);
+    P(PA_SINK_IDLE);
+    P(PA_SINK_SUSPENDED);
+    P(PA_SOURCE_RUNNING);
+    P(PA_SOURCE_IDLE);
+    P(PA_SOURCE_SUSPENDED);
+
     SECTION("pa_cvolume, read side");
     P(offsetof(pa_cvolume, channels));
     P(offsetof(pa_cvolume, values));
@@ -171,6 +262,13 @@ int main(void) {
     HEX(PA_SUBSCRIPTION_EVENT_NEW);
     HEX(PA_SUBSCRIPTION_EVENT_CHANGE);
     HEX(PA_SUBSCRIPTION_EVENT_REMOVE);
+    HEX(PA_SUBSCRIPTION_MASK_SOURCE);
+    HEX(PA_SUBSCRIPTION_MASK_SOURCE_OUTPUT);
+    HEX(PA_SUBSCRIPTION_MASK_CARD);
+    HEX(PA_SUBSCRIPTION_MASK_MODULE);
+    HEX(PA_SUBSCRIPTION_EVENT_SOURCE);
+    HEX(PA_SUBSCRIPTION_EVENT_SOURCE_OUTPUT);
+    HEX(PA_SUBSCRIPTION_EVENT_CARD);
 
     SECTION("error codes and sentinels");
     P(PA_ERR_NODATA);
