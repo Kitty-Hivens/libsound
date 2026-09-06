@@ -115,7 +115,11 @@ jobs:
       # which is how skinema shipped a subtitle bundle that exported no symbols.
       - name: Build + test
         env:
-          LIBSOUND_REQUIRE: pulse,javasound,dbus
+          # javasound-capture is named here and nowhere else. It records
+          # whatever the JVM calls the default input, which on this row is a
+          # null sink's monitor and on a developer's machine is a microphone in
+          # a room, so the suite runs where there is nothing to overhear.
+          LIBSOUND_REQUIRE: pulse,javasound,javasound-capture,dbus
         run: ./gradlew build --stacktrace
 
       # A green tick says the build did not fail; it does not say a hardware
@@ -124,7 +128,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       # The publishable artifacts, built before a release depends on them. The
@@ -154,6 +158,10 @@ jobs:
           documents libsound-core -audio-sink/index.html
           documents libsound-audio -audio-backends/index.html
           documents libsound-session -media-sessions/index.html
+          # Published because two modules need it on a consumer's classpath, so
+          # it is held to the same standard as the three that are published to
+          # be used.
+          documents libsound-dbus -d-bus-connection/index.html
 
       - name: Upload test report on failure
         if: failure()
@@ -193,7 +201,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
             -e GRADLE_USER_HOME=/src/.gradle-musl \
-            -e LIBSOUND_REQUIRE=pulse,javasound,dbus \
+            -e LIBSOUND_REQUIRE=pulse,javasound,javasound-capture,dbus \
             alpine:3.24 sh -euc '
               apk add --no-cache bash openjdk25 pulseaudio pulseaudio-utils dbus glib playerctl
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
@@ -217,7 +225,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure
@@ -302,7 +310,7 @@ jobs:
           # JDK's own native and needs a routing config a bare container has no
           # reason to carry. The Linux and musl rows require it, so it is not
           # unwatched -- it is simply not what is being asked here.
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure

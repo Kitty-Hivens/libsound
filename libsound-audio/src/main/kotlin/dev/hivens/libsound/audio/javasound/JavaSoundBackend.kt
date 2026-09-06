@@ -37,17 +37,23 @@ internal class JavaSoundBackend private constructor(
     override val name: String = "javasound"
 
     /**
-     * The same set its sinks report, not an empty one.
+     * What its sinks report, plus what only the backend can do.
      *
      * A consumer reads the *backend* to decide what to offer -- that is the
      * line the selection logs and the line a settings screen keys off. A
      * backend claiming nothing while its sinks provide a device-derived
      * playhead would have consumers disabling A/V sync on a backend that
      * supports it.
+     *
+     * Capture is the one entry a sink cannot carry, because a sink is not the
+     * thing that captures.
      */
-    override val capabilities: Capabilities = JavaSoundSink.CAPABILITIES
+    override val capabilities: Capabilities = Capabilities(
+        JavaSoundSink.CAPABILITIES.supported + JavaSoundSource.CAPABILITIES.supported,
+    )
 
     private val sinks = mutableListOf<JavaSoundSink>()
+    private val sources = mutableListOf<JavaSoundSource>()
 
     override fun createSink(config: SinkConfig): AudioSink {
         // config carries an application name, an icon and a role. None of them
@@ -71,8 +77,23 @@ internal class JavaSoundBackend private constructor(
 
     override fun defaultDevice(): AudioDevice? = null
 
-    override fun createSource(config: SourceConfig): AudioSource =
-        throw AudioException("the JavaSound fallback cannot capture yet")
+    /**
+     * A `TargetDataLine` against whatever the JVM calls the default input.
+     *
+     * config carries an application name, an icon, a role and a device, and
+     * none of the four can be attached to a JavaSound line. They are dropped
+     * rather than approximated, exactly as on the output side, and the
+     * capability set says so. The buffer follows the same rule as the sink's:
+     * an explicit bufferNanos is taken exactly, and a profile is not honoured
+     * because the floor here is measured rather than chosen.
+     */
+    override fun createSource(config: SourceConfig): AudioSource {
+        val source = JavaSoundSource(
+            bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSource.DEFAULT_BUFFER_NANOS,
+        )
+        synchronized(sources) { sources.add(source) }
+        return source
+    }
 
     override fun captureDevices(): List<AudioDevice> = emptyList()
 
@@ -88,6 +109,8 @@ internal class JavaSoundBackend private constructor(
     override fun close() {
         val open = synchronized(sinks) { sinks.toList().also { sinks.clear() } }
         open.forEach { runCatching { it.close() } }
+        val capturing = synchronized(sources) { sources.toList().also { sources.clear() } }
+        capturing.forEach { runCatching { it.close() } }
     }
 
     internal companion object {
