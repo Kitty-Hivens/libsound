@@ -197,6 +197,13 @@ public interface VolumeMixer : AutoCloseable {
      * more here than anywhere else in the library: a virtual sink left behind
      * after a crash is not quiet audio a user can fix in their mixer, it is a
      * device in their settings that nothing owns and nothing will remove.
+     *
+     * A device that has just been created is adopted by the desktop's session
+     * manager a moment after it appears, and the adoption carries whatever
+     * volume and mute that manager decided on. So a [setDeviceVolume] made
+     * inside that window can be replaced by a value nobody here chose, which
+     * the server reports as a successful request all the same. A consumer that
+     * needs the setting to hold asks again once the device has settled.
      */
     public fun createVirtualSink(name: String, channels: Int = 2): DeviceId?
 

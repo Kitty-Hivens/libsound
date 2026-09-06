@@ -24,7 +24,21 @@ import kotlin.math.abs
 @Timeout(value = 60, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class PulseDeviceControlTest {
 
-    private val name = "libsound_test_sink_${ProcessHandle.current().pid()}"
+    /**
+     * A name no earlier test has used, and the reason is the desktop rather
+     * than tidiness.
+     *
+     * WirePlumber remembers a device's volume and mute against its node name
+     * and applies them again when a node with that name appears. A suite that
+     * reused one would be racing that restore: the volume set here would land,
+     * and a moment later the session manager would put its own remembered value
+     * back. Measured, in `~/.local/state/wireplumber/stream-properties`, after
+     * this failed once in a full run and never once on its own.
+     *
+     * JUnit builds one instance per test, so this is per test as well as per
+     * process.
+     */
+    private val name = "libsound_test_sink_${ProcessHandle.current().pid()}_${System.nanoTime()}"
 
     private var backend: AudioBackend? = null
     private var mixer: VolumeMixer? = null
@@ -64,7 +78,19 @@ class PulseDeviceControlTest {
             if (condition()) return
             Thread.sleep(SETTLE_POLL_MILLIS)
         }
-        throw AssertionError("the server never reported: $what")
+        // What the devices actually looked like when the wait ran out. A bare
+        // "it never happened" sends whoever reads the failure back to the
+        // machine to ask the question again, and on a graph server the answer
+        // may not be there any more by then.
+        val seen = (devices() + checkNotNull(backend).captureDevices()).joinToString("\n") {
+            "  ${it.id} volume=${it.volume} muted=${it.muted} suspended=${it.isSuspended}"
+        }
+        val pactl = runCatching {
+            ProcessBuilder("pactl", "list", "sinks").redirectErrorStream(true).start()
+                .inputStream.readAllBytes().decodeToString()
+                .split("Sink #").firstOrNull { it.contains(name) } ?: "(not listed)"
+        }.getOrDefault("(pactl absent)")
+        throw AssertionError("the server never reported: $what\nwhat it did report:\n$seen\npactl:\n$pactl")
     }
 
     private companion object {
@@ -116,14 +142,26 @@ class PulseDeviceControlTest {
         // change below observable rather than a coincidence.
         checkNotNull(created.volume) shouldBe 1f
 
+        // Asked once for the server's own answer, then asked again until it
+        // sticks, and the difference between the two is the point. A device
+        // that has just been created is adopted by the session manager a moment
+        // after it appears, and an adoption that lands after this call puts the
+        // volume back to the value it decided on. Measured: both channels at
+        // 100 percent on a set the server had already reported as successful.
+        // What the library promises is what the server said about the request,
+        // not that nobody else touches the device afterwards.
         mixer.setDeviceVolume(id, 0.4f) shouldBe true
         eventually("the device volume at 0.4") {
+            mixer.setDeviceVolume(id, 0.4f)
             val volume = devices().firstOrNull { it.id == id }?.volume ?: return@eventually false
             abs(volume - 0.4f) < 0.05f
         }
 
         mixer.setDeviceMuted(id, true) shouldBe true
-        eventually("the device muted") { devices().firstOrNull { it.id == id }?.muted == true }
+        eventually("the device muted") {
+            mixer.setDeviceMuted(id, true)
+            devices().firstOrNull { it.id == id }?.muted == true
+        }
 
         // The same obligation the stream half carries, and for a stronger
         // reason: a device left quiet is the one a user blames on their
