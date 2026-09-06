@@ -21,12 +21,19 @@ kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.fromTarget(libs.versions.javaTarget.get()))
         freeCompilerArgs.add("-jvm-default=enable")
+        // The bus plumbing is fenced behind a marker so that nobody else picks
+        // it up by accident. This module is one of the two it was written for.
+        freeCompilerArgs.add("-opt-in=dev.hivens.libsound.dbus.InternalDBusApi")
     }
     explicitApi()
 }
 
 dependencies {
     api(project(":libsound-core"))
+    // implementation, not api: MPRIS is the surface, and no type from the bus
+    // layer appears in it. A consumer gets the artifact at runtime and never
+    // compiles against it.
+    implementation(project(":libsound-dbus"))
     api(libs.slf4j.api)
 
     testImplementation(platform("org.junit:junit-bom:${libs.versions.junit.get()}"))

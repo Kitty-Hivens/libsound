@@ -1,4 +1,4 @@
-package dev.hivens.libsound.session.dbus
+package dev.hivens.libsound.dbus
 
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * A private session-bus connection and the single thread that owns it.
+ * A private bus connection and the single thread that owns it.
  *
  * ## One thread, not two
  *
@@ -45,7 +45,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * handler -- handlers run on this thread, and it is the one that would do the
  * work they are waiting for.
  */
-internal class DBusConnection private constructor(
+@InternalDBusApi
+class DBusConnection private constructor(
     val symbols: DBusSymbols,
     val connection: MemorySegment,
     private val threadLabel: String,
@@ -362,7 +363,7 @@ internal class DBusConnection private constructor(
         }
     }
 
-    internal companion object {
+    companion object {
         private val log = LoggerFactory.getLogger("libsound.DBus")
 
         /**
@@ -412,30 +413,35 @@ internal class DBusConnection private constructor(
         }
 
         /**
-         * Open a private connection to the session bus, or return null when
-         * there is none -- the ordinary answer on a headless box, and not an
-         * error.
+         * Open a private connection to [bus], or return null when there is none
+         * -- the ordinary answer on a headless box, and not an error.
+         *
+         * [DBusAbi.BUS_SESSION] is where the desktop lives and where MPRIS is
+         * published. [DBusAbi.BUS_SYSTEM] carries the services a machine runs
+         * rather than a login, RealtimeKit among them, and it exists on a box
+         * that has no session bus at all.
          */
-        fun openOrNull(threadLabel: String): DBusConnection? {
+        fun openOrNull(threadLabel: String, bus: Int = DBusAbi.BUS_SESSION): DBusConnection? {
             val symbols = DBusSymbols.loadOrNull() ?: run {
                 log.debug("libdbus not loadable")
                 return null
             }
+            val busName = if (bus == DBusAbi.BUS_SYSTEM) "system bus" else "session bus"
             var connection = MemorySegment.NULL
             return runCatching {
                 Arena.ofConfined().use { setup ->
                     val error = setup.allocate(DBusAbi.ERROR_LAYOUT)
                     symbols.handle("dbus_error_init").invokeExact(error) as Unit
                     connection = symbols.handle("dbus_bus_get_private")
-                        .invokeExact(DBusAbi.BUS_SESSION, error) as MemorySegment
+                        .invokeExact(bus, error) as MemorySegment
                     freeErrorIfSet(symbols, error)
-                    check(connection.address() != 0L) { "no session bus" }
+                    check(connection.address() != 0L) { "no $busName" }
                     symbols.handle("dbus_connection_set_exit_on_disconnect")
                         .invokeExact(connection, 0) as Unit
                 }
                 DBusConnection(symbols, connection, threadLabel)
             }.getOrElse {
-                log.debug("session bus unavailable: {}", it.message)
+                log.debug("{} unavailable: {}", busName, it.message)
                 if (connection.address() != 0L) {
                     runCatching { symbols.handle("dbus_connection_close").invokeExact(connection) as Unit }
                     runCatching { symbols.handle("dbus_connection_unref").invokeExact(connection) as Unit }
