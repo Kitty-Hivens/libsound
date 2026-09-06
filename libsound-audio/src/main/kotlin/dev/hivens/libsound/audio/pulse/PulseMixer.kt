@@ -4,6 +4,7 @@ import dev.hivens.libsound.AudioCard
 import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.AudioDevice
 import dev.hivens.libsound.CardId
 import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.MediaRole
@@ -56,6 +57,9 @@ internal class PulseMixer private constructor(
 
     private val lib = pulse.lib
 
+    /** One transcription of the device structs, shared with the backend. */
+    private val reader = PulseDeviceReader(lib)
+
     private val closed = AtomicBoolean(false)
 
     private val listeners = CopyOnWriteArrayList<(StreamEvent) -> Unit>()
@@ -82,6 +86,21 @@ internal class PulseMixer private constructor(
 
     /** The same, one facility along: a capture row names the source it reads. */
     private val sourceNames = ConcurrentHashMap<Int, String>()
+
+    /**
+     * Devices by name, as the last walk saw them.
+     *
+     * A DeviceId is a name and the server's setters take names, but the call to
+     * make differs by facility and a cvolume has to carry the device's own
+     * channel count. Both come from here rather than from a round trip per
+     * control, which is also what makes a restore possible during close, when
+     * enumeration answers empty by design.
+     */
+    private val deviceRows = ConcurrentHashMap<String, DeviceRow>()
+
+    /** Device volume and mute as we first found them, kept apart for the same reason streams' are. */
+    private val originalDeviceVolumes = ConcurrentHashMap<String, Float>()
+    private val originalDeviceMutes = ConcurrentHashMap<String, Boolean>()
 
     /** Which device each stream was last seen on, so a meter knows where to listen. */
     private val lastDeviceIndexes = ConcurrentHashMap<Handle, Int>()
@@ -138,6 +157,27 @@ internal class PulseMixer private constructor(
     @Volatile
     private var sinkLookupComplete = false
 
+    /**
+     * Devices this process created, by the name they were given.
+     *
+     * The obligation that comes with them is stronger than the one that comes
+     * with a volume: a virtual sink left behind after a crash is not quiet
+     * audio a user can fix in their mixer, it is a device in their settings
+     * that nothing owns and nothing will remove.
+     */
+    private val ownedModules = ConcurrentHashMap<String, Int>()
+
+    @Volatile
+    private var loadedModuleIndex = PulseAbi.INVALID_INDEX
+
+    @Volatile
+    private var loadPending = false
+
+    private val collectedCards = mutableListOf<AudioCard>()
+
+    @Volatile
+    private var cardsComplete = false
+
     @Volatile
     private var controlPending = false
 
@@ -147,6 +187,8 @@ internal class PulseMixer private constructor(
     private lateinit var sourceOutputStub: MemorySegment
     private lateinit var sinkStub: MemorySegment
     private lateinit var sourceStub: MemorySegment
+    private lateinit var cardStub: MemorySegment
+    private lateinit var moduleIndexStub: MemorySegment
     private lateinit var subscribeStub: MemorySegment
     private lateinit var successStub: MemorySegment
     private lateinit var monitorStub: MemorySegment
@@ -161,6 +203,11 @@ internal class PulseMixer private constructor(
         Capability.CAPTURE_ENUMERATION,
         Capability.CAPTURE_CONTROL,
         Capability.CAPTURE_ROUTING,
+        // The devices themselves, which is the other half of a mixer: one
+        // application quieted, and the speaker everything plays through.
+        Capability.DEVICE_VOLUME,
+        Capability.DEVICE_PROFILES,
+        Capability.VIRTUAL_DEVICES,
     )
 
     override val isOpen: Boolean get() = !closed.get()
@@ -244,25 +291,123 @@ internal class PulseMixer private constructor(
         }
     }
 
-    override fun setDeviceVolume(device: DeviceId, volume: Float): Boolean = false
+    override fun setDeviceVolume(device: DeviceId, volume: Float): Boolean {
+        if (closed.get()) return false
+        val row = deviceRow(device) ?: return false
+        return roundTrip.withLock {
+            rememberDeviceVolume(device, row)
+            applyDeviceVolume(device, row, volume)
+        }
+    }
 
-    override fun setDeviceMuted(device: DeviceId, muted: Boolean): Boolean = false
+    override fun setDeviceMuted(device: DeviceId, muted: Boolean): Boolean {
+        if (closed.get()) return false
+        val row = deviceRow(device) ?: return false
+        return roundTrip.withLock {
+            rememberDeviceMute(device, row)
+            applyDeviceMute(device, row, muted)
+        }
+    }
 
-    override fun setDefaultDevice(device: DeviceId): Boolean = false
+    /**
+     * Not undone by [restoreAll], unlike everything else here.
+     *
+     * A default a user picked in a settings screen is a decision rather than a
+     * change made on their behalf, and putting it back at the end of the
+     * process would undo the thing they asked for.
+     */
+    override fun setDefaultDevice(device: DeviceId): Boolean {
+        if (closed.get()) return false
+        val row = deviceRow(device) ?: return false
+        val symbol = when (row.device.direction) {
+            StreamDirection.PLAYBACK -> "pa_context_set_default_sink"
+            StreamDirection.CAPTURE -> "pa_context_set_default_source"
+        }
+        return awaitControl { call ->
+            lib.handle(symbol).invokeExact(
+                pulse.context, call.allocateUtf8(device.value), successStub, MemorySegment.NULL,
+            ) as MemorySegment
+        }
+    }
 
-    override fun cards(): List<AudioCard> = emptyList()
+    override fun cards(): List<AudioCard> {
+        if (closed.get()) return emptyList()
+        return roundTrip.withLock {
+            pulse.locked {
+                collectedCards.clear()
+                cardsComplete = false
+                val op = lib.handle("pa_context_get_card_info_list")
+                    .invokeExact(pulse.context, cardStub, MemorySegment.NULL) as MemorySegment
+                if (op.address() == 0L) return@locked emptyList()
+                pulse.releaseOperation(op)
+                if (!awaitFlag { cardsComplete }) return@locked emptyList()
+                collectedCards.toList()
+            }
+        }
+    }
 
-    override fun setCardProfile(card: CardId, profile: String): Boolean = false
+    override fun setCardProfile(card: CardId, profile: String): Boolean {
+        if (closed.get()) return false
+        return awaitControl { call ->
+            lib.handle("pa_context_set_card_profile_by_name").invokeExact(
+                pulse.context, call.allocateUtf8(card.value), call.allocateUtf8(profile),
+                successStub, MemorySegment.NULL,
+            ) as MemorySegment
+        }
+    }
 
-    override fun setDevicePort(device: DeviceId, port: String): Boolean = false
+    override fun setDevicePort(device: DeviceId, port: String): Boolean {
+        if (closed.get()) return false
+        val row = deviceRow(device) ?: return false
+        val symbol = when (row.device.direction) {
+            StreamDirection.PLAYBACK -> "pa_context_set_sink_port_by_name"
+            StreamDirection.CAPTURE -> "pa_context_set_source_port_by_name"
+        }
+        return awaitControl { call ->
+            lib.handle(symbol).invokeExact(
+                pulse.context, call.allocateUtf8(device.value), call.allocateUtf8(port),
+                successStub, MemorySegment.NULL,
+            ) as MemorySegment
+        }
+    }
 
-    override fun createVirtualSink(name: String, channels: Int): DeviceId? = null
+    override fun createVirtualSink(name: String, channels: Int): DeviceId? {
+        if (closed.get()) return null
+        val safe = sanitise(name) ?: return null
+        val map = CHANNEL_MAPS[channels.coerceIn(1, CHANNEL_MAPS.size)] ?: return null
+        return loadModule(
+            safe,
+            "module-null-sink",
+            "sink_name=$safe channel_map=$map sink_properties=device.description=$safe",
+        )
+    }
 
-    override fun removeVirtualSink(id: DeviceId): Boolean = false
+    override fun removeVirtualSink(id: DeviceId): Boolean {
+        // Only what this process created. Unloading a module somebody else
+        // loaded is exactly the kind of reach this library does not take, and a
+        // caller that could ask for it by name would be one call away from
+        // removing a user's own configuration.
+        val index = ownedModules.remove(id.value) ?: return false
+        return unloadModule(index)
+    }
 
-    override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? = null
+    override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? {
+        if (closed.get()) return null
+        val safe = sanitise(name) ?: return null
+        if (devices.isEmpty()) return null
+        val slaves = devices.map { sanitise(it.value) ?: return null }
+        return loadModule(
+            safe,
+            "module-combine-sink",
+            "sink_name=$safe slaves=${slaves.joinToString(",")}",
+        )
+    }
 
     override fun restoreAll() {
+        // Modules first, and the order is load-bearing: a stream restored onto
+        // a device that is about to vanish ends up somewhere nobody chose.
+        removeOwnedModules()
+        restoreDevices()
         val volumes = originalVolumes.entries.map { it.key to it.value }
         volumes.forEach { originalVolumes.remove(it.first) }
         val mutes = originalMutes.entries.map { it.key to it.value }
@@ -380,11 +525,151 @@ internal class PulseMixer private constructor(
         roundTrip.withLock { pulse.close() }
     }
 
+    private fun restoreDevices() {
+        val volumes = originalDeviceVolumes.entries.map { it.key to it.value }
+        volumes.forEach { originalDeviceVolumes.remove(it.first) }
+        val mutes = originalDeviceMutes.entries.map { it.key to it.value }
+        mutes.forEach { originalDeviceMutes.remove(it.first) }
+        volumes.forEach { (name, volume) ->
+            val row = deviceRows[name] ?: return@forEach
+            runCatching { applyDeviceVolume(DeviceId(name), row, volume) }
+                .onFailure { log.debug("could not restore volume of device {}: {}", name, it.message) }
+        }
+        mutes.forEach { (name, muted) ->
+            val row = deviceRows[name] ?: return@forEach
+            runCatching { applyDeviceMute(DeviceId(name), row, muted) }
+                .onFailure { log.debug("could not restore mute of device {}: {}", name, it.message) }
+        }
+    }
+
+    private fun removeOwnedModules() {
+        val owned = ownedModules.entries.map { it.key to it.value }
+        owned.forEach { ownedModules.remove(it.first) }
+        owned.forEach { (name, index) ->
+            runCatching { unloadModule(index) }
+                .onFailure { log.warn("could not remove the virtual device {}: {}", name, it.message) }
+        }
+    }
+
+    /**
+     * Load a module and remember what it made, or null when the server refused.
+     *
+     * The index comes back through a callback rather than a return value, which
+     * is why this waits: a caller that got a device id without knowing the load
+     * succeeded would have a name for something that does not exist.
+     */
+    private fun loadModule(name: String, module: String, argument: String): DeviceId? = roundTrip.withLock {
+        val index = pulse.locked {
+            Arena.ofConfined().use { call ->
+                loadedModuleIndex = PulseAbi.INVALID_INDEX
+                loadPending = true
+                val op = lib.handle("pa_context_load_module").invokeExact(
+                    pulse.context, call.allocateUtf8(module), call.allocateUtf8(argument),
+                    moduleIndexStub, MemorySegment.NULL,
+                ) as MemorySegment
+                if (op.address() == 0L) {
+                    loadPending = false
+                    return@locked PulseAbi.INVALID_INDEX
+                }
+                pulse.releaseOperation(op)
+                if (!awaitFlag { !loadPending }) return@locked PulseAbi.INVALID_INDEX
+                loadedModuleIndex
+            }
+        }
+        if (index == PulseAbi.INVALID_INDEX) {
+            log.info("the server refused {} ({})", module, pulse.lastError())
+            return@withLock null
+        }
+        ownedModules[name] = index
+        // The device list changed, so the cached rows are one device short
+        // until somebody walks it again.
+        primeDeviceNames()
+        DeviceId(name)
+    }
+
+    private fun unloadModule(index: Int): Boolean = awaitControl {
+        lib.handle("pa_context_unload_module").invokeExact(
+            pulse.context, index, successStub, MemorySegment.NULL,
+        ) as MemorySegment
+    }
+
+    /**
+     * A module argument is a flat string of `key=value` pairs, so a name with a
+     * space or a quote in it would be read as more arguments than were meant.
+     * Refused rather than escaped: the set of names a device may have is not
+     * this library's to widen, and a caller that gets null has been told
+     * exactly what happened.
+     */
+    private fun sanitise(name: String): String? =
+        name.takeIf { it.isNotBlank() && it.length <= MAX_DEVICE_NAME && it.all(::isNameCharacter) }
+
+    private fun isNameCharacter(character: Char): Boolean =
+        character.isLetterOrDigit() || character == '_' || character == '.' || character == '-'
+
     private fun restoreOnClose() {
-        val outstanding = originalVolumes.size + originalMutes.size
+        val outstanding = originalVolumes.size + originalMutes.size +
+            originalDeviceVolumes.size + originalDeviceMutes.size + ownedModules.size
         if (outstanding == 0) return
-        log.info("restoring {} stream setting(s) this process changed", outstanding)
+        log.info("restoring {} setting(s) this process changed", outstanding)
         restoreAll()
+    }
+
+    // -- devices ----------------------------------------------------------------
+
+    /** One device as the last walk saw it, with the channel count a cvolume needs. */
+    private class DeviceRow(val device: AudioDevice, val channels: Int)
+
+    /**
+     * The row for a device, refreshing the cache once if the name is new.
+     *
+     * A name that is in neither facility after a refresh is a device that is
+     * gone, and every control on it answers false rather than guessing which
+     * call to make.
+     */
+    private fun deviceRow(device: DeviceId): DeviceRow? {
+        deviceRows[device.value]?.let { return it }
+        primeDeviceNames()
+        return deviceRows[device.value]
+    }
+
+    private fun applyDeviceVolume(device: DeviceId, row: DeviceRow, volume: Float): Boolean {
+        val channels = row.channels.coerceIn(1, PulseAbi.CHANNELS_MAX)
+        val symbol = when (row.device.direction) {
+            StreamDirection.PLAYBACK -> "pa_context_set_sink_volume_by_name"
+            StreamDirection.CAPTURE -> "pa_context_set_source_volume_by_name"
+        }
+        return awaitControl { call ->
+            val cvolume = call.allocate(PulseAbi.CVOLUME_SIZE, 4)
+            val level = lib.handle("pa_sw_volume_from_linear")
+                .invokeExact(volume.coerceIn(0f, 1f).toDouble()) as Int
+            lib.handle("pa_cvolume_set").invokeExact(cvolume, channels, level) as MemorySegment
+            lib.handle(symbol).invokeExact(
+                pulse.context, call.allocateUtf8(device.value), cvolume, successStub, MemorySegment.NULL,
+            ) as MemorySegment
+        }
+    }
+
+    private fun applyDeviceMute(device: DeviceId, row: DeviceRow, muted: Boolean): Boolean {
+        val symbol = when (row.device.direction) {
+            StreamDirection.PLAYBACK -> "pa_context_set_sink_mute_by_name"
+            StreamDirection.CAPTURE -> "pa_context_set_source_mute_by_name"
+        }
+        return awaitControl { call ->
+            lib.handle(symbol).invokeExact(
+                pulse.context, call.allocateUtf8(device.value), if (muted) 1 else 0,
+                successStub, MemorySegment.NULL,
+            ) as MemorySegment
+        }
+    }
+
+    private fun rememberDeviceVolume(device: DeviceId, row: DeviceRow) {
+        if (originalDeviceVolumes.containsKey(device.value)) return
+        originalDeviceVolumes.putIfAbsent(device.value, row.device.volume ?: return)
+    }
+
+    private fun rememberDeviceMute(device: DeviceId, row: DeviceRow) {
+        if (originalDeviceMutes.containsKey(device.value)) return
+        originalDeviceMutes.putIfAbsent(device.value, row.device.muted ?: return)
     }
 
     // -- control, each waiting for the server's own answer ----------------------
@@ -553,11 +838,17 @@ internal class PulseMixer private constructor(
                 pulse.signal()
                 return@runCatching
             }
-            if (info.address() == 0L) return@runCatching
-            val head = info.reinterpret(SINK_HEAD)
-            val index = head.get(ValueLayout.JAVA_INT, PulseAbi.SINK_INFO_INDEX)
-            val name = head.get(ValueLayout.ADDRESS, PulseAbi.SINK_INFO_NAME).readCString()
-            if (name != null) sinkNames[index] = name
+            val device = reader.sink(info) ?: return@runCatching
+            val index = info.reinterpret(PulseAbi.SINK_INFO_HEAD)
+                .get(ValueLayout.JAVA_INT, PulseAbi.SINK_INFO_INDEX)
+            sinkNames[index] = device.id.value
+            // The whole row, not only the name: a control needs the facility to
+            // call into and the channel count to send, and a restore needs the
+            // value that was there first.
+            deviceRows[device.id.value] = DeviceRow(
+                device,
+                reader.channels(info.reinterpret(PulseAbi.SINK_INFO_HEAD), PulseAbi.SINK_INFO_VOLUME),
+            )
         }.onFailure { log.warn("sink callback threw: {}", it.message) }
     }
 
@@ -569,12 +860,35 @@ internal class PulseMixer private constructor(
                 pulse.signal()
                 return@runCatching
             }
-            if (info.address() == 0L) return@runCatching
-            val head = info.reinterpret(SOURCE_HEAD)
-            val index = head.get(ValueLayout.JAVA_INT, PulseAbi.SOURCE_INFO_INDEX)
-            val name = head.get(ValueLayout.ADDRESS, PulseAbi.SOURCE_INFO_NAME).readCString()
-            if (name != null) sourceNames[index] = name
+            val device = reader.source(info) ?: return@runCatching
+            val index = info.reinterpret(PulseAbi.SOURCE_INFO_HEAD)
+                .get(ValueLayout.JAVA_INT, PulseAbi.SOURCE_INFO_INDEX)
+            sourceNames[index] = device.id.value
+            deviceRows[device.id.value] = DeviceRow(
+                device,
+                reader.channels(info.reinterpret(PulseAbi.SOURCE_INFO_HEAD), PulseAbi.SOURCE_INFO_VOLUME),
+            )
         }.onFailure { log.warn("source callback threw: {}", it.message) }
+    }
+
+    fun onCard(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            if (eol != 0) {
+                cardsComplete = true
+                pulse.signal()
+                return@runCatching
+            }
+            reader.card(info)?.let(collectedCards::add)
+        }.onFailure { log.warn("card callback threw: {}", it.message) }
+    }
+
+    /** The module index a load produced, or PA_INVALID_INDEX when it failed. */
+    fun onModuleIndex(unusedContext: MemorySegment, index: Int, unusedUserData: MemorySegment) {
+        runCatching {
+            loadedModuleIndex = index
+            loadPending = false
+            pulse.signal()
+        }
     }
 
     fun onControlSuccess(unusedContext: MemorySegment, success: Int, unusedUserData: MemorySegment) {
@@ -789,6 +1103,10 @@ internal class PulseMixer private constructor(
             lookup.findVirtual(PulseMixer::class.java, "onSource", infoType).bindTo(this),
             FunctionDescriptor.ofVoid(addr, addr, i32, addr), lib.arena,
         )
+        cardStub = linker.upcallStub(
+            lookup.findVirtual(PulseMixer::class.java, "onCard", infoType).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, addr, i32, addr), lib.arena,
+        )
         val intPairType = MethodType.methodType(
             Void.TYPE, MemorySegment::class.java, Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType, MemorySegment::class.java,
@@ -800,6 +1118,16 @@ internal class PulseMixer private constructor(
         monitorStub = linker.upcallStub(
             lookup.findVirtual(PulseMixer::class.java, "onMonitorSink", infoType).bindTo(this),
             FunctionDescriptor.ofVoid(addr, addr, i32, addr), lib.arena,
+        )
+        moduleIndexStub = linker.upcallStub(
+            lookup.findVirtual(
+                PulseMixer::class.java, "onModuleIndex",
+                MethodType.methodType(
+                    Void.TYPE, MemorySegment::class.java, Int::class.javaPrimitiveType,
+                    MemorySegment::class.java,
+                ),
+            ).bindTo(this),
+            FunctionDescriptor.ofVoid(addr, i32, addr), lib.arena,
         )
         successStub = linker.upcallStub(
             lookup.findVirtual(
@@ -837,11 +1165,20 @@ internal class PulseMixer private constructor(
          */
         private const val FALLBACK_CHANNELS = 2
 
-        private const val SINK_HEAD = 32L
-
-        /** Enough of pa_source_info to reach the name and the index. */
-        private const val SOURCE_HEAD = 32L
         private const val INTROSPECT_TIMEOUT_NANOS = 2_000_000_000L
+
+        /** Long enough for a description, short enough not to be an argument list. */
+        private const val MAX_DEVICE_NAME = 64
+
+        /**
+         * The channel maps a virtual sink can be asked for. Named rather than
+         * generated: a map is a list of channel positions the server knows, and
+         * an invented one is refused at load time with a message nobody reads.
+         */
+        private val CHANNEL_MAPS = mapOf(
+            1 to "mono",
+            2 to "front-left,front-right",
+        )
 
         /** `PA_INVALID_INDEX`, which a sink input carries when it is not routed. */
         private const val INVALID_INDEX = -1

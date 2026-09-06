@@ -50,6 +50,19 @@ internal object PulseAbi {
     const val SINK_INFO_NAME = 0L
     const val SINK_INFO_INDEX = 8L
     const val SINK_INFO_DESCRIPTION = 16L
+    const val SINK_INFO_VOLUME = 172L
+    const val SINK_INFO_MUTE = 304L
+    const val SINK_INFO_STATE = 364L
+    const val SINK_INFO_CARD = 372L
+    const val SINK_INFO_N_PORTS = 376L
+    const val SINK_INFO_PORTS = 384L
+    const val SINK_INFO_ACTIVE_PORT = 392L
+
+    /**
+     * Enough of pa_sink_info to reach the active port. The struct is 416 bytes
+     * and the tail, which is the format list, is not this library's business.
+     */
+    const val SINK_INFO_HEAD = 400L
 
     // -- peak metering --------------------------------------------------------
 
@@ -137,9 +150,48 @@ internal object PulseAbi {
      */
     const val SOURCE_INFO_MONITOR_OF_SINK = 308L
     const val SOURCE_INFO_STATE = 364L
+    const val SOURCE_INFO_CARD = 372L
+    const val SOURCE_INFO_N_PORTS = 376L
+    const val SOURCE_INFO_PORTS = 384L
+    const val SOURCE_INFO_ACTIVE_PORT = 392L
 
-    /** Enough of pa_source_info to reach the state; the struct is 416 bytes. */
-    const val SOURCE_INFO_HEAD = 376L
+    /** The same shape and the same size as pa_sink_info, one facility along. */
+    const val SOURCE_INFO_HEAD = 400L
+
+    // -- ports, one struct per direction with the same layout -----------------
+
+    const val PORT_INFO_NAME = 0L
+    const val PORT_INFO_DESCRIPTION = 8L
+    const val PORT_INFO_PRIORITY = 16L
+    const val PORT_INFO_AVAILABLE = 20L
+    const val PORT_INFO_SIZE = 40L
+
+    /**
+     * `PA_PORT_AVAILABLE_NO`. Zero is "this port does not support jack
+     * detection", which is not the same as unavailable and is why the check is
+     * against this rather than against the truthiness of the field.
+     */
+    const val PORT_AVAILABLE_NO = 1
+
+    // -- pa_card_info and the profiles a card can be put into -----------------
+
+    const val CARD_INFO_INDEX = 0L
+    const val CARD_INFO_NAME = 8L
+    const val CARD_INFO_N_PROFILES = 32L
+    const val CARD_INFO_PROFILES2 = 80L
+    const val CARD_INFO_ACTIVE_PROFILE2 = 88L
+    const val CARD_INFO_HEAD = 96L
+
+    /**
+     * `profiles2` rather than the deprecated `profiles`: the newer array is
+     * pointers rather than inline structs and carries the availability flag,
+     * which is what tells a profile that exists apart from one worth offering.
+     */
+    const val CARD_PROFILE_NAME = 0L
+    const val CARD_PROFILE_DESCRIPTION = 8L
+    const val CARD_PROFILE_PRIORITY = 24L
+    const val CARD_PROFILE_AVAILABLE = 28L
+    const val CARD_PROFILE_SIZE = 32L
 
     // -- pa_source_output_info: somebody else's capture stream ----------------
 

@@ -12,7 +12,6 @@ import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
-import dev.hivens.libsound.StreamDirection
 import org.slf4j.LoggerFactory
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
@@ -44,6 +43,9 @@ internal class PulseBackend private constructor(
 
     private val lib = pulse.lib
 
+    /** One transcription of the device structs, shared with the mixer. */
+    private val reader = PulseDeviceReader(lib)
+
     override val name: String = "pulse"
 
     /**
@@ -67,6 +69,7 @@ internal class PulseBackend private constructor(
                 add(Capability.DEVICE_EVENTS)
                 add(Capability.DEVICE_POSITION)
                 add(Capability.CAPTURE)
+                add(Capability.DEVICE_VOLUME)
                 add(Capability.LOW_LATENCY)
                 add(Capability.UNDERRUN_COUNT)
                 if (rolePolicyLoaded) add(Capability.DUCKS_OTHERS)
@@ -242,16 +245,10 @@ internal class PulseBackend private constructor(
                 pulse.signal()
                 return@runCatching
             }
-            if (info.address() == 0L) return@runCatching
-            val head = info.reinterpret(SINK_INFO_HEAD)
-            val sinkName = head.get(ValueLayout.ADDRESS, PulseAbi.SINK_INFO_NAME).readCString() ?: return@runCatching
-            val description = head.get(ValueLayout.ADDRESS, PulseAbi.SINK_INFO_DESCRIPTION).readCString()
-            collected.add(
-                AudioDevice(
-                    id = DeviceId(sinkName),
-                    name = description ?: sinkName,
-                ),
-            )
+            // Volume, mute, suspended state and ports as well as the name: the
+            // device itself rather than only its label, which is the half of a
+            // mixer this backend could not reach before.
+            reader.sink(info)?.let(collected::add)
         }.onFailure { log.warn("sink info callback threw: {}", it.message) }
     }
 
@@ -263,19 +260,7 @@ internal class PulseBackend private constructor(
                 pulse.signal()
                 return@runCatching
             }
-            if (info.address() == 0L) return@runCatching
-            val head = info.reinterpret(PulseAbi.SOURCE_INFO_HEAD)
-            val sourceName = head.get(ValueLayout.ADDRESS, PulseAbi.SOURCE_INFO_NAME).readCString() ?: return@runCatching
-            val description = head.get(ValueLayout.ADDRESS, PulseAbi.SOURCE_INFO_DESCRIPTION).readCString()
-            collected.add(
-                AudioDevice(
-                    id = DeviceId(sourceName),
-                    name = description ?: sourceName,
-                    direction = StreamDirection.CAPTURE,
-                    isMonitor = head.get(ValueLayout.JAVA_INT, PulseAbi.SOURCE_INFO_MONITOR_OF_SINK) !=
-                        PulseAbi.INVALID_INDEX,
-                ),
-            )
+            reader.source(info)?.let(collected::add)
         }.onFailure { log.warn("source info callback threw: {}", it.message) }
     }
 
@@ -478,8 +463,6 @@ internal class PulseBackend private constructor(
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.Pulse")
 
-        /** Only the head of pa_sink_info is read; the rest of the struct is not our business. */
-        private const val SINK_INFO_HEAD = 32L
         private const val SERVER_INFO_HEAD = 64L
 
         private const val INTROSPECT_TIMEOUT_NANOS = 2_000_000_000L
