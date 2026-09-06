@@ -34,3 +34,4 @@ tools/dbus-oracle
 tools/*.exe
 tools/pa-oracle
 tools/dbus-oracle
+tools/rt-oracle
