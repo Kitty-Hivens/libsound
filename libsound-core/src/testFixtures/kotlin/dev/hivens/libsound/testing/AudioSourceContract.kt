@@ -55,13 +55,38 @@ public abstract class AudioSourceContract {
     /** A buffer [count] frames long, in the suite's format. */
     protected fun frames(count: Int): ByteArray = ByteArray(count * format.bytesPerFrame)
 
+    /**
+     * Collect a twentieth of a second, which is what makes the capture position
+     * move.
+     *
+     * Reading rather than only waiting, because a record stream's position is
+     * where the reader has got to: the server holds what nobody has collected,
+     * and a suite that waited and then asked would be asking a device that is
+     * running whether it had run.
+     */
+    protected fun readSome(source: AudioSource) {
+        val chunk = frames(format.sampleRate / 20)
+        source.read(chunk, 0, chunk.size)
+    }
+
     private fun quarterSecondFrames(): Long = (format.sampleRate / 4).toLong()
 
+    /**
+     * What counts as "the count starts here" on a device that is already
+     * capturing.
+     *
+     * Twenty milliseconds. A real source is running from the instant it opens,
+     * so the position is a fraction of a millisecond past zero by the time it
+     * can be read; a count carried over from an earlier take is seconds, which
+     * this catches and that does not.
+     */
+    private fun freshStartFrames(): Long = format.framesFor(20_000_000L)
+
     @Test
-    public fun `frame position is zero on a freshly opened source`() {
+    public fun `the frame position starts from zero on a freshly opened source`() {
         newSource().use { source ->
             source.open(format)
-            source.framePosition() shouldBe 0L
+            (source.framePosition() <= freshStartFrames()) shouldBe true
         }
     }
 
@@ -82,6 +107,7 @@ public abstract class AudioSourceContract {
         newSource().use { source ->
             source.open(format)
             advance(source, quarterSecondFrames())
+            readSome(source)
             source.framePosition() shouldBeGreaterThan 0L
         }
     }
@@ -91,10 +117,11 @@ public abstract class AudioSourceContract {
         newSource().use { source ->
             source.open(format)
             advance(source, quarterSecondFrames())
+            readSome(source)
             source.framePosition() shouldBeGreaterThan 0L
 
             source.open(format)
-            source.framePosition() shouldBe 0L
+            (source.framePosition() <= freshStartFrames()) shouldBe true
         }
     }
 
@@ -103,6 +130,7 @@ public abstract class AudioSourceContract {
         newSource().use { source ->
             source.open(format)
             advance(source, quarterSecondFrames())
+            readSome(source)
 
             // The position has to be MOVING before a freeze means anything: a
             // suite that froze a zero and then asserted it stayed zero would
@@ -121,6 +149,7 @@ public abstract class AudioSourceContract {
 
             source.start()
             advance(source, quarterSecondFrames())
+            readSome(source)
             source.framePosition() shouldBeGreaterThan frozen
         }
     }
@@ -223,6 +252,7 @@ public abstract class AudioSourceContract {
             source.open(format)
             source.overrunFrames() shouldBe 0L
             advance(source, quarterSecondFrames())
+            readSome(source)
             (source.overrunFrames() >= 0L) shouldBe true
         }
     }
