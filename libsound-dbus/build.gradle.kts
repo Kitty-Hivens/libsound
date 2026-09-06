@@ -36,7 +36,7 @@ dependencies {
 
     // No test source set of its own. The suites that exercise this code need a
     // session bus and the gate that turns a missing one into a failure rather
-    // than a skip, both of which live in libsound-session -- and they assert
+    // than a skip, both of which live in libsound-session, and they assert
     // through gdbus and playerctl, which is the only way to prove a message a
     // desktop can read.
 }

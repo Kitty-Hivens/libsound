@@ -171,7 +171,7 @@ public interface AudioBackend : AutoCloseable {
      *
      * @throws AudioException where [Capability.CAPTURE] is absent. A consumer
      *   asks the capability first, the same way it asks before drawing a device
-     *   menu; there is no useful object to hand back to one that did not.
+     *   menu, and there is no useful object to hand back to one that did not.
      */
     public fun createSource(config: SourceConfig): AudioSource
 

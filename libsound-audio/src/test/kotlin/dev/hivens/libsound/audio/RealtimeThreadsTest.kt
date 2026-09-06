@@ -49,8 +49,8 @@ class RealtimeThreadsTest {
 
         val scheduling = checkNotNull(policy.get()) { "the probe thread left no /proc entry to read" }
         // SCHED_RR is what RealtimeKit sets. Accepting FIFO as well because
-        // which of the two a daemon chooses is its business; what this asserts
-        // is that the thread is no longer on the ordinary scheduler.
+        // which of the two a daemon chooses is its business, and what this
+        // asserts is that the thread is no longer on the ordinary scheduler.
         (scheduling.policy == SCHED_RR || scheduling.policy == SCHED_FIFO) shouldBe true
         scheduling.priority shouldBe RealtimeThreads.DEFAULT_PRIORITY
     }
