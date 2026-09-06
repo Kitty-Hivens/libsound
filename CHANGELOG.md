@@ -5,7 +5,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- The default buffer is 40 ms rather than 200. The old number was measured for
+  the JavaSound fallback, where it is the right answer, and then applied to
+  three backends that can do far better. A library whose first purpose is
+  latency cannot keep it as the default. A consumer that wants the old
+  behaviour asks for `LatencyProfile.RELAXED` and gets exactly 200 ms.
+- `VolumeMixer.streams()` returns capture streams alongside playback ones,
+  because a person looking at their machine sees one picture of it. A panel
+  that draws half of that filters on `AudioStream.direction`, and
+  `Capability.CAPTURE_ENUMERATION` says whether the capture half can appear at
+  all.
+- A stream id names the facility it came from. A sink input and a source output
+  can carry the same index at the same time, so an index alone would have a
+  volume set on one landing on the other.
+- `AudioSink.latencyNanos` is specified as the whole path: what is queued here,
+  plus the server's share, plus the device's. A consumer estimating the middle
+  term would get it wrong differently on every machine.
+
 ### Added
+- Latency that means something on Linux. `LatencyProfile` names four targets
+  from 200 ms down to 5, `PA_STREAM_ADJUST_LATENCY` makes `tlength` a latency
+  the server shortens its own path to meet rather than a buffer size it may
+  ignore, and `minreq` goes to a quarter of the target instead of the server
+  default, which is the other half of the number. What was granted is logged at
+  open and readable at any time, because a profile is a request and the graph's
+  quantum is a floor under it. Measured against pipewire-pulse on a 48 kHz
+  graph: 200 ms granted 150, 40 granted 30, 10 granted 16.
+- A writing thread that wakes on time, through RealtimeKit on the system bus.
+  `RLIMIT_RTTIME` is set first, because the daemon refuses a process that has
+  not limited how long it may spend at real-time priority, and the priority
+  asked for is five, which is what PulseAudio's own daemon uses. Opt-in through
+  `SinkConfig.realtime`: the limit is process wide, so it is not something a
+  library takes on behalf of a caller that did not ask. A refusal is reported
+  once with its reason and `Capability.REALTIME_THREAD` stays absent.
+- `AudioSink.underrunCount`, because a latency target nobody can validate is a
+  setting rather than a guarantee. The PulseAudio and CoreAudio backends count
+  what the device actually did, and the two that cannot say so through
+  `Capability.UNDERRUN_COUNT` rather than through a zero.
+- Capture. `AudioSource` mirrors `AudioSink` rule for rule, with its own
+  contract suite, its own fake, and the same reasons written down: a read
+  blocks until the device has produced the frames, a close unblocks one in
+  flight, and frames nobody collected are counted rather than lost quietly.
+  PulseAudio and JavaSound implement it, the mixer lists what is listening
+  beside what is playing, and capture devices are listed with monitors marked
+  as monitors, because a monitor is not a microphone and a list that hides it
+  cannot record what the speakers are playing.
+- Recording one application's output on its own, with no virtual device and no
+  routing: a record stream on the sink's monitor, narrowed to one stream by the
+  same call the level meter already used. Behind
+  `Capability.PER_STREAM_CAPTURE`, and documented for what it is, which is
+  reading another application's audio without telling it.
+- The device half of a mixer. Devices carry their own volume, mute, suspended
+  state and ports. The mixer sets volume and mute on either direction, moves
+  the default, switches ports, and lists and switches card profiles, which is
+  the bluetooth headset that sounds good or has a working microphone.
+- Virtual and combined sinks, with the obligation that comes with them: what
+  this process created it removes, and `restoreAll` unloads modules before it
+  restores volumes, because a stream restored onto a device that is about to
+  vanish ends up somewhere nobody chose.
+- A sample cache: a short sound uploaded once and triggered by name, which is
+  the shortest path there is to a click that lands when it is clicked. Whether
+  a server keeps one is probed at connect with a silent frame that is uploaded,
+  looked up and removed, because it is a fact about the server rather than
+  about this library.
+- The four rules a decorator owes, in `AudioSink`'s documentation and in a
+  fixture any decorator can extend. Processing hangs off that seam and the
+  contract said nothing about it before.
+- `libsound-dbus`, the bus plumbing both the session and audio modules need.
+  Published because a consumer's classpath has to hold it, and fenced behind an
+  opt-in marker because it is not an API.
+- `tools/rt-oracle.c`, which prints `RLIMIT_RTTIME` and the layout of `struct
+  rlimit`, and additions to `tools/pa-oracle.c` for sources, source outputs,
+  cards, profiles, ports and the device state.
 - `libsound-audio`: the Linux output channel. A PulseAudio backend over
   `pa_threaded_mainloop` -- which is also the PipeWire backend, since
   `pipewire-pulse` speaks the same protocol -- carrying an application name, an
