@@ -95,6 +95,22 @@ internal class PulseSource(
     private val overruns = AtomicLong(0)
 
     @Volatile
+    private var grantedFragment = 0L
+
+    /**
+     * The fragment the server granted, in nanoseconds, or zero before the first
+     * open.
+     *
+     * Not on [AudioSource]: a consumer asks [latencyNanos], which is the whole
+     * path and the number it can act on. This is the backend's own, and it is
+     * here because it is the only evidence that a latency profile reached the
+     * server at all. A suite that timed a read instead would be measuring when
+     * the server chose to hand the first fragment over, which the two servers
+     * do not answer the same way.
+     */
+    internal val grantedFragmentNanos: Long get() = grantedFragment
+
+    @Volatile
     private var volumeValue = 1f
 
     /**
@@ -223,6 +239,12 @@ internal class PulseSource(
         }
 
         openFormat = format
+        // What the server settled on, read back for the same reason the
+        // playback side reads its own: a request is a request, and a consumer
+        // that has to explain the latency it is seeing needs the number that
+        // was granted rather than the one that was asked for.
+        val granted = grantedFragsizeBytes() ?: fragsize
+        grantedFragment = format.nanosFor(format.framesIn(granted.toLong()))
         awaitTimingInfo()
         if (config.realtime) promoteThisThread()
         // The contract's first rule: open starts the device. A consumer that
@@ -230,8 +252,8 @@ internal class PulseSource(
         cork(false)
         applyVolume()
         log.info(
-            "capture open: {} asked for {} ms fragments ({} bytes){}",
-            format, targetNanos / 1_000_000, fragsize,
+            "capture open: {} asked for {} ms fragments, granted {} ms ({} bytes){}",
+            format, targetNanos / 1_000_000, grantedFragment / 1_000_000, granted,
             monitor?.let { ", recording stream ${it.sinkInputIndex}" } ?: "",
         )
     }
@@ -385,6 +407,24 @@ internal class PulseSource(
     }
 
     // -- internals ------------------------------------------------------------
+
+    /**
+     * The fragment size the server settled on, read once the stream is ready.
+     * Null when the query fails, which leaves the request as the best answer
+     * available.
+     */
+    private fun grantedFragsizeBytes(): Int? {
+        val current = stream
+        if (current.address() == 0L) return null
+        return pulse.locked {
+            val attr = lib.handle("pa_stream_get_buffer_attr").invokeExact(current) as MemorySegment
+            if (attr.address() == 0L) return@locked null
+            runCatching {
+                attr.reinterpret(PulseAbi.BUFFER_ATTR_SIZE)
+                    .get(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_FRAGSIZE)
+            }.getOrNull()?.takeIf { it > 0 }
+        }
+    }
 
     /** Caller holds the mainloop lock. */
     private fun takeLeftover(dst: ByteArray, at: Int, wanted: Int): Int {
