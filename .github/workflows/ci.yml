@@ -115,7 +115,11 @@ jobs:
       # which is how skinema shipped a subtitle bundle that exported no symbols.
       - name: Build + test
         env:
-          LIBSOUND_REQUIRE: pulse,javasound,dbus
+          # javasound-capture is named here and nowhere else. It records
+          # whatever the JVM calls the default input, which on this row is a
+          # null sink's monitor and on a developer's machine is a microphone in
+          # a room, so the suite runs where there is nothing to overhear.
+          LIBSOUND_REQUIRE: pulse,javasound,javasound-capture,dbus
         run: ./gradlew build --stacktrace
 
       # A green tick says the build did not fail; it does not say a hardware
@@ -124,7 +128,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       # The publishable artifacts, built before a release depends on them. The
@@ -154,6 +158,10 @@ jobs:
           documents libsound-core -audio-sink/index.html
           documents libsound-audio -audio-backends/index.html
           documents libsound-session -media-sessions/index.html
+          # Published because two modules need it on a consumer's classpath, so
+          # it is held to the same standard as the three that are published to
+          # be used.
+          documents libsound-dbus -d-bus-connection/index.html
 
       - name: Upload test report on failure
         if: failure()
@@ -193,7 +201,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
             -e GRADLE_USER_HOME=/src/.gradle-musl \
-            -e LIBSOUND_REQUIRE=pulse,javasound,dbus \
+            -e LIBSOUND_REQUIRE=pulse,javasound,javasound-capture,dbus \
             alpine:3.24 sh -euc '
               apk add --no-cache bash openjdk25 pulseaudio pulseaudio-utils dbus glib playerctl
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
@@ -217,7 +225,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,JavaSound,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure
@@ -225,6 +233,83 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-results-musl
+          path: '**/build/reports/tests/test'
+          retention-days: 7
+
+  # PipeWire, which is what a desktop actually runs, and which no other row
+  # here was talking to.
+  #
+  # The three Linux rows above all install pulseaudio, so every push exercised
+  # the reference implementation and never the server most consumers will meet.
+  # One libpulse reaches both, because pipewire-pulse speaks the same protocol,
+  # and the two do not answer the same: DUCKS_OTHERS is true on one and false
+  # on the other, an uploaded sample outlives its uploader on one and does not
+  # on the other, and a latency request is granted different numbers. This row
+  # is where those differences become a red build rather than a surprise.
+  pipewire:
+    name: Build & test (PipeWire, not PulseAudio)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: A PipeWire graph, its pulse server, and the clients that read them
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pipewire pipewire-pulse wireplumber \
+            pulseaudio-utils dbus-x11 libglib2.0-bin playerctl
+
+      # Servers and build in one step. pipewire has no daemonise flag of its
+      # own, so the session that owns the graph has to be the session that runs
+      # the suites, which is also the shape this was measured in.
+      - name: Build + test against pipewire-pulse
+        env:
+          # No javasound named here, and the omission is the point: routing
+          # ALSA's default into the graph is a second thing to configure, and
+          # the rows above already require that suite. What this row is for is
+          # the pulse protocol reaching a PipeWire server.
+          LIBSOUND_REQUIRE: pulse,dbus
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/libsound-runtime
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          cat > /tmp/pipewire-run.sh <<'SH'
+          set -eu
+          pipewire &
+          sleep 1
+          wireplumber &
+          pipewire-pulse &
+          sleep 3
+          # A runner has no card, so the graph is given a device the same way
+          # the other rows give one to PulseAudio.
+          pactl load-module module-null-sink sink_name=libsound_test
+          pactl info
+          # The whole reason this row exists. A pipewire-pulse that failed to
+          # start would leave PulseAudio answering, and the row would pass
+          # while proving what the rows above already prove.
+          pactl info | grep -q "on PipeWire" || {
+            echo "FAIL: this row is talking to a PulseAudio, not a PipeWire"
+            exit 1
+          }
+          ./gradlew --no-daemon build --stacktrace
+          SH
+          dbus-run-session -- bash /tmp/pipewire-run.sh
+
+      - name: What each suite actually did
+        if: always()
+        env:
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,PulseDeviceControl,PulsePerStreamCapture,PulseSampleCache,MprisSession,MprisReader,DBusConnection
+        run: python3 .github/test-summary.py
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-pipewire
           path: '**/build/reports/tests/test'
           retention-days: 7
 
@@ -302,7 +387,7 @@ jobs:
           # JDK's own native and needs a routing config a bare container has no
           # reason to carry. The Linux and musl rows require it, so it is not
           # unwatched -- it is simply not what is being asked here.
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure

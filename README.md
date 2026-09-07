@@ -35,12 +35,15 @@ both directions.
 | Windows | Experimental. Ships, reports its capabilities honestly, never blocks a release. |
 | macOS | Output only. The CoreAudio sink stays and stays tested on every push, and nothing new is added there. |
 
-The latency half is the newest of the three and the least finished. Buffers
-default to 200 ms, which is the measured right answer for the JavaSound fallback
-and far more than libpulse needs, and the writing thread has no priority to
-speak of. [docs/PLAN.md](docs/PLAN.md) specifies what closes that, along with
-capture, device and card control, and the parts of MPRIS this does not publish
-yet. Everything described below is in and exercised.
+Buffers default to 40 ms and a caller can ask for less by name, the writing
+thread can be promoted to real-time priority through RealtimeKit, and what the
+server actually granted is reported rather than assumed. Capture is here on
+Linux, including recording one application's output on its own, and so is the
+device half of a mixer: volume and mute on the devices themselves, card
+profiles, ports, and devices that do not exist in hardware.
+[docs/PLAN.md](docs/PLAN.md) specifies what is left, which is the Windows half
+of capture and the parts of MPRIS this does not publish yet. Everything
+described below is in and exercised.
 
 For any JVM desktop application that draws its own UI -- whether it wants to be a
 first-class citizen of the desktop's audio stack rather than an anonymous client
@@ -63,9 +66,13 @@ the build fails if the page and the code drift apart.
 | `libsound-core` | Types and contracts. Zero dependencies, Java 17 floor, no Panama. Compile against this without pulling any backend. |
 | `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio, CoreAudio and JavaSound exercised; WASAPI output and mixer written and awaiting hardware. |
 | `libsound-session` | The media session: publish our own, read and drive everyone else's. MPRIS, SMTC and MPNowPlayingInfoCenter. |
+| `libsound-dbus` | Internal plumbing, not an API. Both modules above talk to a bus, a Kotlin `internal` cannot cross a module boundary, and a consumer's classpath has to hold what they call. Every type in it is fenced behind an opt-in marker that says so. |
 
 Split so a consumer pays only for what it uses -- MPRIS without libpulse, an
-output channel without D-Bus.
+output channel without D-Bus. The fourth is the exception, and a mechanical one:
+the audio module reaches RealtimeKit on the system bus for a writing thread that
+wakes on time, and the code that knows how to make that call already existed in
+the session module.
 </details>
 
 <details>
@@ -189,15 +196,20 @@ depend on this by accident. The API will still shift.
 | macOS session (MPNowPlayingInfoCenter) | Written, and its suite runs on every push against the real framework. A process with no bundle can publish -- measured before any of it was written. Whether the widget shows it, and whether a media key arrives, needs a person. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |
 | musl (Alpine) | The whole Linux surface -- audio, mixer and session -- built and tested inside Alpine on every push. Nothing native ships here, so what this row proves is that opening the system libraries by soname resolves under a musl loader too. |
-| Low latency | Specified, not built. Buffer targets that mean something, and a real-time writing thread, are [docs/PLAN.md](docs/PLAN.md) section 4. What exists today is correct and slow: a 200 ms request, which pipewire-pulse turns into 80 ms of graph latency. |
-| Capture | Absent. No source, no capture stream, no capture device, on any platform. Specified in [docs/PLAN.md](docs/PLAN.md) section 5. |
-| Device and card control | Absent. A stream's volume can be changed, the device it plays to cannot, and card profiles are out of reach -- which is the bluetooth headset that sounds good or has a working microphone, and nothing here can choose. |
+| Low latency | Done on Linux and exercised. Named profiles from 200 ms down to 5, `PA_STREAM_ADJUST_LATENCY` so the request is one the server shortens its own path for, `minreq` at a quarter of it, and the granted number reported rather than assumed. Measured against pipewire-pulse: a 200 ms request came back as 150, 40 as 30, and 10 as 16, which was that machine's graph quantum and a floor no client gets under by asking. |
+| Real-time writing thread | Done on Linux and exercised. RealtimeKit on the system bus, `RLIMIT_RTTIME` set first because the daemon refuses a process without it, and the kernel's own answer read back out of `/proc` in the suite rather than the daemon's. Opt-in: the limit is process-wide, so it is not something a library takes on behalf of a caller that did not ask. |
+| Capture (Linux) | Done and exercised. `AudioSource` mirrors `AudioSink` rule for rule against its own contract suite, capture devices are listed with monitors marked as monitors, the mixer lists what is listening beside what is playing, and one application's output can be recorded on its own without a virtual device and without that application being told. |
+| Capture (fallback) | Done and exercised. `TargetDataLine` behind the same contract, losing the same things the fallback sink loses and one more: nothing there counts what went past unread. |
+| Capture (Windows, macOS) | Absent. `IAudioCaptureClient`'s vtable slots have not come from an oracle yet, and macOS capture needs a bundle, a signature and a live user session, which no runner can provide. |
+| Device and card control | Done on Linux and exercised. Devices carry their own volume, mute, suspended state and ports; the mixer sets all of it, moves the default, switches card profiles, and creates virtual and combined sinks that it removes again. |
+| Sample cache | Done on Linux, and probed rather than assumed: a silent frame is uploaded, looked up and removed at connect, because whether a server keeps a cache at all is a fact about the server. |
 | macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`VolumeMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/VolumeMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux
-backends pass the same contract suite, the mixer round-trips volume, mute and
-routing against real streams, and the stream is visible in
-`pactl list sink-inputs` under the name and media role it was given. macOS is
+backends pass the same contract suite, the capture backend passes its mirror of
+it, the mixer round-trips volume, mute and routing against real streams and real
+devices, and the stream is visible in `pactl list sink-inputs` under the name and
+media role it was given. macOS is
 verified on CI against a real output unit, since its runners have one and
 Windows runners do not -- which is why Windows is the platform that needs a
 person and macOS is not.

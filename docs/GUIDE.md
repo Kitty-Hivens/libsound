@@ -1,8 +1,10 @@
 # Using libsound
 
-Four things this library is for: playing audio as a named citizen of the
-desktop, finding out what it can actually do here, quieting everybody else
-while something of yours plays, and being a player the desktop knows about.
+What this library is for: playing audio as a named citizen of the desktop,
+playing it soon rather than eventually, recording what a machine is hearing or
+playing, finding out what any of that can actually do here, quieting everybody
+else while something of yours plays, and being a player the desktop knows
+about.
 
 Every example below is compiled. They live in `AudioSamples.kt` and
 `SessionSamples.kt` in the test sources, and `GuideSamplesTest` fails the build
@@ -50,6 +52,144 @@ process name.
 pacing mechanism, and it is why a write loop needs no timer. The one escape from
 a write that will never drain -- a stopped device, a server that died -- is
 `close`, and it is guaranteed to work: every backend is tested for it.
+
+## Asking for a shorter path
+
+The default buffer is 40 ms. A player that never wants to stutter asks for
+`RELAXED` and gets the 200 ms this library used to give everybody; a synth or a
+game asks for `LOW` or `LOWEST`:
+
+```kotlin
+// A profile is a request rather than a promise: the graph's quantum is
+// a floor under it, and what the server granted is what latencyNanos
+// reports once the stream is open.
+val sink = backend.createSink(
+    SinkConfig(
+        applicationName = "Example",
+        latency = LatencyProfile.LOW,
+        realtime = true,
+    ),
+)
+sink.open(AudioFormat(48_000, 2))
+if (Capability.REALTIME_THREAD !in sink.capabilities) {
+    // The system refused the promotion, so the lowest profiles will
+    // underrun under load. Worth saying in a settings screen rather
+    // than letting a user pick a setting that crackles.
+}
+return sink
+```
+
+**A profile is a request and a ceiling, not a promise.** PipeWire's graph
+quantum is a floor: a client asking for less than `clock.quantum` gets the
+quantum, and the default of 1024 frames is 21 ms. Measured against
+pipewire-pulse on a 48 kHz graph, a 200 ms request came back as 150 ms, 40 ms
+as 30, and 10 ms as 16, which was that machine's quantum. The sink logs what it
+asked for and what it was granted at open, and `latencyNanos` reports the whole
+path at any time.
+
+**`realtime` asks the system for a writing thread that wakes on time.** It is
+off by default because the grant is process-wide: RealtimeKit requires a limit
+on how long the process may spend at real-time priority before it will hand any
+out. A refusal is not fatal, and `Capability.REALTIME_THREAD` is how a consumer
+finds out which happened.
+
+Whether the target was too aggressive is a question with an answer:
+
+```kotlin
+// A latency target nobody can validate is a setting rather than a
+// guarantee. Where the backend cannot count, the number is zero
+// forever, which is what the capability tells apart.
+if (Capability.UNDERRUN_COUNT !in backend.capabilities) return false
+val before = sink.underrunCount()
+play()
+return sink.underrunCount() > before
+```
+
+## Recording
+
+`AudioSource` is `AudioSink` reversed, rule for rule: open starts the device,
+`read` blocks until the device has produced the frames, `close` unblocks a read
+in flight.
+
+```kotlin
+// A capture stream shows in the desktop's privacy indicator, and the
+// row that names the application reads exactly these fields.
+val source = backend.createSource(
+    SourceConfig(
+        applicationName = "Example",
+        applicationId = "com.example.recorder",
+        iconName = "audio-input-microphone",
+    ),
+)
+source.use {
+    it.open(AudioFormat(48_000, 1))
+    val frame = ByteArray(4_800 * 2)
+    // Returns when the microphone has produced every byte, which is
+    // what makes a recording loop need no timer of its own.
+    it.read(frame, 0, frame.size)
+    write(frame)
+}
+```
+
+The input list and the output list are separate, and a monitor is not a
+microphone:
+
+```kotlin
+// A monitor is what the machine is playing, offered back as something
+// to record. Both are inputs and they are not interchangeable.
+return backend.captureDevices().filter { !it.isMonitor }.map { it.id to it.name }
+```
+
+One application's output can be recorded on its own, without a virtual device,
+without routing, and without that application knowing:
+
+```kotlin
+// That application's output and nothing else: not the desktop, not
+// whatever else is playing through the same speakers. It is not told.
+if (Capability.PER_STREAM_CAPTURE !in backend.capabilities) return null
+return backend.createSource(
+    SourceConfig(applicationName = "Example", captureStream = stream.id),
+)
+```
+
+That is worth being plain about, which is why it is behind a capability and
+said twice: it reads somebody else's audio.
+
+## The devices themselves
+
+`setVolume` quiets one application. This is the speaker everything plays
+through:
+
+```kotlin
+// The other half of a mixer: one application quieted, and the device
+// everything plays through. Put back by restoreAll, like a stream's.
+if (Capability.DEVICE_VOLUME !in mixer.capabilities) return false
+return mixer.setDeviceVolume(device.id, 0.5f)
+```
+
+A card's profile decides which devices exist at all, which is the bluetooth
+headset that sounds good or has a working microphone:
+
+```kotlin
+// The bluetooth case: good playback, or the low quality mode that has a
+// working microphone. Two profiles of one card.
+return mixer.cards().flatMap { card ->
+    card.profiles.filter { it.available }.map { card.id to it.name }
+}
+```
+
+And a device that does not exist in hardware can be created, and other
+applications moved into it:
+
+```kotlin
+// A device this process owns. close() removes whatever is left, which
+// matters more here than for a volume: a virtual sink left behind is a
+// device in a user's settings that nothing owns.
+val bus = mixer.createVirtualSink("example_voice_bus") ?: return
+mixer.streams()
+    .filter { it.applicationName == game }
+    .forEach { mixer.moveTo(it.id, bus) }
+```
 
 ## Asking before you draw
 
@@ -239,12 +379,18 @@ backend closes the sinks it handed out. Closing a mixer restores what it changed
 | | Linux | Windows | macOS |
 |---|---|---|---|
 | Output | libpulse (PulseAudio and PipeWire) | WASAPI | CoreAudio |
+| Capture | libpulse, and JavaSound everywhere | **not yet** | **no** -- a bundle, a signature and a live session |
+| Latency profiles honoured | yes | **not yet** -- IAudioClient3 | **not yet** |
+| Real-time writing thread | yes, through RealtimeKit | **no** | **no** |
 | Volume the system shows | yes | yes | **no** -- applied inside the audio unit |
 | Stream identity | yes | yes | **no** |
 | Device selection and events | yes | yes | yes |
 | Read and control other streams | yes | yes | **no** -- no public API exists |
 | Watch a stream's level | yes | **not yet** -- see below | **no** |
 | Move another stream to a device | yes | **no** | **no** |
+| Device volume, cards and ports | yes | **no** | **no** |
+| Virtual devices | yes | **no** | **no** |
+| Record one application | yes | **no** | **no** |
 | Publish a media session | MPRIS | SMTC | MPNowPlayingInfoCenter |
 | Read other media sessions | MPRIS | not yet | **no** -- private API only |
 

@@ -1,4 +1,4 @@
-package dev.hivens.libsound.session.dbus
+package dev.hivens.libsound.dbus
 
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -26,38 +26,45 @@ private fun DBusSymbols.scratch(call: Arena): MemorySegment = call.allocate(DBus
 
 // -- basics -------------------------------------------------------------------
 
-internal fun DBusSymbols.appendString(call: Arena, iter: MemorySegment, type: Byte, value: String) {
+fun DBusSymbols.appendString(call: Arena, iter: MemorySegment, type: Byte, value: String) {
     val text = call.allocateUtf8(value)
     val pointer = call.allocate(ValueLayout.ADDRESS)
     pointer.set(ValueLayout.ADDRESS, 0, text)
     handle("dbus_message_iter_append_basic").invokeExact(iter, type.toInt(), pointer) as Int
 }
 
-internal fun DBusSymbols.appendInt32(call: Arena, iter: MemorySegment, value: Int) {
+fun DBusSymbols.appendInt32(call: Arena, iter: MemorySegment, value: Int) {
     val buffer = call.allocate(ValueLayout.JAVA_INT)
     buffer.set(ValueLayout.JAVA_INT, 0, value)
     handle("dbus_message_iter_append_basic").invokeExact(iter, DBusAbi.TYPE_INT32.toInt(), buffer) as Int
 }
 
-internal fun DBusSymbols.appendUint32(call: Arena, iter: MemorySegment, value: Int) {
+fun DBusSymbols.appendUint32(call: Arena, iter: MemorySegment, value: Int) {
     val buffer = call.allocate(ValueLayout.JAVA_INT)
     buffer.set(ValueLayout.JAVA_INT, 0, value)
     handle("dbus_message_iter_append_basic").invokeExact(iter, DBusAbi.TYPE_UINT32.toInt(), buffer) as Int
 }
 
-internal fun DBusSymbols.appendInt64(call: Arena, iter: MemorySegment, value: Long) {
+/** `t` on the wire, which is where a kernel thread id goes. */
+fun DBusSymbols.appendUint64(call: Arena, iter: MemorySegment, value: Long) {
+    val buffer = call.allocate(ValueLayout.JAVA_LONG)
+    buffer.set(ValueLayout.JAVA_LONG, 0, value)
+    handle("dbus_message_iter_append_basic").invokeExact(iter, DBusAbi.TYPE_UINT64.toInt(), buffer) as Int
+}
+
+fun DBusSymbols.appendInt64(call: Arena, iter: MemorySegment, value: Long) {
     val buffer = call.allocate(ValueLayout.JAVA_LONG)
     buffer.set(ValueLayout.JAVA_LONG, 0, value)
     handle("dbus_message_iter_append_basic").invokeExact(iter, DBusAbi.TYPE_INT64.toInt(), buffer) as Int
 }
 
-internal fun DBusSymbols.appendDouble(call: Arena, iter: MemorySegment, value: Double) {
+fun DBusSymbols.appendDouble(call: Arena, iter: MemorySegment, value: Double) {
     val buffer = call.allocate(ValueLayout.JAVA_DOUBLE)
     buffer.set(ValueLayout.JAVA_DOUBLE, 0, value)
     handle("dbus_message_iter_append_basic").invokeExact(iter, DBusAbi.TYPE_DOUBLE.toInt(), buffer) as Int
 }
 
-internal fun DBusSymbols.appendBoolean(call: Arena, iter: MemorySegment, value: Boolean) {
+fun DBusSymbols.appendBoolean(call: Arena, iter: MemorySegment, value: Boolean) {
     // dbus_bool_t is four bytes on the wire, not one.
     val buffer = call.allocate(ValueLayout.JAVA_INT)
     buffer.set(ValueLayout.JAVA_INT, 0, if (value) 1 else 0)
@@ -66,7 +73,7 @@ internal fun DBusSymbols.appendBoolean(call: Arena, iter: MemorySegment, value: 
 
 // -- containers ----------------------------------------------------------------
 
-internal fun DBusSymbols.openContainer(
+fun DBusSymbols.openContainer(
     parent: MemorySegment,
     type: Byte,
     signature: MemorySegment,
@@ -75,12 +82,12 @@ internal fun DBusSymbols.openContainer(
     handle("dbus_message_iter_open_container").invokeExact(parent, type.toInt(), signature, sub) as Int
 }
 
-internal fun DBusSymbols.closeContainer(parent: MemorySegment, sub: MemorySegment) {
+fun DBusSymbols.closeContainer(parent: MemorySegment, sub: MemorySegment) {
     handle("dbus_message_iter_close_container").invokeExact(parent, sub) as Int
 }
 
 /** Open a variant of [signature], let [body] write the single value, close it. */
-internal inline fun DBusSymbols.variant(
+inline fun DBusSymbols.variant(
     call: Arena,
     parent: MemorySegment,
     signature: String,
@@ -92,28 +99,28 @@ internal inline fun DBusSymbols.variant(
     closeContainer(parent, sub)
 }
 
-internal fun DBusSymbols.appendVariantString(call: Arena, parent: MemorySegment, value: String) {
+fun DBusSymbols.appendVariantString(call: Arena, parent: MemorySegment, value: String) {
     variant(call, parent, "s") { appendString(call, it, DBusAbi.TYPE_STRING, value) }
 }
 
-internal fun DBusSymbols.appendVariantObjectPath(call: Arena, parent: MemorySegment, value: String) {
+fun DBusSymbols.appendVariantObjectPath(call: Arena, parent: MemorySegment, value: String) {
     variant(call, parent, "o") { appendString(call, it, DBusAbi.TYPE_OBJECT_PATH, value) }
 }
 
-internal fun DBusSymbols.appendVariantInt64(call: Arena, parent: MemorySegment, value: Long) {
+fun DBusSymbols.appendVariantInt64(call: Arena, parent: MemorySegment, value: Long) {
     variant(call, parent, "x") { appendInt64(call, it, value) }
 }
 
-internal fun DBusSymbols.appendVariantDouble(call: Arena, parent: MemorySegment, value: Double) {
+fun DBusSymbols.appendVariantDouble(call: Arena, parent: MemorySegment, value: Double) {
     variant(call, parent, "d") { appendDouble(call, it, value) }
 }
 
-internal fun DBusSymbols.appendVariantBoolean(call: Arena, parent: MemorySegment, value: Boolean) {
+fun DBusSymbols.appendVariantBoolean(call: Arena, parent: MemorySegment, value: Boolean) {
     variant(call, parent, "b") { appendBoolean(call, it, value) }
 }
 
 /** A variant holding `as` -- the shape MPRIS uses for artists and genres. */
-internal fun DBusSymbols.appendVariantStringArray(call: Arena, parent: MemorySegment, values: List<String>) {
+fun DBusSymbols.appendVariantStringArray(call: Arena, parent: MemorySegment, values: List<String>) {
     variant(call, parent, "as") { inner ->
         val array = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
         openContainer(inner, DBusAbi.TYPE_ARRAY, call.allocateUtf8("s"), array)
@@ -126,7 +133,7 @@ internal fun DBusSymbols.appendVariantStringArray(call: Arena, parent: MemorySeg
  * Open an `a{sv}` dictionary, let [body] add entries through
  * [DictWriter], and close it. The map every property bundle in MPRIS is.
  */
-internal inline fun DBusSymbols.dict(call: Arena, parent: MemorySegment, body: (DictWriter) -> Unit) {
+inline fun DBusSymbols.dict(call: Arena, parent: MemorySegment, body: (DictWriter) -> Unit) {
     val array = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
     openContainer(parent, DBusAbi.TYPE_ARRAY, call.allocateUtf8("{sv}"), array)
     body(DictWriter(this, call, array))
@@ -140,7 +147,8 @@ internal inline fun DBusSymbols.dict(call: Arena, parent: MemorySegment, body: (
  * readers distinguish an absent key from a present-but-blank one, and a blank
  * title is a widget showing a blank title.
  */
-internal class DictWriter(
+@InternalDBusApi
+class DictWriter(
     private val symbols: DBusSymbols,
     private val call: Arena,
     private val array: MemorySegment,
@@ -201,13 +209,13 @@ internal class DictWriter(
 // -- reads ---------------------------------------------------------------------
 
 /** The type code at the iterator's cursor. */
-internal fun DBusSymbols.argType(iter: MemorySegment): Byte =
+fun DBusSymbols.argType(iter: MemorySegment): Byte =
     (handle("dbus_message_iter_get_arg_type").invokeExact(iter) as Int).toByte()
 
-internal fun DBusSymbols.next(iter: MemorySegment): Boolean =
+fun DBusSymbols.next(iter: MemorySegment): Boolean =
     (handle("dbus_message_iter_next").invokeExact(iter) as Int) != 0
 
-internal fun DBusSymbols.recurse(call: Arena, iter: MemorySegment): MemorySegment {
+fun DBusSymbols.recurse(call: Arena, iter: MemorySegment): MemorySegment {
     val sub = scratch(call)
     handle("dbus_message_iter_recurse").invokeExact(iter, sub) as Unit
     return sub
@@ -220,7 +228,7 @@ internal fun DBusSymbols.recurse(call: Arena, iter: MemorySegment): MemorySegmen
  * wire, so all three are accepted; refusing the last two is how a path argument
  * silently reads as null.
  */
-internal fun DBusSymbols.readString(call: Arena, iter: MemorySegment): String? {
+fun DBusSymbols.readString(call: Arena, iter: MemorySegment): String? {
     val type = argType(iter)
     if (type != DBusAbi.TYPE_STRING && type != DBusAbi.TYPE_OBJECT_PATH && type != DBusAbi.TYPE_SIGNATURE) {
         return null
@@ -230,7 +238,7 @@ internal fun DBusSymbols.readString(call: Arena, iter: MemorySegment): String? {
     return out.get(ValueLayout.ADDRESS, 0).readCString()
 }
 
-internal fun DBusSymbols.readInt64(call: Arena, iter: MemorySegment): Long? {
+fun DBusSymbols.readInt64(call: Arena, iter: MemorySegment): Long? {
     val type = argType(iter)
     if (type != DBusAbi.TYPE_INT64 && type != DBusAbi.TYPE_UINT64) return null
     val out = call.allocate(ValueLayout.JAVA_LONG)
@@ -238,7 +246,15 @@ internal fun DBusSymbols.readInt64(call: Arena, iter: MemorySegment): Long? {
     return out.get(ValueLayout.JAVA_LONG, 0)
 }
 
-internal fun DBusSymbols.readDouble(call: Arena, iter: MemorySegment): Double? {
+fun DBusSymbols.readInt32(call: Arena, iter: MemorySegment): Int? {
+    val type = argType(iter)
+    if (type != DBusAbi.TYPE_INT32 && type != DBusAbi.TYPE_UINT32) return null
+    val out = call.allocate(ValueLayout.JAVA_INT)
+    handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
+    return out.get(ValueLayout.JAVA_INT, 0)
+}
+
+fun DBusSymbols.readDouble(call: Arena, iter: MemorySegment): Double? {
     if (argType(iter) != DBusAbi.TYPE_DOUBLE) return null
     val out = call.allocate(ValueLayout.JAVA_DOUBLE)
     handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
@@ -246,7 +262,7 @@ internal fun DBusSymbols.readDouble(call: Arena, iter: MemorySegment): Double? {
 }
 
 /** Walk an `as` at the cursor. Empty for anything that is not an array. */
-internal fun DBusSymbols.readStringArray(call: Arena, iter: MemorySegment): List<String> {
+fun DBusSymbols.readStringArray(call: Arena, iter: MemorySegment): List<String> {
     if (argType(iter) != DBusAbi.TYPE_ARRAY) return emptyList()
     val sub = recurse(call, iter)
     val values = mutableListOf<String>()

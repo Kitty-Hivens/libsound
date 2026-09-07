@@ -1,8 +1,8 @@
 package dev.hivens.libsound.session
 
-import dev.hivens.libsound.session.dbus.DBusAbi
-import dev.hivens.libsound.session.dbus.DBusConnection
-import dev.hivens.libsound.session.dbus.readCString
+import dev.hivens.libsound.dbus.DBusAbi
+import dev.hivens.libsound.dbus.DBusConnection
+import dev.hivens.libsound.dbus.readCString
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach

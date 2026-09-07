@@ -4,6 +4,7 @@ import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.LatencyProfile
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.audio.pulse.PulseBackend
@@ -39,11 +40,12 @@ private object PulseFixture {
         AudioTestGate.require("pulse", backend != null, "no PulseAudio or PipeWire server reachable")
     }
 
-    fun config(): SinkConfig = SinkConfig(
+    fun config(latency: LatencyProfile = LatencyProfile.BALANCED): SinkConfig = SinkConfig(
         applicationName = APP_NAME,
         applicationId = "dev.hivens.libsound.test",
         iconName = "audio-x-generic",
         mediaRole = MediaRole.MUSIC,
+        latency = latency,
     )
 }
 
@@ -195,6 +197,8 @@ class PulseBackendTest {
             Capability.DEVICE_SELECTION,
             Capability.DEVICE_EVENTS,
             Capability.DEVICE_POSITION,
+            Capability.LOW_LATENCY,
+            Capability.UNDERRUN_COUNT,
         ) shouldBe true
     }
 
@@ -227,6 +231,58 @@ class PulseBackendTest {
             val half = ByteArray(format.sampleRate / 2 * format.bytesPerFrame)
             sink.write(half, 0, half.size)
             sink.framePosition() shouldBeGreaterThan 0L
+        }
+    }
+
+    @Test
+    fun `a shorter profile is actually a shorter path`() {
+        // The whole of section 4.3, measured rather than argued: without
+        // ADJUST_LATENCY the server treats tlength as a buffer size and keeps
+        // its own path as long as it likes, so the two profiles below would
+        // report the same latency and this test would fail.
+        val backend = checkNotNull(PulseFixture.backend)
+        fun latencyOf(profile: LatencyProfile): Long =
+            backend.createSink(PulseFixture.config(profile)).use { sink ->
+                sink.open(format)
+                val half = ByteArray(format.sampleRate / 2 * format.bytesPerFrame)
+                sink.write(half, 0, half.size)
+                sink.latencyNanos()
+            }
+
+        val relaxed = latencyOf(LatencyProfile.RELAXED)
+        val low = latencyOf(LatencyProfile.LOW)
+        relaxed shouldBeGreaterThan 0L
+        low shouldBeGreaterThan 0L
+        // A ceiling rather than an equality: what LOW is granted is the graph's
+        // quantum where that is longer than the request, which is a property of
+        // the machine. What must hold everywhere is that asking for less gets
+        // less.
+        (low < relaxed) shouldBe true
+        // And nothing absolute beyond that. What this reads is how much is
+        // queued at one instant, which is a fill level rather than the buffer
+        // that was granted: on a device with a long path of its own it sits
+        // near the target, and against a null sink it sits well under. An
+        // assertion on the number would be an assertion about the device. The
+        // granted size is in the line the sink logs at open, and reading it
+        // back is what grantedTlengthBytes does.
+    }
+
+    @Test
+    fun `the underrun count is available and starts at zero`() {
+        // A latency target nobody can validate is a setting rather than a
+        // guarantee. The count coming from the server's own underflow callback
+        // is what a consumer watches before it backs a profile off.
+        val backend = checkNotNull(PulseFixture.backend)
+        (Capability.UNDERRUN_COUNT in backend.capabilities) shouldBe true
+        backend.createSink(PulseFixture.config(LatencyProfile.RELAXED)).use { sink ->
+            sink.open(format)
+            sink.underrunCount() shouldBe 0L
+            val half = ByteArray(format.sampleRate / 2 * format.bytesPerFrame)
+            sink.write(half, 0, half.size)
+            // Fed continuously and never starved, so the server has no reason
+            // to have run dry. A count climbing here would mean the buffer the
+            // profile asked for is not one this machine can keep filled.
+            sink.underrunCount() shouldBe 0L
         }
     }
 

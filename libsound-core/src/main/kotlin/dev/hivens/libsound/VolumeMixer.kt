@@ -51,6 +51,14 @@ public data class AudioStream(
     public val active: Boolean = true,
     /** True when this stream is one of ours, so a UI can mark or skip it. */
     public val isOurs: Boolean = false,
+    /**
+     * Whether this row is somebody playing or somebody listening.
+     *
+     * [VolumeMixer.streams] returns both, because a person looking at their
+     * machine sees one picture of it. A panel that draws only playback filters
+     * on this, and one that draws a microphone section filters the other way.
+     */
+    public val direction: StreamDirection = StreamDirection.PLAYBACK,
 )
 
 /** A change in the set of streams, or in one of them. */
@@ -92,7 +100,16 @@ public interface VolumeMixer : AutoCloseable {
 
     public val isOpen: Boolean
 
-    /** Every playback stream the server currently has, ours included. */
+    /**
+     * Every stream the server currently has, ours included, in both
+     * directions.
+     *
+     * Capture rows appear only where [Capability.CAPTURE_ENUMERATION] is
+     * present, so a consumer that wants to know whether a microphone section
+     * can be drawn at all asks that rather than inferring it from an empty
+     * half of the list. Everything else filters on
+     * [AudioStream.direction].
+     */
     public fun streams(): List<AudioStream>
 
     /**
@@ -118,11 +135,100 @@ public interface VolumeMixer : AutoCloseable {
     public fun moveTo(id: StreamId, device: DeviceId): Boolean
 
     /**
+     * The device's own volume, linear 0..1, clamped. False where
+     * [Capability.DEVICE_VOLUME] is absent or the device is gone.
+     *
+     * The other half of a mixer: [setVolume] quiets one application, this
+     * quiets the speaker everything is playing through. It carries the same
+     * restore obligation, and for a stronger reason, since a device volume
+     * left low is the one a user is most likely to blame on their hardware.
+     */
+    public fun setDeviceVolume(device: DeviceId, volume: Float): Boolean
+
+    /** As [setDeviceVolume], and answering for the same reasons. */
+    public fun setDeviceMuted(device: DeviceId, muted: Boolean): Boolean
+
+    /**
+     * Make [device] the one applications get when they ask for no device in
+     * particular.
+     *
+     * The single operation here that changes what happens to programs having
+     * nothing to do with the caller, which is why it is behind
+     * [Capability.DEVICE_VOLUME] and documented as a user-facing action rather
+     * than housekeeping. It is not restored by [restoreAll]: a default the user
+     * chose through a settings screen is a decision, not a change to undo.
+     */
+    public fun setDefaultDevice(device: DeviceId): Boolean
+
+    /**
+     * The machine's sound cards and the configurations they can be put into.
+     * Empty where [Capability.DEVICE_PROFILES] is absent.
+     */
+    public fun cards(): List<AudioCard>
+
+    /**
+     * Put [card] into [profile], by the names [AudioCard] reports. False where
+     * either is gone or the server refused.
+     *
+     * The devices a card offers change with its profile, so a consumer redraws
+     * its device list afterwards rather than assuming the old one survived.
+     */
+    public fun setCardProfile(card: CardId, profile: String): Boolean
+
+    /**
+     * Play a device out of, or record it through, one of its own connectors.
+     * False where the port is gone or the server refused.
+     *
+     * The headphone socket against the speakers, an HDMI output that is wired
+     * and idle. [AudioDevice.ports] is where the names come from.
+     */
+    public fun setDevicePort(device: DeviceId, port: String): Boolean
+
+    /**
+     * Create a device that does not exist in hardware. Null where
+     * [Capability.VIRTUAL_DEVICES] is absent or the server refused.
+     *
+     * A soundboard, a separate voice bus, game audio split away from music:
+     * with the routing this interface already has, an application can be moved
+     * into one without touching that application's own settings.
+     *
+     * The returned device is this process's to remove, and [close] removes
+     * every one it created and did not remove already. That obligation matters
+     * more here than anywhere else in the library: a virtual sink left behind
+     * after a crash is not quiet audio a user can fix in their mixer, it is a
+     * device in their settings that nothing owns and nothing will remove.
+     *
+     * A device that has just been created is adopted by the desktop's session
+     * manager a moment after it appears, and the adoption carries whatever
+     * volume and mute that manager decided on. So a [setDeviceVolume] made
+     * inside that window can be replaced by a value nobody here chose, which
+     * the server reports as a successful request all the same. A consumer that
+     * needs the setting to hold asks again once the device has settled.
+     */
+    public fun createVirtualSink(name: String, channels: Int = 2): DeviceId?
+
+    /** Remove a device this process created. False for one it did not. */
+    public fun removeVirtualSink(id: DeviceId): Boolean
+
+    /**
+     * Play the same audio to two devices at once, until removed. Null where
+     * [Capability.VIRTUAL_DEVICES] is absent or the server refused.
+     *
+     * The result is a device like any other, removed through
+     * [removeVirtualSink] and by [close].
+     */
+    public fun combineSinks(name: String, devices: List<DeviceId>): DeviceId?
+
+    /**
      * Undo every change this process made and has not already undone.
      *
      * Called by [close]. Public because a consumer that ducks and un-ducks
      * around a video wants it at the end of the video, not at the end of the
      * process.
+     *
+     * Devices this process created are removed before volumes are put back,
+     * and the order is load-bearing: a stream restored onto a device that is
+     * about to vanish ends up somewhere nobody chose.
      */
     public fun restoreAll()
 
@@ -147,7 +253,10 @@ public interface VolumeMixer : AutoCloseable {
      * Returns a cancel function in every case. Where
      * [Capability.STREAM_METERING] is absent the handler is never called, which
      * is why a consumer asks the capability rather than inferring the answer
-     * from a meter that does not move.
+     * from a meter that does not move. A capture row is metered where
+     * [Capability.CAPTURE_METERING] is present, which is a separate question:
+     * watching what a stream plays and watching what it records are different
+     * mechanisms, and a backend can have one without the other.
      */
     public fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit
 

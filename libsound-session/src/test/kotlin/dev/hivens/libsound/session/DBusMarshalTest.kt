@@ -1,16 +1,16 @@
 package dev.hivens.libsound.session
 
-import dev.hivens.libsound.session.dbus.DBusAbi
-import dev.hivens.libsound.session.dbus.DBusSymbols
-import dev.hivens.libsound.session.dbus.allocateUtf8
-import dev.hivens.libsound.session.dbus.argType
-import dev.hivens.libsound.session.dbus.dict
-import dev.hivens.libsound.session.dbus.next
-import dev.hivens.libsound.session.dbus.readDouble
-import dev.hivens.libsound.session.dbus.readInt64
-import dev.hivens.libsound.session.dbus.readString
-import dev.hivens.libsound.session.dbus.readStringArray
-import dev.hivens.libsound.session.dbus.recurse
+import dev.hivens.libsound.dbus.DBusAbi
+import dev.hivens.libsound.dbus.DBusSymbols
+import dev.hivens.libsound.dbus.allocateUtf8
+import dev.hivens.libsound.dbus.argType
+import dev.hivens.libsound.dbus.dict
+import dev.hivens.libsound.dbus.next
+import dev.hivens.libsound.dbus.readDouble
+import dev.hivens.libsound.dbus.readInt64
+import dev.hivens.libsound.dbus.readString
+import dev.hivens.libsound.dbus.readStringArray
+import dev.hivens.libsound.dbus.recurse
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll

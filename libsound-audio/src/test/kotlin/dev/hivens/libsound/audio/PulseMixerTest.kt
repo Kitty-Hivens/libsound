@@ -5,6 +5,8 @@ import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.StreamDirection
 import dev.hivens.libsound.StreamEvent
 import dev.hivens.libsound.StreamId
 import dev.hivens.libsound.VolumeMixer
@@ -283,6 +285,64 @@ class PulseMixerTest {
             Capability.STREAM_CONTROL,
             Capability.STREAM_ROUTING,
             Capability.STREAM_METERING,
+            Capability.CAPTURE_ENUMERATION,
+            Capability.CAPTURE_CONTROL,
+            Capability.CAPTURE_ROUTING,
         ) shouldBe true
+        // Deliberately absent: a real source offers no way to narrow a level to
+        // one of the applications reading it, and a row moving because somebody
+        // else is talking is worse than a row with no meter.
+        (Capability.CAPTURE_METERING in mixer!!.capabilities) shouldBe false
+    }
+
+    @Test
+    fun `a capture stream is listed as one, with its own volume`() {
+        // The other half of the picture a person has of their machine: what is
+        // listening, beside what is playing. Recorded from a monitor rather than
+        // a microphone, because a suite should not open the room it runs in.
+        val backend = checkNotNull(backend)
+        val monitor = backend.captureDevices().firstOrNull { it.isMonitor }?.id
+        val captureName = "$appName capture"
+        val source = backend.createSource(
+            SourceConfig(applicationName = captureName, device = monitor),
+        )
+        source.use {
+            source.open(format)
+            val chunk = ByteArray(format.sampleRate / 20 * format.bytesPerFrame)
+            source.read(chunk, 0, chunk.size)
+
+            val row = checkNotNull(mixer!!.streams().firstOrNull { it.applicationName == captureName }) {
+                "our own capture stream should be listed"
+            }
+            row.direction shouldBe StreamDirection.CAPTURE
+            row.isOurs shouldBe true
+            // The source it is reading, resolved to a name a consumer could
+            // store and select again later.
+            (row.device != null) shouldBe true
+
+            mixer!!.setVolume(row.id, 0.4f) shouldBe true
+            Thread.sleep(200)
+            val after = checkNotNull(mixer!!.streams().firstOrNull { it.applicationName == captureName })
+            (abs(after.volume - 0.4f) < 0.05f) shouldBe true
+        }
+    }
+
+    @Test
+    fun `an id names the facility it came from`() {
+        // A sink input and a source output can carry the same index at the same
+        // time, so an index alone would have two rows answering to one id, and
+        // a volume set on one would land on the other.
+        val playback = checkNotNull(ours())
+        playback.id.value.startsWith("sink-input:") shouldBe true
+        mixer!!.streams()
+            .filter { it.direction == StreamDirection.CAPTURE }
+            .all { it.id.value.startsWith("source-output:") } shouldBe true
+    }
+
+    @Test
+    fun `every row says which way its audio flows`() {
+        mixer!!.streams().all {
+            it.direction == StreamDirection.PLAYBACK || it.direction == StreamDirection.CAPTURE
+        } shouldBe true
     }
 }

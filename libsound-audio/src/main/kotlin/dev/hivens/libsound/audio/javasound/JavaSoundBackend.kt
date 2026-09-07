@@ -2,9 +2,15 @@ package dev.hivens.libsound.audio.javasound
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
+import dev.hivens.libsound.AudioException
+import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capabilities
+import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
 import org.slf4j.LoggerFactory
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
@@ -31,22 +37,35 @@ internal class JavaSoundBackend private constructor(
     override val name: String = "javasound"
 
     /**
-     * The same set its sinks report, not an empty one.
+     * What its sinks report, plus what only the backend can do.
      *
      * A consumer reads the *backend* to decide what to offer -- that is the
      * line the selection logs and the line a settings screen keys off. A
      * backend claiming nothing while its sinks provide a device-derived
      * playhead would have consumers disabling A/V sync on a backend that
      * supports it.
+     *
+     * Capture is the one entry a sink cannot carry, because a sink is not the
+     * thing that captures.
      */
-    override val capabilities: Capabilities = JavaSoundSink.CAPABILITIES
+    override val capabilities: Capabilities = Capabilities(
+        JavaSoundSink.CAPABILITIES.supported + JavaSoundSource.CAPABILITIES.supported,
+    )
 
     private val sinks = mutableListOf<JavaSoundSink>()
+    private val sources = mutableListOf<JavaSoundSource>()
 
     override fun createSink(config: SinkConfig): AudioSink {
         // config carries an application name, an icon and a role. None of them
         // can be attached to a JavaSound line; they are dropped here rather
         // than approximated, and STREAM_IDENTITY says so.
+        //
+        // config.latency goes the same way. 200 ms is this backend's measured
+        // floor rather than a preference, and honouring a shorter profile here
+        // would buy an underrun, which freezes a clock exactly like the stall
+        // it was meant to avoid. Capability.LOW_LATENCY is absent to say so.
+        // An explicit bufferNanos is still taken exactly: a caller naming a
+        // number has said it knows what it is asking for.
         val sink = JavaSoundSink(
             bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSink.DEFAULT_BUFFER_NANOS,
         )
@@ -58,11 +77,40 @@ internal class JavaSoundBackend private constructor(
 
     override fun defaultDevice(): AudioDevice? = null
 
+    /**
+     * A `TargetDataLine` against whatever the JVM calls the default input.
+     *
+     * config carries an application name, an icon, a role and a device, and
+     * none of the four can be attached to a JavaSound line. They are dropped
+     * rather than approximated, exactly as on the output side, and the
+     * capability set says so. The buffer follows the same rule as the sink's:
+     * an explicit bufferNanos is taken exactly, and a profile is not honoured
+     * because the floor here is measured rather than chosen.
+     */
+    override fun createSource(config: SourceConfig): AudioSource {
+        val source = JavaSoundSource(
+            bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSource.DEFAULT_BUFFER_NANOS,
+        )
+        synchronized(sources) { sources.add(source) }
+        return source
+    }
+
+    override fun captureDevices(): List<AudioDevice> = emptyList()
+
+    override fun defaultCaptureDevice(): AudioDevice? = null
+
+    /** Nothing on a JVM holds a sound for a server to trigger by name. */
+    override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
+
+    override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean = false
+
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit = {}
 
     override fun close() {
         val open = synchronized(sinks) { sinks.toList().also { sinks.clear() } }
         open.forEach { runCatching { it.close() } }
+        val capturing = synchronized(sources) { sources.toList().also { sources.clear() } }
+        capturing.forEach { runCatching { it.close() } }
     }
 
     internal companion object {

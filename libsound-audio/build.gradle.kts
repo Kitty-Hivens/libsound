@@ -23,12 +23,21 @@ kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.fromTarget(libs.versions.javaTarget.get()))
         freeCompilerArgs.add("-jvm-default=enable")
+        // The bus plumbing is fenced behind a marker so that nobody picks it up
+        // by accident. This module is one of the two it was written for: a
+        // writer thread that wakes on time is a request to a system service.
+        freeCompilerArgs.add("-opt-in=dev.hivens.libsound.dbus.InternalDBusApi")
     }
     explicitApi()
 }
 
 dependencies {
     api(project(":libsound-core"))
+    // implementation, not api: nothing from the bus layer appears in this
+    // module's surface. It is here for RealtimeKit, which is one method call on
+    // the system bus and the difference between asking for low latency and
+    // having it.
+    implementation(project(":libsound-dbus"))
     // SLF4J only -- consumers wire their own binding. Backends log at
     // DEBUG/INFO/WARN; nothing fires at ERROR in normal operation, because
     // failures degrade through the capability query rather than throwing.

@@ -1,4 +1,4 @@
-package dev.hivens.libsound.session.dbus
+package dev.hivens.libsound.dbus
 
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -28,7 +28,8 @@ import java.lang.invoke.MethodHandle
  * callable function pointer, and the arena lifetime that comes with it, for no
  * behaviour we cannot get by polling.
  */
-internal class DBusSymbols private constructor(
+@InternalDBusApi
+class DBusSymbols private constructor(
     val arena: Arena,
     private val handles: Map<String, MethodHandle>,
 ) {
@@ -143,7 +144,8 @@ internal class DBusSymbols private constructor(
 }
 
 /** Allocate a NUL-terminated UTF-8 string; libdbus takes `const char *` throughout. */
-internal fun Arena.allocateUtf8(value: String): MemorySegment = allocateFrom(value)
+@InternalDBusApi
+fun Arena.allocateUtf8(value: String): MemorySegment = allocateFrom(value)
 
 /**
  * Read a `const char *` a libdbus accessor returned, or null from NULL.
@@ -153,7 +155,8 @@ internal fun Arena.allocateUtf8(value: String): MemorySegment = allocateFrom(val
  * a scan of the whole address space. Bus names, paths and metadata strings all
  * sit far below the ceiling.
  */
-internal fun MemorySegment.readCString(): String? {
+@InternalDBusApi
+fun MemorySegment.readCString(): String? {
     if (address() == 0L) return null
     return runCatching { reinterpret(MAX_C_STRING_BYTES).getString(0) }.getOrNull()
 }

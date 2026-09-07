@@ -1,4 +1,4 @@
-package dev.hivens.libsound.session.dbus
+package dev.hivens.libsound.dbus
 
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * A private session-bus connection and the single thread that owns it.
+ * A private bus connection and the single thread that owns it.
  *
  * ## One thread, not two
  *
@@ -45,7 +45,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * handler -- handlers run on this thread, and it is the one that would do the
  * work they are waiting for.
  */
-internal class DBusConnection private constructor(
+@InternalDBusApi
+class DBusConnection private constructor(
     val symbols: DBusSymbols,
     val connection: MemorySegment,
     private val threadLabel: String,
@@ -106,14 +107,18 @@ internal class DBusConnection private constructor(
      * resolving a signal's sender back to a well-known name is an obvious thing
      * to do, and it hung for the whole timeout every time.
      */
-    fun call(message: MemorySegment, timeoutMillis: Int = DEFAULT_REPLY_TIMEOUT_MS): MemorySegment? {
+    fun call(
+        message: MemorySegment,
+        timeoutMillis: Int = DEFAULT_REPLY_TIMEOUT_MS,
+        onError: ((String) -> Unit)? = null,
+    ): MemorySegment? {
         if (!open.get()) {
             runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
             return null
         }
-        if (Thread.currentThread() === ioThread) return blockingCall(message, timeoutMillis)
+        if (Thread.currentThread() === ioThread) return blockingCall(message, timeoutMillis, onError)
         val future = CompletableFuture<MemorySegment?>()
-        tasks.put(Runnable { future.complete(runCatching { blockingCall(message, timeoutMillis) }.getOrNull()) })
+        tasks.put(Runnable { future.complete(runCatching { blockingCall(message, timeoutMillis, onError) }.getOrNull()) })
         return runCatching {
             // Past the peer's own timeout, plus slack for the loop to pick the
             // task up. A caller that waits forever here is a caller the I/O
@@ -125,15 +130,28 @@ internal class DBusConnection private constructor(
         }
     }
 
-    /** The round trip itself, only ever on the I/O thread. */
-    private fun blockingCall(message: MemorySegment, timeoutMillis: Int): MemorySegment? =
+    /**
+     * The round trip itself, only ever on the I/O thread.
+     *
+     * [onError] gets the peer's own words for a refusal. A caller that has to
+     * explain the failure to a user needs them: "org.freedesktop.DBus.Error
+     * .AccessDenied" is an answer, and a null reply on its own is not.
+     */
+    private fun blockingCall(
+        message: MemorySegment,
+        timeoutMillis: Int,
+        onError: ((String) -> Unit)? = null,
+    ): MemorySegment? =
         Arena.ofConfined().use { call ->
             val error = call.allocate(DBusAbi.ERROR_LAYOUT)
             symbols.handle("dbus_error_init").invokeExact(error) as Unit
             try {
                 val reply = symbols.handle("dbus_connection_send_with_reply_and_block")
                     .invokeExact(connection, message, timeoutMillis, error) as MemorySegment
-                takeError(symbols, error)?.let { log.debug("round trip answered with an error: {}", it) }
+                takeError(symbols, error)?.let {
+                    log.debug("round trip answered with an error: {}", it)
+                    onError?.invoke(it)
+                }
                 if (reply.address() == 0L) null else reply
             } finally {
                 runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
@@ -362,7 +380,7 @@ internal class DBusConnection private constructor(
         }
     }
 
-    internal companion object {
+    companion object {
         private val log = LoggerFactory.getLogger("libsound.DBus")
 
         /**
@@ -412,30 +430,35 @@ internal class DBusConnection private constructor(
         }
 
         /**
-         * Open a private connection to the session bus, or return null when
-         * there is none -- the ordinary answer on a headless box, and not an
-         * error.
+         * Open a private connection to [bus], or return null when there is none
+         * -- the ordinary answer on a headless box, and not an error.
+         *
+         * [DBusAbi.BUS_SESSION] is where the desktop lives and where MPRIS is
+         * published. [DBusAbi.BUS_SYSTEM] carries the services a machine runs
+         * rather than a login, RealtimeKit among them, and it exists on a box
+         * that has no session bus at all.
          */
-        fun openOrNull(threadLabel: String): DBusConnection? {
+        fun openOrNull(threadLabel: String, bus: Int = DBusAbi.BUS_SESSION): DBusConnection? {
             val symbols = DBusSymbols.loadOrNull() ?: run {
                 log.debug("libdbus not loadable")
                 return null
             }
+            val busName = if (bus == DBusAbi.BUS_SYSTEM) "system bus" else "session bus"
             var connection = MemorySegment.NULL
             return runCatching {
                 Arena.ofConfined().use { setup ->
                     val error = setup.allocate(DBusAbi.ERROR_LAYOUT)
                     symbols.handle("dbus_error_init").invokeExact(error) as Unit
                     connection = symbols.handle("dbus_bus_get_private")
-                        .invokeExact(DBusAbi.BUS_SESSION, error) as MemorySegment
+                        .invokeExact(bus, error) as MemorySegment
                     freeErrorIfSet(symbols, error)
-                    check(connection.address() != 0L) { "no session bus" }
+                    check(connection.address() != 0L) { "no $busName" }
                     symbols.handle("dbus_connection_set_exit_on_disconnect")
                         .invokeExact(connection, 0) as Unit
                 }
                 DBusConnection(symbols, connection, threadLabel)
             }.getOrElse {
-                log.debug("session bus unavailable: {}", it.message)
+                log.debug("{} unavailable: {}", busName, it.message)
                 if (connection.address() != 0L) {
                     runCatching { symbols.handle("dbus_connection_close").invokeExact(connection) as Unit }
                     runCatching { symbols.handle("dbus_connection_unref").invokeExact(connection) as Unit }
