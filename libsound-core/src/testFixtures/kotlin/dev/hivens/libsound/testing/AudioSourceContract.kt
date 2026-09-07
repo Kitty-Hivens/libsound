@@ -65,7 +65,19 @@ public abstract class AudioSourceContract {
      * running whether it had run.
      */
     protected fun readSome(source: AudioSource) {
-        val chunk = frames(format.sampleRate / 20)
+        read(source, format.sampleRate / 20)
+    }
+
+    /**
+     * Collect [count] frames.
+     *
+     * Worth asking for more than a fragment where the point is that the
+     * position moved. A source may hold the tail of the last fragment it was
+     * handed, so a small read can be satisfied without the device producing
+     * anything, and the position then legitimately stands still.
+     */
+    protected fun read(source: AudioSource, count: Int) {
+        val chunk = frames(count)
         source.read(chunk, 0, chunk.size)
     }
 
@@ -149,7 +161,11 @@ public abstract class AudioSourceContract {
 
             source.start()
             advance(source, quarterSecondFrames())
-            readSome(source)
+            // A quarter of a second rather than a twentieth: anything smaller
+            // can come out of the tail the source is already holding, and a
+            // position that has not moved would then be the correct answer to
+            // the wrong question.
+            read(source, format.sampleRate / 4)
             source.framePosition() shouldBeGreaterThan frozen
         }
     }
