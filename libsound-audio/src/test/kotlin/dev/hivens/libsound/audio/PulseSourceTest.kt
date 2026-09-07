@@ -10,7 +10,9 @@ import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.StreamDirection
 import dev.hivens.libsound.audio.pulse.PulseBackend
+import dev.hivens.libsound.audio.pulse.PulseSource
 import dev.hivens.libsound.testing.AudioSourceContract
+import io.kotest.assertions.withClue
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterAll
@@ -182,25 +184,28 @@ class PulseCaptureTest {
 
     @Test
     fun `a shorter profile is a shorter fragment`() {
+        // Asserted on what the server granted, which is the only evidence that
+        // the request reached it. Two things this deliberately does not do.
+        //
+        // It does not time a read: the wall clock measures when the server
+        // chose to hand the first fragment over, and PulseAudio grants the
+        // fragment asked for while still delivering the first one early.
+        //
+        // It does not read latencyNanos either: on a record stream that query
+        // answers negative straight after the first read on PulseAudio, which
+        // this backend reports as zero because a read head ahead of the
+        // microphone is not a distance behind it. Measured, against both
+        // servers, after each shape failed on one of them.
         val backend = checkNotNull(CaptureFixture.backend)
-        fun firstReadMillis(profile: LatencyProfile): Long =
+        fun grantedOf(profile: LatencyProfile): Long =
             backend.createSource(CaptureFixture.config(profile)).use { source ->
                 source.open(format)
-                // One fragment's worth: the server hands data over in fragments,
-                // so how long the first small read takes is how long a fragment
-                // is.
-                val chunk = ByteArray(format.bytesPerFrame * 128)
-                val startedAt = System.nanoTime()
-                source.read(chunk, 0, chunk.size)
-                (System.nanoTime() - startedAt) / 1_000_000
+                (source as PulseSource).grantedFragmentNanos
             }
 
-        // Warmed first: the very first record stream on a suspended device pays
-        // for waking it, which has nothing to do with the fragment size.
-        firstReadMillis(LatencyProfile.LOW)
-        val relaxed = firstReadMillis(LatencyProfile.RELAXED)
-        val low = firstReadMillis(LatencyProfile.LOW)
-        (low < relaxed) shouldBe true
+        val relaxed = grantedOf(LatencyProfile.RELAXED)
+        val low = grantedOf(LatencyProfile.LOW)
+        withClue("relaxed=$relaxed low=$low") { (low < relaxed) shouldBe true }
     }
 
     @Test
