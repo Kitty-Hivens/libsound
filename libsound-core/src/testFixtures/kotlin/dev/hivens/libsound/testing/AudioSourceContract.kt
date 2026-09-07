@@ -84,6 +84,33 @@ public abstract class AudioSourceContract {
     private fun quarterSecondFrames(): Long = (format.sampleRate / 4).toLong()
 
     /**
+     * Capture and collect until the position is past [mark], or give up.
+     *
+     * The rule is that [AudioSource.start] resumes the count, and this waits
+     * for that rather than requiring it inside one sleep. A resumed stream's
+     * position comes from the server's own timing, which arrives on a schedule
+     * nothing here controls: measured against PulseAudio, a position read
+     * shortly after a resume can still be the one from before the stop, to the
+     * frame. A device that genuinely did not resume never moves at all, which
+     * is what the timeout catches.
+     *
+     * A quarter of a second at a time, because anything smaller can be served
+     * out of a tail the source is already holding, and a position that has not
+     * moved would then be the correct answer to the wrong question.
+     */
+    private fun awaitPositionPast(source: AudioSource, mark: Long) {
+        val deadline = System.nanoTime() + RESUME_TIMEOUT_NANOS
+        var last = source.framePosition()
+        while (System.nanoTime() < deadline) {
+            advance(source, quarterSecondFrames())
+            read(source, format.sampleRate / 4)
+            last = source.framePosition()
+            if (last > mark) return
+        }
+        throw AssertionError("the position never moved past $mark after start, last reading $last")
+    }
+
+    /**
      * What counts as "the count starts here" on a device that is already
      * capturing.
      *
@@ -160,13 +187,7 @@ public abstract class AudioSourceContract {
             (drift in 0..(format.sampleRate / 20).toLong()) shouldBe true
 
             source.start()
-            advance(source, quarterSecondFrames())
-            // A quarter of a second rather than a twentieth: anything smaller
-            // can come out of the tail the source is already holding, and a
-            // position that has not moved would then be the correct answer to
-            // the wrong question.
-            read(source, format.sampleRate / 4)
-            source.framePosition() shouldBeGreaterThan frozen
+            awaitPositionPast(source, frozen)
         }
     }
 
@@ -302,5 +323,8 @@ public abstract class AudioSourceContract {
     private companion object {
         /** Slack over the nominal duration, so a loaded runner still captures. */
         const val REAL_TIME_SLACK_MILLIS = 150L
+
+        /** Generous: this waits for a server's timing to catch up, not for a device. */
+        const val RESUME_TIMEOUT_NANOS = 8_000_000_000L
     }
 }
