@@ -1,6 +1,6 @@
 package dev.hivens.libsound.session
 
-import dev.hivens.libsound.session.dbus.DBusAbi
+import dev.hivens.libsound.dbus.DBusAbi
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
 import java.lang.foreign.Arena

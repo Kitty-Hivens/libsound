@@ -1,8 +1,10 @@
 package dev.hivens.libsound.audio.wasapi
 
+import dev.hivens.libsound.AudioCard
 import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.CardId
 import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.StreamEvent
 import dev.hivens.libsound.StreamId
@@ -149,6 +151,35 @@ internal class WasapiMixer private constructor(
      * and [Capability.STREAM_ROUTING] says so before a caller reaches here.
      */
     override fun moveTo(id: StreamId, device: DeviceId): Boolean = false
+
+    /**
+     * The device half of a mixer, none of which is here yet.
+     *
+     * Windows does have an endpoint volume, and cards and ports have no
+     * equivalent at all: what a user configures per device is a Settings page
+     * rather than an interface another application drives. The Linux tier goes
+     * first by design, and until the oracle has printed what the endpoint
+     * interface needs, every one of these answers no rather than guessing.
+     * Capability.DEVICE_VOLUME, DEVICE_PROFILES and VIRTUAL_DEVICES are absent
+     * to say so before a caller gets here.
+     */
+    override fun setDeviceVolume(device: DeviceId, volume: Float): Boolean = false
+
+    override fun setDeviceMuted(device: DeviceId, muted: Boolean): Boolean = false
+
+    override fun setDefaultDevice(device: DeviceId): Boolean = false
+
+    override fun cards(): List<AudioCard> = emptyList()
+
+    override fun setCardProfile(card: CardId, profile: String): Boolean = false
+
+    override fun setDevicePort(device: DeviceId, port: String): Boolean = false
+
+    override fun createVirtualSink(name: String, channels: Int): DeviceId? = null
+
+    override fun removeVirtualSink(id: DeviceId): Boolean = false
+
+    override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? = null
 
     override fun restoreAll() {
         com.ensureComOnThisThread()

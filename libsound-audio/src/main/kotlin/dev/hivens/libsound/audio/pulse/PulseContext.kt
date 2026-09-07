@@ -52,8 +52,15 @@ internal class PulseContext private constructor(
     lateinit var notifyStub: MemorySegment
         private set
 
-    /** Stream write-space callback: it only signals. */
-    lateinit var writeRequestStub: MemorySegment
+    /**
+     * Stream data-request callback: it only signals.
+     *
+     * One stub for both directions, because libpulse has one type for both: a
+     * playback stream's write-space callback and a record stream's read
+     * callback are the same `pa_stream_request_cb_t`, and all either has to do
+     * here is wake whoever is parked.
+     */
+    lateinit var requestStub: MemorySegment
         private set
 
     /**
@@ -69,7 +76,7 @@ internal class PulseContext private constructor(
             MethodType.methodType(Void.TYPE, MemorySegment::class.java, MemorySegment::class.java),
         ).bindTo(this)
         val writeRequest = lookup.findVirtual(
-            PulseContext::class.java, "onWriteRequest",
+            PulseContext::class.java, "onDataRequest",
             MethodType.methodType(
                 Void.TYPE, MemorySegment::class.java, Long::class.javaPrimitiveType, MemorySegment::class.java,
             ),
@@ -79,7 +86,7 @@ internal class PulseContext private constructor(
             FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS),
             lib.arena,
         )
-        writeRequestStub = linker.upcallStub(
+        requestStub = linker.upcallStub(
             writeRequest,
             FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
             lib.arena,
@@ -97,7 +104,7 @@ internal class PulseContext private constructor(
         runCatching { signal() }
     }
 
-    fun onWriteRequest(unusedStream: MemorySegment, unusedBytes: Long, unusedUserData: MemorySegment) {
+    fun onDataRequest(unusedStream: MemorySegment, unusedBytes: Long, unusedUserData: MemorySegment) {
         runCatching { signal() }
     }
 

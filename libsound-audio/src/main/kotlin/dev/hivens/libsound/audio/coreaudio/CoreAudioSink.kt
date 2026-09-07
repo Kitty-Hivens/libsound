@@ -95,6 +95,16 @@ internal class CoreAudioSink(
      */
     private val framesRendered = AtomicLong(0)
 
+    /**
+     * Periods the callback could not fill from the ring.
+     *
+     * Counted where it happens rather than derived from the ring's byte
+     * counters, because what a consumer backing off a latency profile watches
+     * is how often the device went hungry, not how many bytes of silence that
+     * came to.
+     */
+    private val underruns = AtomicLong(0)
+
     /** Read by the render callback; replaced wholesale on each open. */
     @Volatile
     private var ring: PcmRingBuffer? = null
@@ -149,11 +159,16 @@ internal class CoreAudioSink(
         ring?.close()
 
         frameBytes = format.bytesPerFrame
+        // The profile is not honoured here either, and for the reason the
+        // constant already gives: the ring depth that survives a garbage
+        // collection on this platform has not been measured, and no runner this
+        // library has can measure it. Capability.LOW_LATENCY is absent.
         val depthFrames = format.framesFor(config.bufferNanos ?: DEFAULT_BUFFER_NANOS)
             .coerceAtLeast(MAX_FRAMES_PER_SLICE.toLong())
         ring = PcmRingBuffer((depthFrames * frameBytes).toInt(), frameBytes)
         scratch = ByteArray(MAX_FRAMES_PER_SLICE * frameBytes)
         framesRendered.set(0)
+        underruns.set(0)
 
         // 'ahal' only where a device was named: 'def ' follows the system
         // default and keeps following it when the default moves, which is what
@@ -304,6 +319,8 @@ internal class CoreAudioSink(
         return format.nanosFor((buffered / format.bytesPerFrame).toLong())
     }
 
+    override fun underrunCount(): Long = underruns.get()
+
     override fun setVolume(volume: Float) {
         volumeValue = volume.coerceIn(0f, 1f)
         applyVolume()
@@ -377,6 +394,10 @@ internal class CoreAudioSink(
                 data.reinterpret(capacity.toLong()).asSlice(wanted.toLong()).fill(0)
             }
             if (real > 0) framesRendered.addAndGet((real / bytesPerFrame).toLong()) else markSilence(actionFlags)
+            // A short read is the device asking for audio nobody had ready. One
+            // atomic increment, which is what this may cost on a real-time
+            // thread.
+            if (real < wanted) underruns.incrementAndGet()
         } catch (e: Throwable) {
             // A throw crossing an upcall boundary is undefined; nothing here is
             // worth risking that for, and a period of silence is survivable.

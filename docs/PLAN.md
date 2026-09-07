@@ -31,20 +31,22 @@ them.
 Nothing built so far is being walked back. Every backend, every contract and
 every capability already written stays exactly as it is, and the rows below are
 the distance between what exists and what the purpose asks for, not a list of
-mistakes. As written today:
+mistakes.
 
-| | Today | Why it matters |
+The table below is what this plan was written against. Sections 4, 5, 6.1, 6.4
+and 7 have since been built on Linux, and every row of it is now closed there:
+
+| | Then | Now |
 |---|---|---|
-| Buffer target | 200 ms on every backend | Measured for the JavaSound fallback, where it is the right answer, and then applied to three backends that can do far better. One number across four very different paths. |
-| `PA_STREAM_ADJUST_LATENCY` | Set on the metering stream, not on the playback stream | Without it `tlength` is a buffer size hint. The server does not shorten its own path to meet it. The flag is bound and proven to work, on the one stream where latency does not matter. |
-| `minreq` | Left at server default | It decides how often the server asks for data, which is the other half of the latency. |
-| What reaches PipeWire | A 200 ms request | pipewire-pulse translates the pulse latency request into the graph node's latency, measured in 4.4. Asking for 200 ms is therefore asking the graph for 80. |
-| Writer thread priority | Ordinary JVM thread | A 5 ms buffer needs a thread that wakes on time under load. This one does not. |
-| Underruns | Not counted | A latency target nobody can validate is a setting, not a guarantee. |
+| Buffer target | 200 ms on every backend | `LatencyProfile`, defaulting to 40 ms. 200 ms is `RELAXED` and still exact. |
+| `PA_STREAM_ADJUST_LATENCY` | Set on the metering stream, not on the playback stream | Set on the playback stream and the capture stream, which is what makes a request a request. |
+| `minreq` | Left at server default | A quarter of the target, never below a frame. |
+| What reaches PipeWire | A 200 ms request | What the server granted is read back and logged at open. Measured: 200 ms granted 150, 40 granted 30, 10 granted 16, which was the graph quantum. |
+| Writer thread priority | Ordinary JVM thread | RealtimeKit, opt-in, with `RLIMIT_RTTIME` set first and the kernel's answer asserted through `/proc`. |
+| Underruns | Not counted | Counted by the PulseAudio and CoreAudio backends, with `UNDERRUN_COUNT` saying which numbers mean anything. |
 
-The library is correct and it is not yet fast. Section 4 is the largest single
-piece of work in this plan for that reason, and it adds to what is there rather
-than replacing any of it.
+What is not built is stated where it belongs: Windows capture in 6.2, the
+processing module in 5.5 and 10, and MPRIS depth in 8.
 
 ---
 
@@ -86,12 +88,12 @@ publishes and reads media sessions.
 | Surface | State |
 |---|---|
 | `AudioSink`, `AudioBackend` | Done. Pulse, WASAPI, CoreAudio, JavaSound fallback. |
-| `VolumeMixer` | Done for playback streams. Pulse and WASAPI. |
+| `VolumeMixer` | Done for both directions on Pulse. Playback only on WASAPI. |
 | `MediaSession`, `SessionReader` | Root and Player interfaces. MPRIS both directions, SMTC and MPNowPlayingInfoCenter publish. |
-| Low latency | Not attempted. See 1.1. |
-| Capture, in any form | Absent. No source, no capture stream, no capture device. |
-| Device and card control | Absent. Streams can be changed, the devices they play to cannot. |
-| Processing | Out of scope by design, and no seam is specified for it. |
+| Low latency | Done on Pulse, with a real-time writer thread behind an opt-in. Not honoured by the other three, which say so through `LOW_LATENCY`. |
+| Capture | Done on Pulse and JavaSound, including recording one application on its own. Absent on Windows and macOS, for the reasons in 6.2 and 10. |
+| Device and card control | Done on Pulse: device volume and mute, the default, ports, card profiles, virtual and combined sinks, and a sample cache. |
+| Processing | The decorator rules are written down and asserted by a fixture. The module itself is still unwritten. |
 | Publication | Nothing on Maven Central. |
 
 ---
@@ -894,15 +896,15 @@ seam is public so somebody else's project can go further.
 
 ## 11. Open questions
 
-| Question | Blocks | How it gets answered |
+| Question | Blocks | Answer |
 |---|---|---|
-| Where does `libsound-audio` get a D-Bus connection for RealtimeKit? | 4.5 | Three options: move the D-Bus layer to a shared internal module, give the audio module its own minimal client, or make `libsound-session` an optional dependency. The first is cleanest and the largest change. |
-| Does `ADJUST_LATENCY` behave the same through `pipewire-pulse` as on PulseAudio? | 4.3 | Half answered: 4.4 measures that pipewire-pulse translates the pulse latency request into the node's latency, so the request is honoured in shape. Whether the flag itself changes the result on each server is still a measurement to make. |
-| What is the lowest profile that survives on an ordinary desktop? | 4.2 | A soak with underrun counting at each profile, on a loaded machine and an idle one. The numbers in 4.1 are arithmetic, not measurements. |
-| Does `IAudioSessionManager2` enumerate capture sessions? | 6.2 | A probe in `tools/`, run under wine, before anything is written. |
-| Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | Measured against a live server, the way the monitor path was. |
-| Where does the processing module live? | 5.5 | A fourth module here shares the build, CI and contract fixtures. A separate repository keeps this one at three. Leaning to the fourth module, published separately. |
-| Does `streams()` returning both directions break a consumer badly enough to warrant a separate call? | 5.3 | There are no external consumers yet, which is the argument for doing it now rather than after publication. |
+| Where does `libsound-audio` get a D-Bus connection for RealtimeKit? | 4.5 | **Answered.** The D-Bus layer moved to `libsound-dbus`, which both modules depend on. Its types are public because a Kotlin `internal` cannot cross a module boundary, and fenced behind an opt-in marker that carries what `internal` used to. |
+| Does `ADJUST_LATENCY` behave the same through `pipewire-pulse` as on PulseAudio? | 4.3 | **Measured on pipewire-pulse 1.6.8.** The request is honoured and shortened: 200 ms granted 150, 40 granted 30, 10 granted 16, which was that machine's `clock.quantum` and the floor under everything. What a native PulseAudio grants is still unmeasured, and the sink reports what it got either way. |
+| What is the lowest profile that survives on an ordinary desktop? | 4.2 | **Still open, and now answerable by a consumer rather than by this plan.** `underrunCount` is what a soak would read, and the granted number is logged at open. |
+| Does `IAudioSessionManager2` enumerate capture sessions? | 6.2 | **Still open.** Windows capture waits on it, and on `IAudioCaptureClient`'s slots coming from an oracle. |
+| Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | **Answered, in the negative.** `pa_stream_set_monitor_stream` narrows a monitor to one sink input because a monitor carries everything its sink plays. A real source has no equivalent call, so the only level available for a capture row is the device's own, shared by everything reading it. A row that moved because somebody else was talking would be worse than no meter, so the capability is absent. |
+| Where does the processing module live? | 5.5 | **Still open.** The rules and the fixture are in `libsound-core`, so either answer stays available. |
+| Does `streams()` returning both directions break a consumer badly enough to warrant a separate call? | 5.3 | **Answered: no.** It returns both, rows carry a direction, and stream ids now name the facility they came from, because a sink input and a source output can hold the same index at once. |
 
 ---
 

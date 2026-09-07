@@ -2,11 +2,16 @@ package dev.hivens.libsound.audio.coreaudio
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
+import dev.hivens.libsound.AudioException
+import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -100,6 +105,26 @@ internal class CoreAudioBackend private constructor(
     }
 
     override fun defaultDevice(): AudioDevice? = devices().firstOrNull { it.isDefault }
+
+    /**
+     * No capture on macOS, and deliberately not.
+     *
+     * Microphone access there needs a bundle, a signature and a live user
+     * session, so no runner can answer whether a capture backend works. Writing
+     * one whose only verification is somebody's word is the failure this
+     * repository exists to avoid, and output is what this platform is here for.
+     */
+    override fun createSource(config: SourceConfig): AudioSource =
+        throw AudioException("the CoreAudio backend is output only")
+
+    override fun captureDevices(): List<AudioDevice> = emptyList()
+
+    override fun defaultCaptureDevice(): AudioDevice? = null
+
+    /** No server-side sample cache exists on this platform to bind. */
+    override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
+
+    override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean = false
 
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit {
         deviceListeners.add(handler)
@@ -299,7 +324,13 @@ internal class CoreAudioBackend private constructor(
          * cannot enumerate devices or subscribe to their events, and handing it
          * the backend's set would claim both.
          */
-        private val SINK_CAPABILITIES = Capabilities.of(Capability.DEVICE_POSITION)
+        private val SINK_CAPABILITIES = Capabilities.of(
+            Capability.DEVICE_POSITION,
+            // The render callback counts the periods it could not fill, so the
+            // number a consumer watches to back a latency profile off means
+            // something here.
+            Capability.UNDERRUN_COUNT,
+        )
 
         /** Open the backend, or null anywhere that is not a macOS with CoreAudio. */
         fun connectOrNull(): AudioBackend? {

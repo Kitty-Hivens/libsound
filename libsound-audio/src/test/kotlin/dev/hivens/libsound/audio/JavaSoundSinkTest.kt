@@ -86,14 +86,17 @@ class JavaSoundSinkTest {
     }
 
     @Test
-    fun `the backend and its sinks claim the same thing`() {
-        // They disagreed: the backend reported an empty set while its sinks
+    fun `the backend claims its sinks' set, plus only what a sink cannot be`() {
+        // They disagreed once: the backend reported an empty set while its sinks
         // reported DEVICE_POSITION. A consumer reads the backend to decide what
-        // to offer, so it would have disabled sync on a backend that supports it.
+        // to offer, so it would have disabled sync on a backend that supports
+        // it. The one entry that legitimately differs is capture, because a sink
+        // is not the thing that captures.
         val backend = checkNotNull(JavaSoundBackend.createOrNull())
         backend.use {
             JavaSoundSink().use { sink ->
-                it.capabilities shouldBe sink.capabilities
+                sink.capabilities.supported.all { capability -> capability in it.capabilities } shouldBe true
+                (it.capabilities.supported - sink.capabilities.supported) shouldBe setOf(Capability.CAPTURE)
             }
         }
     }

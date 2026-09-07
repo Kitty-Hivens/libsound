@@ -105,6 +105,49 @@ internal class PulseLibrary private constructor(
             Triple("pa_sw_volume_to_linear", F64, listOf(I32)),
             Triple("pa_cvolume_max", I32, listOf(ADDR)),
 
+            // The capture half: the same introspection shape as the sinks, one
+            // facility along. pa_stream_connect_record is already bound below,
+            // for the meter, which is what makes the record path the smaller
+            // half of this work.
+            Triple("pa_context_get_source_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_context_get_source_info_by_index", ADDR, listOf(ADDR, I32, ADDR, ADDR)),
+            Triple("pa_context_get_source_output_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_source_output_volume", ADDR, listOf(ADDR, I32, ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_source_output_mute", ADDR, listOf(ADDR, I32, I32, ADDR, ADDR)),
+            Triple("pa_context_move_source_output_by_name", ADDR, listOf(ADDR, I32, ADDR, ADDR, ADDR)),
+
+            // The devices themselves rather than the streams on them: the other
+            // half of a mixer, and the half a shell needs to draw the panel a
+            // user expects.
+            Triple("pa_context_set_sink_volume_by_name", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_sink_mute_by_name", ADDR, listOf(ADDR, ADDR, I32, ADDR, ADDR)),
+            Triple("pa_context_set_source_volume_by_name", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_source_mute_by_name", ADDR, listOf(ADDR, ADDR, I32, ADDR, ADDR)),
+            Triple("pa_context_set_default_sink", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_default_source", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
+
+            // Cards, their profiles and the ports underneath: choosing
+            // headphones over speakers, and the bluetooth switch between good
+            // playback and a working microphone.
+            Triple("pa_context_get_card_info_list", ADDR, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_card_profile_by_name", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_sink_port_by_name", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_set_source_port_by_name", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
+
+            // Devices that do not exist in hardware. A soundboard, a separate
+            // voice bus, game audio split from music: this plus the stream
+            // routing that already works.
+            Triple("pa_context_load_module", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_unload_module", ADDR, listOf(ADDR, I32, ADDR, ADDR)),
+
+            // The sample cache: a short sound uploaded once and triggered by
+            // name afterwards, with no stream to set up and no buffer to fill.
+            Triple("pa_stream_connect_upload", I32, listOf(ADDR, I64)),
+            Triple("pa_stream_finish_upload", I32, listOf(ADDR)),
+            Triple("pa_context_play_sample", ADDR, listOf(ADDR, ADDR, ADDR, I32, ADDR, ADDR)),
+            Triple("pa_context_remove_sample", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
+            Triple("pa_context_get_sample_info_by_name", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
+
             // Peak metering: a recording stream on a sink's monitor source,
             // aimed at one sink input rather than at everything the sink plays.
             Triple("pa_stream_connect_record", I32, listOf(ADDR, ADDR, ADDR, I32)),
@@ -117,6 +160,10 @@ internal class PulseLibrary private constructor(
             Triple("pa_stream_new_with_proplist", ADDR, listOf(ADDR, ADDR, ADDR, ADDR, ADDR)),
             Triple("pa_stream_set_state_callback", null, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_stream_set_write_callback", null, listOf(ADDR, ADDR, ADDR)),
+            // What the device did rather than what was asked for: a latency
+            // target nobody can validate is a setting, not a guarantee.
+            Triple("pa_stream_set_underflow_callback", null, listOf(ADDR, ADDR, ADDR)),
+            Triple("pa_stream_set_overflow_callback", null, listOf(ADDR, ADDR, ADDR)),
             Triple("pa_stream_connect_playback", I32, listOf(ADDR, ADDR, ADDR, I32, ADDR, ADDR)),
             Triple("pa_stream_disconnect", I32, listOf(ADDR)),
             Triple("pa_stream_unref", null, listOf(ADDR)),

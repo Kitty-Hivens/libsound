@@ -70,6 +70,89 @@ public enum class Capability {
      */
     DUCKS_OTHERS,
 
+    /** The backend can open an [AudioSource] at all. */
+    CAPTURE,
+
+    /**
+     * Capture streams belonging to other applications can be listed.
+     *
+     * Separate from [STREAM_ENUMERATION] because a backend can list what is
+     * playing without being able to list what is listening, and because the
+     * second is the more pointed question: this is the list a user reads to
+     * find out what has their microphone open.
+     *
+     * Whether capture *devices* can be listed is [DEVICE_ENUMERATION], which
+     * covers both directions: a backend that can enumerate one list can
+     * enumerate the other.
+     */
+    CAPTURE_ENUMERATION,
+
+    /** Volume and mute can be set on somebody else's capture stream. */
+    CAPTURE_CONTROL,
+
+    /** A capture stream can be moved to another input device. */
+    CAPTURE_ROUTING,
+
+    /** A capture stream's level can be watched, so a meter can be drawn beside it. */
+    CAPTURE_METERING,
+
+    /**
+     * The backend can honour a latency request rather than accepting it
+     * politely.
+     *
+     * Absent means [SinkConfig.latency] is taken as a hint and the buffer that
+     * results is whatever the platform would have chosen anyway. A settings
+     * screen offering a latency control where this is absent is offering a
+     * control that changes nothing.
+     */
+    LOW_LATENCY,
+
+    /**
+     * The writing thread was promoted to real-time priority, so the lowest
+     * profiles are usable rather than merely requestable.
+     *
+     * Reported by the sink rather than by the backend, because the promotion is
+     * per thread and per request: it is present only where a caller asked for
+     * it through [SinkConfig.realtime] and the system agreed.
+     */
+    REALTIME_THREAD,
+
+    /**
+     * [AudioSink.underrunCount] counts what the device actually did, rather
+     * than answering zero because nothing is counting.
+     *
+     * A latency target nobody can validate is a setting rather than a
+     * guarantee, and this is how a consumer finds out whether the number it is
+     * watching means anything before it decides to back a profile off.
+     */
+    UNDERRUN_COUNT,
+
+    /**
+     * The device's own volume, not just a stream's, can be read and set.
+     *
+     * A mixer without it is half a mixer: it can quiet one application and
+     * cannot touch the speaker everything is playing through.
+     */
+    DEVICE_VOLUME,
+
+    /** Card profiles and device ports can be listed and switched. */
+    DEVICE_PROFILES,
+
+    /** Devices that do not exist in hardware can be created and removed. */
+    VIRTUAL_DEVICES,
+
+    /**
+     * One application's output can be recorded without recording the desktop.
+     *
+     * Behind a capability because it is worth a consumer knowing it cannot be
+     * offered here, and worth stating plainly for what it is: this reads
+     * another application's audio, without that application being told.
+     */
+    PER_STREAM_CAPTURE,
+
+    /** Short sounds can be uploaded once and triggered by name. */
+    SAMPLE_CACHE,
+
     /** Our own media session can be published to the desktop. */
     SESSION_PUBLISH,
 

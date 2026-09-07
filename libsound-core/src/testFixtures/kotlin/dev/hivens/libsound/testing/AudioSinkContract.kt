@@ -224,6 +224,31 @@ public abstract class AudioSinkContract {
     }
 
     @Test
+    public fun `the underrun count starts at zero and only ever climbs`() {
+        // A latency target nobody can validate is a setting rather than a
+        // guarantee. Every backend answers this, and one that does not count
+        // answers zero forever, which Capability.UNDERRUN_COUNT is what tells
+        // apart. What no backend may do is start somewhere else or go
+        // backwards, because a consumer watching for a rise would then see one
+        // that never happened.
+        newSink().use { sink ->
+            sink.open(format)
+            sink.underrunCount() shouldBe 0L
+            writeHalfSecond(sink)
+            advance(sink, halfSecondFrames() / 2)
+            val seen = sink.underrunCount()
+            (seen >= 0L) shouldBe true
+            advance(sink, halfSecondFrames() / 2)
+            (sink.underrunCount() >= seen) shouldBe true
+
+            // And a reopen is a fresh count, for the same reason the position
+            // is: a consumer re-anchors on a new stream.
+            sink.open(format)
+            sink.underrunCount() shouldBe 0L
+        }
+    }
+
+    @Test
     public fun `close is idempotent and does not throw`() {
         val sink = newSink()
         sink.open(format)

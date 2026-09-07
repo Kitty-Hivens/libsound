@@ -50,6 +50,19 @@ internal object PulseAbi {
     const val SINK_INFO_NAME = 0L
     const val SINK_INFO_INDEX = 8L
     const val SINK_INFO_DESCRIPTION = 16L
+    const val SINK_INFO_VOLUME = 172L
+    const val SINK_INFO_MUTE = 304L
+    const val SINK_INFO_STATE = 364L
+    const val SINK_INFO_CARD = 372L
+    const val SINK_INFO_N_PORTS = 376L
+    const val SINK_INFO_PORTS = 384L
+    const val SINK_INFO_ACTIVE_PORT = 392L
+
+    /**
+     * Enough of pa_sink_info to reach the active port. The struct is 416 bytes
+     * and the tail, which is the format list, is not this library's business.
+     */
+    const val SINK_INFO_HEAD = 400L
 
     // -- peak metering --------------------------------------------------------
 
@@ -59,7 +72,27 @@ internal object PulseAbi {
      * a few bytes a second instead of a copy of the stream.
      */
     const val STREAM_PEAK_DETECT = 2_048
+
+    /**
+     * Turns `tlength` from a buffer size into a latency request: the server
+     * shortens everything it controls to meet it, rather than treating the
+     * number as a hint about how much to hold. Without it a client asking for
+     * five milliseconds gets a five millisecond buffer at the end of a path the
+     * server sized for itself.
+     */
     const val STREAM_ADJUST_LATENCY = 8_192
+
+    /**
+     * Bound, printed by the oracle, and deliberately never set.
+     *
+     * libpulse documents it as mutually exclusive with [STREAM_ADJUST_LATENCY]
+     * and as a compatibility mode for clients that sleep on a timer instead of
+     * on the device. This backend does the opposite: its write parks in
+     * `pa_threaded_mainloop_wait` until the server asks for data, so early
+     * requests would buy nothing and would cost the flag that actually shortens
+     * the path.
+     */
+    const val STREAM_EARLY_REQUESTS = 16_384
 
     /** The monitor must stay on the sink it was aimed at, or the meter follows the wrong audio. */
     const val STREAM_DONT_MOVE = 512
@@ -100,6 +133,94 @@ internal object PulseAbi {
      */
     const val PROP_APPLICATION_PROCESS_ID = "application.process.id"
 
+    // -- pa_source_info: the capture half of the device list ------------------
+
+    const val SOURCE_INFO_NAME = 0L
+    const val SOURCE_INFO_INDEX = 8L
+    const val SOURCE_INFO_DESCRIPTION = 16L
+    const val SOURCE_INFO_VOLUME = 172L
+    const val SOURCE_INFO_MUTE = 304L
+
+    /**
+     * `PA_INVALID_INDEX` for a real input, and the owning sink's index for a
+     * monitor. A source that is a sink's monitor is not a microphone, and a
+     * device list offering "Monitor of Built-in Audio" as an input confuses
+     * everyone who reads it. Both are legitimate things to want, so the field
+     * is carried rather than used to filter.
+     */
+    const val SOURCE_INFO_MONITOR_OF_SINK = 308L
+    const val SOURCE_INFO_STATE = 364L
+    const val SOURCE_INFO_CARD = 372L
+    const val SOURCE_INFO_N_PORTS = 376L
+    const val SOURCE_INFO_PORTS = 384L
+    const val SOURCE_INFO_ACTIVE_PORT = 392L
+
+    /** The same shape and the same size as pa_sink_info, one facility along. */
+    const val SOURCE_INFO_HEAD = 400L
+
+    // -- ports, one struct per direction with the same layout -----------------
+
+    const val PORT_INFO_NAME = 0L
+    const val PORT_INFO_DESCRIPTION = 8L
+    const val PORT_INFO_PRIORITY = 16L
+    const val PORT_INFO_AVAILABLE = 20L
+    const val PORT_INFO_SIZE = 40L
+
+    /**
+     * `PA_PORT_AVAILABLE_NO`. Zero is "this port does not support jack
+     * detection", which is not the same as unavailable and is why the check is
+     * against this rather than against the truthiness of the field.
+     */
+    const val PORT_AVAILABLE_NO = 1
+
+    // -- pa_card_info and the profiles a card can be put into -----------------
+
+    const val CARD_INFO_INDEX = 0L
+    const val CARD_INFO_NAME = 8L
+    const val CARD_INFO_N_PROFILES = 32L
+    const val CARD_INFO_PROFILES2 = 80L
+    const val CARD_INFO_ACTIVE_PROFILE2 = 88L
+    const val CARD_INFO_HEAD = 96L
+
+    /**
+     * `profiles2` rather than the deprecated `profiles`: the newer array is
+     * pointers rather than inline structs and carries the availability flag,
+     * which is what tells a profile that exists apart from one worth offering.
+     */
+    const val CARD_PROFILE_NAME = 0L
+    const val CARD_PROFILE_DESCRIPTION = 8L
+    const val CARD_PROFILE_PRIORITY = 24L
+    const val CARD_PROFILE_AVAILABLE = 28L
+    const val CARD_PROFILE_SIZE = 32L
+
+    // -- pa_source_output_info: somebody else's capture stream ----------------
+
+    const val SOURCE_OUTPUT_INDEX = 0L
+    const val SOURCE_OUTPUT_NAME = 8L
+    const val SOURCE_OUTPUT_SOURCE = 24L
+    const val SOURCE_OUTPUT_PROPLIST = 208L
+    const val SOURCE_OUTPUT_CORKED = 216L
+    const val SOURCE_OUTPUT_VOLUME = 220L
+    const val SOURCE_OUTPUT_MUTE = 352L
+
+    /**
+     * Zero means the volume field above holds nothing meaningful. Reading it
+     * anyway would draw a slider at a position the server never chose.
+     */
+    const val SOURCE_OUTPUT_HAS_VOLUME = 356L
+
+    /** Only the head is read; the struct is 376 bytes and the tail is not ours. */
+    const val SOURCE_OUTPUT_HEAD = 360L
+
+    // -- device state ---------------------------------------------------------
+
+    /**
+     * The server has closed the hardware because nothing is using it. A resting
+     * state rather than a fault: a stream opened against a suspended device
+     * wakes it.
+     */
+    const val DEVICE_STATE_SUSPENDED = 2
+
     // -- pa_module_info, read to answer one question --------------------------
 
     const val MODULE_INFO_NAME = 8L
@@ -118,9 +239,10 @@ internal object PulseAbi {
      */
     val ROLE_POLICY_MODULES = setOf("module-role-ducking", "module-role-cork")
 
-    // -- pa_server_info, for which sink is currently default -----------------
+    // -- pa_server_info, for which devices are currently default -------------
 
     const val SERVER_INFO_DEFAULT_SINK_NAME = 48L
+    const val SERVER_INFO_DEFAULT_SOURCE_NAME = 56L
 
     // -- sample formats ------------------------------------------------------
 
@@ -181,6 +303,8 @@ internal object PulseAbi {
      */
     const val SUBSCRIPTION_MASK_SERVER = 0x0080
     const val SUBSCRIPTION_MASK_SINK_INPUT = 0x0004
+    const val SUBSCRIPTION_MASK_SOURCE = 0x0002
+    const val SUBSCRIPTION_MASK_SOURCE_OUTPUT = 0x0008
 
     /**
      * A subscription event packs the facility and the kind into one int. The
@@ -190,6 +314,7 @@ internal object PulseAbi {
     const val SUBSCRIPTION_EVENT_FACILITY_MASK = 0x000F
     const val SUBSCRIPTION_EVENT_TYPE_MASK = 0x0030
     const val SUBSCRIPTION_EVENT_SINK_INPUT = 0x0002
+    const val SUBSCRIPTION_EVENT_SOURCE_OUTPUT = 0x0003
     const val SUBSCRIPTION_EVENT_NEW = 0x0000
     const val SUBSCRIPTION_EVENT_CHANGE = 0x0010
     const val SUBSCRIPTION_EVENT_REMOVE = 0x0020

@@ -29,6 +29,7 @@ public class FakeAudioSink(
         Capability.STREAM_VOLUME,
         Capability.STREAM_IDENTITY,
         Capability.DEVICE_POSITION,
+        Capability.UNDERRUN_COUNT,
     ),
 ) : AudioSink {
 
@@ -43,6 +44,7 @@ public class FakeAudioSink(
 
     private var bufferedFrames = 0L
     private var playedFrames = 0L
+    private var underruns = 0L
     private var volumeValue = 1f
 
     private val captured = ByteArrayOutputStream()
@@ -71,7 +73,9 @@ public class FakeAudioSink(
     /**
      * Play [frames] frames. The device's own progress, under the test's control:
      * this is what unparks a write waiting for room and what moves
-     * [framePosition]. Playing more than is buffered plays what there is.
+     * [framePosition]. Playing more than is buffered plays what there is, and
+     * counts the shortfall as an underrun, because that is exactly what a
+     * device asking for audio nobody had ready is.
      */
     public fun consume(frames: Long) {
         lock.withLock {
@@ -80,6 +84,7 @@ public class FakeAudioSink(
             // stopped can never complete on its own.
             if (!running) return
             val actual = minOf(frames, bufferedFrames)
+            if (actual < frames) underruns++
             bufferedFrames -= actual
             playedFrames += actual
             if (actual > 0) roomAvailable.signalAll()
@@ -99,6 +104,7 @@ public class FakeAudioSink(
             // restarts -- the two rules a re-anchoring clock depends on.
             bufferedFrames = 0
             playedFrames = 0
+            underruns = 0
             captured.reset()
             opens++
             // Started, not merely prepared: a caller wanting silence stops next.
@@ -169,6 +175,9 @@ public class FakeAudioSink(
     override fun latencyNanos(): Long = lock.withLock {
         openFormat?.nanosFor(bufferedFrames) ?: 0L
     }
+
+    /** Times [consume] asked for more than was buffered, since the last [open]. */
+    override fun underrunCount(): Long = lock.withLock { underruns }
 
     override fun setVolume(volume: Float) {
         lock.withLock { volumeValue = volume.coerceIn(0f, 1f) }
