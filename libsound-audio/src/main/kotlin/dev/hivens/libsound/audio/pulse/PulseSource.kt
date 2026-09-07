@@ -448,7 +448,21 @@ internal class PulseSource(
             // A corked stream delivers nothing, so a reader parked waiting for a
             // fragment has to be woken to re-check. It does not free it: the
             // loop parks again, and close is the escape.
-            if (on) pulse.signal()
+            if (on) {
+                pulse.signal()
+            } else {
+                // Resuming leaves the client's idea of the stream time stale by
+                // however long the pause was, and it stays stale until the
+                // server's next timing packet arrives on its own schedule. A
+                // consumer that reads the position straight after a resume
+                // would see it frozen, which is what a device that had not
+                // resumed looks like. Asked for rather than waited on: the
+                // reply lands in milliseconds and nothing here needs to hold a
+                // caller up for it.
+                val update = lib.handle("pa_stream_update_timing_info")
+                    .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
+                pulse.releaseOperation(update)
+            }
         }
     }
 

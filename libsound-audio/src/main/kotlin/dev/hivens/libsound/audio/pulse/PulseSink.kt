@@ -482,7 +482,17 @@ internal class PulseSink(
             // NOT free it: a corked stream reports no writable space, so the
             // loop parks again, exactly as the contract's deadlock semantics
             // say it should. close() is the escape, and the only one.
-            if (on) pulse.signal()
+            if (on) {
+                pulse.signal()
+            } else {
+                // The same re-seed the capture side needs on a resume: a pause
+                // leaves the client's stream time stale by its own length, and
+                // a consumer reading the playhead before the next timing packet
+                // would see a device that looks like it never restarted.
+                val update = lib.handle("pa_stream_update_timing_info")
+                    .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
+                pulse.releaseOperation(update)
+            }
         }
     }
 
