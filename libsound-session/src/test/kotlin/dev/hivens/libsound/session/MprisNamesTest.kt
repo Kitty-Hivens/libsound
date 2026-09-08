@@ -74,6 +74,45 @@ class MprisNamesTest {
     }
 
     @Test
+    fun `a track id survives the trip out and back`() {
+        // The half that was missing. SetPosition carries the track the sender
+        // believed was playing, a consumer drops the seek when it does not
+        // match its own id, and an escaped path never matches the id it was
+        // made from: every seek from a desktop widget was discarded as stale.
+        listOf(
+            "track-42",
+            "/home/haru/Bus Stop.mp3",
+            "https://example.invalid/a?b=c",
+            "\u590f\u51ea\u304e",
+            "_leading_underscore",
+            "emoji \ud83c\udfb5 here",
+            "bus-stop",
+        ).forEach { id ->
+            Mpris.trackIdOf(Mpris.trackPath(id)) shouldBe id
+        }
+        // No track is no id, not the string the spec names for it.
+        Mpris.trackIdOf(Mpris.trackPath(null)) shouldBe null
+        Mpris.trackIdOf(null) shouldBe null
+    }
+
+    @Test
+    fun `a path somebody else published goes back the way it came`() {
+        // A foreign player's track id is the object path it put on the wire,
+        // and it is what that player compares a seek against. Minting a new one
+        // from it names a track nobody has.
+        listOf(
+            "/org/mpris/MediaPlayer2/Track/3",
+            "/com/example/player/tracks/17",
+            Mpris.TRACK_ID_PREFIX + "natsunagi",
+        ).forEach { path ->
+            Mpris.foreignTrackPath(path) shouldBe path
+        }
+        // An id that is not a path is one a caller made up, and that is minted.
+        Mpris.foreignTrackPath("bus-stop") shouldBe Mpris.trackPath("bus-stop")
+        Mpris.foreignTrackPath(null) shouldBe Mpris.NO_TRACK
+    }
+
+    @Test
     fun `distinct titles never collapse onto one path`() {
         // The failure this guards is not cosmetic. SetPosition compares the id
         // against the current track before accepting a seek, so two tracks

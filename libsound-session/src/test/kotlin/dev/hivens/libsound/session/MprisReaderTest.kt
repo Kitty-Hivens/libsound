@@ -291,6 +291,27 @@ class MprisReaderTest {
     }
 
     @Test
+    fun `a seek aimed at the playing track is the one the player accepts`() {
+        // The end of the chain that was broken. The reader reads the player's
+        // track id, sends SetPosition with it, and the player compares what
+        // arrives against what it published: matching is the whole point of
+        // carrying the id, and nothing matched before.
+        session!!.publish(
+            SessionState(
+                playback = PlaybackState.PLAYING,
+                metadata = TrackMetadata(title = "Bus Stop", trackId = "/home/haru/Bus Stop.mp3"),
+                canSeek = true,
+            ),
+        )
+        val player = awaitPlayer { it.metadata.trackId != null }
+
+        reader!!.control(busName, SessionCommand.SetPosition(player.metadata.trackId, 30_000_000L))
+        awaitCommand { it is SessionCommand.SetPosition && it.positionMicros == 30_000_000L }
+        val seek = commands.filterIsInstance<SessionCommand.SetPosition>().first()
+        seek.trackId shouldBe "/home/haru/Bus Stop.mp3"
+    }
+
+    @Test
     fun `a command to a player that is not there fails rather than hangs`() {
         reader!!.control(
             "org.mpris.MediaPlayer2.NoSuchPlayer${ProcessHandle.current().pid()}",

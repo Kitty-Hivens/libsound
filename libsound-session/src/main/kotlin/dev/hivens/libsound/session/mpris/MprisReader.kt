@@ -146,9 +146,12 @@ internal class MprisReader private constructor(
                 if (command is SessionCommand.SetPosition) {
                     // SetPosition takes the track id first, and the player drops
                     // the command when it names a track that is no longer
-                    // current -- which is the whole reason it is carried.
+                    // current -- which is the whole reason it is carried. The id
+                    // read off that player is the path it published, so it goes
+                    // back untouched: escaping it here named a track nobody had
+                    // and every seek sent from this side was discarded.
                     symbols.appendString(
-                        call, iter, DBusAbi.TYPE_OBJECT_PATH, Mpris.trackPath(command.trackId),
+                        call, iter, DBusAbi.TYPE_OBJECT_PATH, Mpris.foreignTrackPath(command.trackId),
                     )
                 }
                 symbols.appendInt64(call, iter, argument)
