@@ -1,5 +1,6 @@
 package dev.hivens.libsound.session
 
+import dev.hivens.libsound.Capability
 import dev.hivens.libsound.LoopMode
 import dev.hivens.libsound.MediaSession
 import dev.hivens.libsound.PlaybackState
@@ -353,6 +354,20 @@ class MprisSessionTest {
             Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS,
         )
         ("'None'" in read) shouldBe true
+    }
+
+    @Test
+    fun `the session says which of the new surfaces it carries`() {
+        // Queried, never discovered by failing. SessionState is shared by three
+        // platforms and only this one carries any of these, so a consumer that
+        // published a repeat mode elsewhere published into nothing.
+        val capabilities = session!!.capabilities
+        (Capability.SESSION_PUBLISH in capabilities) shouldBe true
+        (Capability.SESSION_LOOP_SHUFFLE in capabilities) shouldBe true
+        (Capability.SESSION_FULLSCREEN in capabilities) shouldBe true
+        (Capability.SESSION_RAISE_QUIT in capabilities) shouldBe true
+        // Not a capability this surface has any business claiming.
+        (Capability.SESSION_READ in capabilities) shouldBe false
     }
 
     @Test

@@ -83,6 +83,10 @@ internal class SmtcSession private constructor(
     @Volatile
     private var lastPublished: SessionState? = null
 
+    // SESSION_PUBLISH and nothing beyond it. The transport controls carry an
+    // auto-repeat mode and a shuffle flag that this binding does not reach yet,
+    // and no fullscreen or raise of any kind, so a consumer that publishes a
+    // loop here is publishing into nothing and is entitled to know.
     override val capabilities: Capabilities = Capabilities.of(Capability.SESSION_PUBLISH)
 
     override val isOpen: Boolean get() = !closed.get()

@@ -807,6 +807,11 @@ is where a widget decides what to draw. A property that stops being carried is
 announced through the invalidated array of `PropertiesChanged`, which is the
 only thing the protocol offers for a property that is no longer there.
 
+Each of the three is behind a capability, which this plan did not ask for and
+section 5.6's own rule does: `SessionState` is shared by three platforms and
+only MPRIS carries any of them, so a consumer publishing a repeat mode on
+Windows was publishing into nothing and had no way to ask first.
+
 `Rate` is still refused with `NotSupported`, which is honest while nothing acts
 on it. Once a consumer can act on it, it becomes a command like the others.
 

@@ -51,6 +51,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `windowHandle`, so a positional construction that reached the window handle
   now fails on the type.
 
+- `Capability.SESSION_LOOP_SHUFFLE`, `SESSION_FULLSCREEN` and
+  `SESSION_RAISE_QUIT`, so the three new session surfaces are queried rather
+  than discovered by failing, like everything else here. `SessionState` is
+  shared by three platforms and only MPRIS carries any of them: a consumer that
+  published a repeat mode on Windows was publishing into nothing, and the guide
+  told it to ask a capability that did not exist.
+
 ### Fixed
 - A `Properties.Set` carrying fewer arguments than its signature took the
   process down. `dbus_message_iter_init` proves there is a first argument and
