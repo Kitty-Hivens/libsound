@@ -106,10 +106,11 @@ internal object Mpris {
      *
      * A signal names the interface its properties belong to, so a fullscreen
      * that moved cannot ride along with the player's. [PROP_CAN_SET_FULLSCREEN]
-     * is not here: it follows the session's configuration rather than its state,
-     * and it appears and disappears with [PROP_FULLSCREEN], which is announced.
+     * is here for its presence rather than its value: it is fixed by the
+     * session's configuration and it arrives and leaves with
+     * [PROP_FULLSCREEN], so a reader following signals alone has to be told.
      */
-    val ROOT_CHANGING_PROPERTIES: List<String> = listOf(PROP_FULLSCREEN)
+    val ROOT_CHANGING_PROPERTIES: List<String> = listOf(PROP_FULLSCREEN, PROP_CAN_SET_FULLSCREEN)
 
     /** `PlaybackStatus` is one of exactly these three, capitalised exactly so. */
     fun statusOf(state: PlaybackState): String = when (state) {
