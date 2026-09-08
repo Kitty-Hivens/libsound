@@ -1,5 +1,6 @@
 package dev.hivens.libsound.session
 
+import dev.hivens.libsound.LoopMode
 import dev.hivens.libsound.MediaSession
 import dev.hivens.libsound.PlaybackState
 import dev.hivens.libsound.SessionCommand
@@ -37,7 +38,16 @@ class MprisSessionTest {
     fun publish() {
         SessionTestGate.require("dbus", gdbusAvailable(), "gdbus not installed")
         session = MprisSession.openOrNull(
-            SessionConfig(applicationName = name, identity = "libsound test", desktopEntry = "libsound"),
+            SessionConfig(
+                applicationName = name,
+                identity = "libsound test",
+                desktopEntry = "libsound",
+                // Raise is offered and Quit is not, on purpose: the two are
+                // handled by the same code and the pair is what proves the
+                // gate works in both directions.
+                canRaise = true,
+                canSetFullscreen = true,
+            ),
         )
         SessionTestGate.require("dbus", session != null, "no session bus reachable")
         session?.onCommand { received.add(it) }
@@ -55,6 +65,89 @@ class MprisSessionTest {
         ("org.mpris.MediaPlayer2.Player" in xml) shouldBe true
         ("PlaybackStatus" in xml) shouldBe true
         ("Seeked" in xml) shouldBe true
+        // Nothing has been published, so the optional four are not on the
+        // object and the document must not claim otherwise. Introspection is
+        // where a widget decides which controls to draw.
+        ("LoopStatus" in xml) shouldBe false
+        ("Shuffle" in xml) shouldBe false
+        ("Fullscreen" in xml) shouldBe false
+    }
+
+    @Test
+    fun `publishing a repeat mode puts it on the interface`() {
+        // Before: not a false, not a "None". The property is optional and a
+        // player without a queue has none, so a desktop widget draws no repeat
+        // button rather than one that answers an error when pressed.
+        ("LoopStatus" in getAll(Mpris.PLAYER_INTERFACE)) shouldBe false
+        ("UnknownProperty" in get(Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS)) shouldBe true
+
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.TRACK, shuffle = true),
+        )
+
+        val out = getAll(Mpris.PLAYER_INTERFACE)
+        ("'LoopStatus': <'Track'>" in out) shouldBe true
+        ("'Shuffle': <true>" in out) shouldBe true
+        val xml = gdbus("introspect", "--dest", busName, "--object-path", Mpris.OBJECT_PATH, "--xml")
+        ("LoopStatus" in xml) shouldBe true
+        ("Shuffle" in xml) shouldBe true
+    }
+
+    @Test
+    fun `a repeat mode set from outside becomes a command`() {
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.NONE))
+        set(Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS, "<'Playlist'>")
+        await { received.any { it is SessionCommand.SetLoop } }
+        received.filterIsInstance<SessionCommand.SetLoop>().firstOrNull()?.loop shouldBe LoopMode.PLAYLIST
+    }
+
+    @Test
+    fun `shuffle set from outside becomes a command`() {
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, shuffle = false))
+        set(Mpris.PLAYER_INTERFACE, Mpris.PROP_SHUFFLE, "<true>")
+        await { received.any { it is SessionCommand.SetShuffle } }
+        received.filterIsInstance<SessionCommand.SetShuffle>().firstOrNull()?.shuffle shouldBe true
+    }
+
+    @Test
+    fun `a property this player does not carry is refused rather than accepted`() {
+        // Nothing published a loop status, so setting one has to fail. An empty
+        // reply would tell a widget the mode it asked for is now in force, and
+        // the button would sit there showing a state nothing is in.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING))
+        val out = set(Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS, "<'Track'>")
+        ("UnknownProperty" in out) shouldBe true
+        Thread.sleep(300)
+        received.none { it is SessionCommand.SetLoop } shouldBe true
+    }
+
+    @Test
+    fun `fullscreen is a root property, and the desktop may set it`() {
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
+        val out = getAll(Mpris.ROOT_INTERFACE)
+        ("'Fullscreen': <false>" in out) shouldBe true
+        // The pair travels together: whether the desktop may change it is worth
+        // nothing beside a state that is not published.
+        ("'CanSetFullscreen': <true>" in out) shouldBe true
+
+        set(Mpris.ROOT_INTERFACE, Mpris.PROP_FULLSCREEN, "<true>")
+        await { received.any { it is SessionCommand.SetFullscreen } }
+        received.filterIsInstance<SessionCommand.SetFullscreen>().firstOrNull()?.fullscreen shouldBe true
+    }
+
+    @Test
+    fun `raise reaches the handler and quit does not, because the config said so`() {
+        // Both are answered either way, since silence blocks the caller to its
+        // own timeout. What differs is whether a command is delivered: a
+        // consumer that never claimed CanQuit has no reason to expect one.
+        gdbus("call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "${Mpris.ROOT_INTERFACE}.Quit")
+        gdbus("call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "${Mpris.ROOT_INTERFACE}.Raise")
+        await { SessionCommand.Raise in received }
+        // Ordered on one connection and dispatched on one thread, so Raise
+        // arriving means Quit has already been through the same path.
+        (SessionCommand.Quit in received) shouldBe false
     }
 
     @Test
@@ -161,6 +254,25 @@ class MprisSessionTest {
     }
 
     @Test
+    fun `playerctl reads the repeat mode and sets it back`() {
+        // The properties section 8 was written for, checked by the tool a
+        // desktop widget behaves like. gdbus proves the message is well formed;
+        // this proves it is the message an MPRIS client goes looking for.
+        SessionTestGate.require("dbus", commandExists("playerctl"), "playerctl not installed")
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.TRACK, shuffle = true),
+        )
+        Thread.sleep(300)
+
+        run(listOf("playerctl", "-p", name, "loop")).trim() shouldBe "Track"
+        run(listOf("playerctl", "-p", name, "shuffle")).trim() shouldBe "On"
+
+        run(listOf("playerctl", "-p", name, "loop", "Playlist"))
+        await { received.any { it is SessionCommand.SetLoop } }
+        received.filterIsInstance<SessionCommand.SetLoop>().firstOrNull()?.loop shouldBe LoopMode.PLAYLIST
+    }
+
+    @Test
     fun `playerctl can drive the player`() {
         SessionTestGate.require("dbus", commandExists("playerctl"), "playerctl not installed")
         session!!.publish(SessionState(playback = PlaybackState.PLAYING, canPlay = true, canPause = true))
@@ -198,6 +310,23 @@ class MprisSessionTest {
         "call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
         "--method", "org.freedesktop.DBus.Properties.GetAll", iface,
     )
+
+    private fun get(iface: String, property: String): String = gdbus(
+        "call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
+        "--method", "org.freedesktop.DBus.Properties.Get", iface, property,
+    )
+
+    /** The reply, so a caller can assert on the refusal as well as on the effect. */
+    private fun set(iface: String, property: String, value: String): String = gdbus(
+        "call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
+        "--method", "org.freedesktop.DBus.Properties.Set", iface, property, value,
+    )
+
+    private fun await(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (!condition() && System.nanoTime() < deadline) Thread.sleep(20)
+        condition() shouldBe true
+    }
 
     /** `--session` goes after the subcommand, which is where gdbus wants it. */
     private fun gdbus(vararg args: String): String =
