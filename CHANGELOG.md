@@ -22,6 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `AudioSink.latencyNanos` is specified as the whole path: what is queued here,
   plus the server's share, plus the device's. A consumer estimating the middle
   term would get it wrong differently on every machine.
+- A property set on a session nobody is listening to is refused rather than
+  answered empty. `CanControl` already said false there, and the specification
+  says a set made then has no effect and raises an error, but `Volume` was
+  accepted and delivered to no handler. A widget then draws the value it asked
+  for over a player that never heard the request, which is the same argument
+  this library already makes for refusing `OpenUri` instead of answering it
+  politely.
 
 ### Fixed
 - A `Properties.Set` carrying fewer arguments than its signature took the
