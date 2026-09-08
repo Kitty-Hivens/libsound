@@ -29,9 +29,9 @@ public data class ForeignPlayer(
      * no such property.
      *
      * The reading half of [SessionState.loop], and null means the same thing on
-     * both sides: this player has no repeat to draw. Most players in the wild
-     * omit it, so a widget that assumed a value would draw a button for every
-     * one of them.
+     * both sides: this player has no repeat to draw. The property is optional,
+     * so a widget that read its absence as a value would draw a button for a
+     * player that never offered one.
      */
     public val loop: LoopMode? = null,
     /** Whether the player is shuffling, or null where it publishes no such property. */

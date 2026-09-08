@@ -81,20 +81,18 @@ internal object SessionSamples {
 
     fun repeatAndShuffle(
         session: MediaSession,
+        nowPlaying: SessionState,
         setLoop: (LoopMode) -> Unit,
         setShuffle: (Boolean) -> Unit,
     ) {
-        // Null until there is a queue to repeat, because a widget draws a
-        // repeat button for a player that publishes LoopStatus and draws none
-        // for one that does not. Publishing NONE would put a button on a radio
-        // stream, and pressing it would change nothing.
-        session.publish(
-            SessionState(
-                playback = PlaybackState.PLAYING,
-                loop = LoopMode.PLAYLIST,
-                shuffle = false,
-            ),
-        )
+        // Copied from the state that came before rather than built fresh: a
+        // field left out is not "unchanged", it is that field's default, and a
+        // state assembled from scratch here would blank the title and every
+        // can-flag along with it.
+        session.publish(nowPlaying.copy(loop = LoopMode.PLAYLIST, shuffle = false))
+        // A widget draws a repeat button for a player that publishes
+        // LoopStatus and draws none for one that leaves it null, so a radio
+        // stream publishes null rather than NONE.
         session.onCommand { command ->
             when (command) {
                 is SessionCommand.SetLoop -> setLoop(command.loop)
@@ -121,8 +119,8 @@ internal object SessionSamples {
     fun stopEveryoneRepeating(reader: SessionReader): List<String> {
         return reader.players()
             // A player that publishes no repeat mode has none, so there is
-            // nothing to turn off and no button to draw for it. Null is the
-            // usual answer: most players on a bus carry neither property.
+            // nothing to turn off and no button to draw for it. The property is
+            // optional, and absent is a common answer.
             .filter { it.canControl && it.loop != null }
             .filter { reader.control(it.id, SessionCommand.SetLoop(LoopMode.NONE)) }
             .map { it.id }

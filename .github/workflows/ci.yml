@@ -92,13 +92,16 @@ jobs:
       # the guard against exactly that and simply did not name them; both halves
       # are closed below.
       #
-      # gdbus and playerctl are the readers those suites assert through. A
-      # session that round-trips through our own marshalling proves nothing
-      # about a desktop, so the assertions are made by clients that know nothing
-      # about this implementation.
-      - name: A session bus, and the two clients that read it
+      # gdbus, playerctl and dbus-send are the clients those suites assert
+      # through. A session that round-trips through our own marshalling proves
+      # nothing about a desktop, so the assertions are made by clients that know
+      # nothing about this implementation. dbus-send earns its place by sending
+      # exactly what it is given: gdbus builds arguments from the signature the
+      # destination advertises, so a deliberately malformed call cannot be made
+      # with it, and malformed calls are how a message parser is tested.
+      - name: A session bus, and the three clients that read it
         run: |
-          sudo apt-get install -y dbus-x11 libglib2.0-bin playerctl
+          sudo apt-get install -y dbus-x11 dbus-bin libglib2.0-bin playerctl
           eval "$(dbus-launch --sh-syntax)"
           echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
           # Reach the bus through the same client the suites use, rather than

@@ -30,6 +30,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   this library already makes for refusing `OpenUri` instead of answering it
   politely.
 
+- Commands reach a consumer on a thread of the session's own rather than on the
+  one that talks to the bus, which is what both other backends already did and
+  said so in the same words. `Quit` is what made it urgent: its natural handler
+  closes the session, closing joins the bus thread, and a handler running on
+  that thread was a thread waiting for itself, followed by the connection being
+  leaked on purpose rather than freed under a caller still inside it.
+- Every `Can` property answers false where nothing is listening. The
+  specification is explicit that a client meeting `CanControl` false must assume
+  no method is implemented and every other `Can` property is false, so
+  advertising `CanPlay` true beside it described an object that does not exist.
+- `DesktopEntry` is absent rather than blank where a consumer named none. It is
+  the fifth property the specification marks optional, and the one a desktop
+  appends `.desktop` to when it looks for an icon, so an empty string sent GNOME
+  and KDE looking for a file called `.desktop`.
+- Two source-incompatible changes, both safe today because nothing is published
+  and neither is silent: `SessionCommand` is sealed and gained five members, so
+  an exhaustive `when` over it without an `else` stops compiling, and
+  `SessionConfig` gained `canSetFullscreen` between `canRaise` and
+  `windowHandle`, so a positional construction that reached the window handle
+  now fails on the type.
+
 ### Fixed
 - A `Properties.Set` carrying fewer arguments than its signature took the
   process down. `dbus_message_iter_init` proves there is a first argument and
@@ -39,7 +60,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the session bus, and present since the session was written. The shape is
   checked before it is read now, here and on the reading side, where an `as`
   arriving where an `a{sv}` was expected reached the same abort through the
-  metadata walk.
+  metadata walk. A `Set` whose value is a container that is not a variant is
+  refused for the same reason rather than read through: `ssad` used to have its
+  first array element taken as the value and acted on.
+- A method call this object cannot route is answered rather than dropped.
+  Messages are pulled off the connection by hand, so libdbus never runs the
+  dispatch that would reply for us, and a call on another object path or an
+  interface we do not carry left the caller waiting out its own timeout.
+  Walking the object tree from the root is what `busctl` and `gdbus` do, and it
+  sat for twenty-five seconds.
+- `xesam:trackNumber` goes out as `i`, which is what the metadata specification
+  says. As an int64 the key was on the wire and invisible to every reader that
+  follows the specification, this library's own included.
+- `MinimumRate` and `MaximumRate` describe the rate actually being reported. A
+  player publishing 1.5 declared a range of 1.0 to 1.0 around it, which the
+  specification forbids and a speed control cannot draw.
+- `org.freedesktop.DBus.Peer.GetMachineId` is no longer advertised, because
+  nothing answers it. The introspection document says what this object does.
+- Setting a property that exists and is read-only answers `PropertyReadOnly`
+  rather than `UnknownProperty`, which told a client the property was not there
+  at all.
+- A dictionary entry whose value the writer declined is given up rather than
+  closed. Closed, it left a key with no value, and libdbus answers that with an
+  assertion and a core dump rather than with a rejected message.
+- A round trip that outlives the caller's patience releases the reply the bus
+  thread collects for it afterwards. A peer that has wedged leaked one message
+  per call for as long as it stayed wedged.
+- The reader waits for its dispatch thread before it frees the bus, which is
+  what both other backends already did. The thread reads a player it has just
+  seen appear, through handles bound to the arena being freed.
 
 ### Added
 - Repeat, shuffle and fullscreen over MPRIS, in both directions. `LoopStatus`

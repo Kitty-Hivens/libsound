@@ -775,7 +775,7 @@ gets written when a feature needs it.
 
 ## 8. MPRIS depth
 
-The third stated purpose. 8.1, 8.2 and 8.4 are built; 8.3 is named and not
+The third stated purpose. 8.1, 8.2 and 8.4 are built. 8.3 is named and not
 taken.
 
 ### 8.1 Properties a widget already expects
@@ -795,9 +795,9 @@ Both arrive as commands the way `Volume` already does, through
 with everything else.
 
 **They are carried as optional, which this plan did not anticipate.** Both are
-optional in the specification and most players in the wild publish neither, so
-a `SessionState` that always carried them would put a repeat button on every
-player this library publishes, including a radio stream with nothing to repeat.
+optional in the specification, so a `SessionState` that always carried them
+would put a repeat button on every player this library publishes, including a
+radio stream with nothing to repeat.
 So the fields are nullable: null means there is no such notion and the property
 is absent from the interface, `LoopMode.NONE` means there is a queue and it is
 not repeating, and the two are different answers everywhere the session is
