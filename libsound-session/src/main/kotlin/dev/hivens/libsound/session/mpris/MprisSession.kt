@@ -34,7 +34,11 @@ import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * Our own session, on the bus.
@@ -74,6 +78,31 @@ internal class MprisSession private constructor(
 
     private val handlers = CopyOnWriteArrayList<(SessionCommand) -> Unit>()
 
+    /**
+     * Commands reach consumers here, never on the bus thread.
+     *
+     * The rule both siblings state in the same words: a handler is the
+     * consumer's code and the natural response to a command is to call back
+     * into this session. Quit's natural response is to close it, and close
+     * joins the bus thread, so a handler run inline there is a thread waiting
+     * for itself, two seconds of it, followed by the connection being leaked
+     * on purpose rather than freed under a thread still using it.
+     */
+    private val dispatch = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "libsound-mpris-commands").apply { isDaemon = true }
+    }
+
+    /**
+     * One publish at a time.
+     *
+     * [SessionCommand.SetLoop] tells a consumer to answer by publishing the new
+     * mode, and that answer arrives on the dispatch thread while the consumer's
+     * own loop publishes from its own. Two of them interleaving read the same
+     * previous state, compute two diffs against it, and leave the wire holding
+     * whichever finished last while the object answers the other.
+     */
+    private val publishing = ReentrantLock()
+
     @Volatile
     private var state = SessionState()
 
@@ -85,7 +114,7 @@ internal class MprisSession private constructor(
 
     override val isOpen: Boolean get() = !closed.get() && bus.isOpen
 
-    override fun publish(state: SessionState) {
+    override fun publish(state: SessionState): Unit = publishing.withLock {
         if (closed.get()) return
         val previous = published
         this.state = state
@@ -105,15 +134,22 @@ internal class MprisSession private constructor(
             if (player and root) published = state
             return
         }
-        published = state
-        announce(Mpris.PLAYER_INTERFACE, Mpris.PLAYER_CHANGING_PROPERTIES, previous, state)
-        announce(Mpris.ROOT_INTERFACE, Mpris.ROOT_CHANGING_PROPERTIES, previous, state)
+        // The same bookkeeping on the ordinary path. A signal that was never
+        // built must not be recorded as said, or the next publish diffs against
+        // a state no reader saw and the change is lost for good.
+        val player = announce(Mpris.PLAYER_INTERFACE, Mpris.PLAYER_CHANGING_PROPERTIES, previous, state)
+        val root = announce(Mpris.ROOT_INTERFACE, Mpris.ROOT_CHANGING_PROPERTIES, previous, state)
+        if (player and root) published = state
     }
 
-    override fun seeked(positionMicros: Long) {
+    override fun seeked(positionMicros: Long): Unit = publishing.withLock {
         if (closed.get()) return
         state = state.copy(positionMicros = positionMicros)
-        published = state
+        // Only to keep the diff base in step, and only where there is one.
+        // Position is not among the announced properties, so a seek before the
+        // first publish that recorded a state here would send that publish down
+        // the diff path with nothing ever having been announced.
+        if (published != null) published = state
         Arena.ofConfined().use { call ->
             val signal = newSignal(call, Mpris.PLAYER_INTERFACE, "Seeked") ?: return
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
@@ -130,6 +166,10 @@ internal class MprisSession private constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        // Before the bus goes: a command in flight calls back into this object,
+        // and the arena the bus frees is the one those calls go through.
+        dispatch.shutdown()
+        runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         runCatching { bus.releaseName(busName) }
         bus.close()
     }
@@ -145,9 +185,16 @@ internal class MprisSession private constructor(
         val iface = readMessageString("dbus_message_get_interface", message)
         val member = readMessageString("dbus_message_get_member", message) ?: return false
 
-        // The spec fixes one path. A call routed elsewhere is not ours, and
-        // answering it would claim an object we do not have.
-        if (path != Mpris.OBJECT_PATH) return false
+        // The spec fixes one path, and a call routed elsewhere is not ours to
+        // act on. It is still ours to answer: messages are pulled off the
+        // connection by hand, so libdbus never runs the dispatch that would
+        // reply UnknownMethod for us, and silence blocks the caller for its own
+        // timeout. Walking the object tree from the root is an ordinary thing
+        // for a desktop tool to do, and it used to hang for twenty-five seconds.
+        if (path != Mpris.OBJECT_PATH) {
+            replyUnknown(message, ERROR_UNKNOWN_OBJECT, "No object at ${path ?: "?"}")
+            return true
+        }
 
         return when (iface) {
             Mpris.PROPERTIES_INTERFACE -> {
@@ -178,7 +225,12 @@ internal class MprisSession private constructor(
                 handlePlayerMethod(message, member)
                 true
             }
-            else -> false
+            // Including a call that named no interface at all, which the
+            // protocol permits and which this object cannot resolve.
+            else -> {
+                replyUnknown(message, ERROR_UNKNOWN_INTERFACE, "No interface ${iface ?: "?"} here")
+                true
+            }
         }
     }
 
@@ -268,7 +320,7 @@ internal class MprisSession private constructor(
             val replyIter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(reply, replyIter) as Unit
             if (!appendProperty(call, replyIter, iface, property, state)) {
-                symbols.handle("dbus_message_unref").invokeExact(reply) as Unit
+                runCatching { symbols.handle("dbus_message_unref").invokeExact(reply) as Unit }
                 replyError(message, ERROR_UNKNOWN_PROPERTY, "No such property $iface.$property")
                 return
             }
@@ -330,8 +382,17 @@ internal class MprisSession private constructor(
             // question is whether this session carries the property at all,
             // since the optional four are absent until a consumer publishes
             // them.
-            if (property == null || property !in writableOn(iface) || !has(property, current)) {
-                replyError(message, ERROR_UNKNOWN_PROPERTY, "No writable property ${iface ?: "?"}.$property")
+            if (property == null || !has(property, current) ||
+                (property !in writableOn(iface) && property !in carriedOn(iface))
+            ) {
+                replyError(message, ERROR_UNKNOWN_PROPERTY, "No property ${iface ?: "?"}.$property")
+                return
+            }
+            // A property this object has and does not accept a value for. The
+            // standard name says which of the two it is, and a client that
+            // branches on the code is otherwise told the property is not there.
+            if (property !in writableOn(iface)) {
+                replyError(message, ERROR_PROPERTY_READ_ONLY, "$property is read-only")
                 return
             }
             // Setting a property is controlling the player, and CanControl is
@@ -344,11 +405,16 @@ internal class MprisSession private constructor(
                 replyError(message, ERROR_NOT_SUPPORTED, "CanControl is false: nothing is listening")
                 return
             }
-            // The value is the third argument and nothing has established that
-            // there is one. Recursing into an iterator that ran out asserts
-            // inside libdbus, which aborts the process, so the shape is checked
-            // before it is read.
-            val value = symbols.recurseOrNull(call, iter)
+            // The value is the third argument, it has to be there, and it has
+            // to be a variant. Recursing into an iterator that ran out asserts
+            // inside libdbus and aborts the process; recursing into an array
+            // because the signature was `ssad` reads its first element and acts
+            // on it. Set is `ssv` and nothing else.
+            val value = if (symbols.argType(iter) == DBusAbi.TYPE_VARIANT) {
+                symbols.recurseOrNull(call, iter)
+            } else {
+                null
+            }
             if (value == null) {
                 replyError(message, ERROR_INVALID_ARGS, "Set takes an interface, a property and a value")
                 return
@@ -424,7 +490,14 @@ internal class MprisSession private constructor(
         when (iface) {
             Mpris.ROOT_INTERFACE -> when (name) {
                 Mpris.PROP_IDENTITY -> symbols.appendVariantString(call, parent, config.identity)
-                Mpris.PROP_DESKTOP_ENTRY -> symbols.appendVariantString(call, parent, config.desktopEntry ?: "")
+                // Absent rather than blank. GNOME and KDE both resolve the
+                // application's icon by appending ".desktop" to whatever this
+                // holds, so an empty string sends them looking for a file
+                // called ".desktop" and the miss is indistinguishable from a
+                // player that meant it. The specification marks the property
+                // optional for exactly this.
+                Mpris.PROP_DESKTOP_ENTRY ->
+                    symbols.appendVariantString(call, parent, config.desktopEntry ?: return false)
                 Mpris.PROP_CAN_QUIT -> symbols.appendVariantBoolean(call, parent, config.canQuit)
                 Mpris.PROP_CAN_RAISE -> symbols.appendVariantBoolean(call, parent, config.canRaise)
                 // Both halves of the pair answer only where there is a screen
@@ -434,7 +507,9 @@ internal class MprisSession private constructor(
                     symbols.appendVariantBoolean(call, parent, current.fullscreen ?: return false)
                 Mpris.PROP_CAN_SET_FULLSCREEN -> {
                     if (current.fullscreen == null) return false
-                    symbols.appendVariantBoolean(call, parent, config.canSetFullscreen)
+                    // A screen this session would resize on request, and there
+                    // is no request to answer where nothing is listening.
+                    symbols.appendVariantBoolean(call, parent, driveable(config.canSetFullscreen))
                 }
                 Mpris.PROP_HAS_TRACK_LIST -> symbols.appendVariantBoolean(call, parent, false)
                 Mpris.PROP_SUPPORTED_URI_SCHEMES ->
@@ -456,13 +531,22 @@ internal class MprisSession private constructor(
                 Mpris.PROP_POSITION -> symbols.appendVariantInt64(call, parent, current.positionMicros)
                 Mpris.PROP_VOLUME -> symbols.appendVariantDouble(call, parent, current.volume)
                 Mpris.PROP_RATE -> symbols.appendVariantDouble(call, parent, current.rate)
-                Mpris.PROP_MINIMUM_RATE -> symbols.appendVariantDouble(call, parent, 1.0)
-                Mpris.PROP_MAXIMUM_RATE -> symbols.appendVariantDouble(call, parent, 1.0)
-                Mpris.PROP_CAN_GO_NEXT -> symbols.appendVariantBoolean(call, parent, current.canGoNext)
-                Mpris.PROP_CAN_GO_PREVIOUS -> symbols.appendVariantBoolean(call, parent, current.canGoPrevious)
-                Mpris.PROP_CAN_PLAY -> symbols.appendVariantBoolean(call, parent, current.canPlay)
-                Mpris.PROP_CAN_PAUSE -> symbols.appendVariantBoolean(call, parent, current.canPause)
-                Mpris.PROP_CAN_SEEK -> symbols.appendVariantBoolean(call, parent, current.canSeek)
+                // The spec requires Rate to fall between these two, and this
+                // player cannot be asked to change it, so the range it declares
+                // is the single speed it is playing at.
+                Mpris.PROP_MINIMUM_RATE -> symbols.appendVariantDouble(call, parent, current.rate)
+                Mpris.PROP_MAXIMUM_RATE -> symbols.appendVariantDouble(call, parent, current.rate)
+                // Every one of these is false where nothing is listening. The
+                // spec is explicit: with CanControl false a client must assume
+                // no method is implemented and every other Can property is
+                // false too, so answering CanPlay true beside CanControl false
+                // describes an object that does not exist.
+                Mpris.PROP_CAN_GO_NEXT -> symbols.appendVariantBoolean(call, parent, driveable(current.canGoNext))
+                Mpris.PROP_CAN_GO_PREVIOUS ->
+                    symbols.appendVariantBoolean(call, parent, driveable(current.canGoPrevious))
+                Mpris.PROP_CAN_PLAY -> symbols.appendVariantBoolean(call, parent, driveable(current.canPlay))
+                Mpris.PROP_CAN_PAUSE -> symbols.appendVariantBoolean(call, parent, driveable(current.canPause))
+                Mpris.PROP_CAN_SEEK -> symbols.appendVariantBoolean(call, parent, driveable(current.canSeek))
                 // CanControl false tells a widget to draw nothing rather than
                 // draw buttons that do nothing, so it follows whether anything
                 // is listening at all.
@@ -498,11 +582,27 @@ internal class MprisSession private constructor(
         Mpris.PROP_LOOP_STATUS -> current.loop != null
         Mpris.PROP_SHUFFLE -> current.shuffle != null
         Mpris.PROP_FULLSCREEN, Mpris.PROP_CAN_SET_FULLSCREEN -> current.fullscreen != null
+        Mpris.PROP_DESKTOP_ENTRY -> config.desktopEntry != null
         else -> true
     }
 
+    /**
+     * Whether a control may be offered at all.
+     *
+     * CanControl answers whether anything is listening, and every other Can
+     * property is read through here so the set cannot contradict it.
+     */
+    private fun driveable(claimed: Boolean): Boolean = claimed && handlers.isNotEmpty()
+
     private fun carried(properties: List<String>, current: SessionState): List<String> =
         properties.filter { has(it, current) }
+
+    /** Every property [iface] declares, writable or not. */
+    private fun carriedOn(iface: String?): Set<String> = when (iface) {
+        Mpris.ROOT_INTERFACE -> ROOT_PROPERTIES.toSet()
+        Mpris.PLAYER_INTERFACE -> PLAYER_PROPERTIES.toSet()
+        else -> emptySet()
+    }
 
     /** The properties [iface] accepts a `Set` for, whether or not this session carries them. */
     private fun writableOn(iface: String?): Set<String> = when (iface) {
@@ -520,6 +620,7 @@ internal class MprisSession private constructor(
                 loop = current.loop != null,
                 shuffle = current.shuffle != null,
                 fullscreen = current.fullscreen != null,
+                desktopEntry = config.desktopEntry != null,
             ),
         )
     }
@@ -536,7 +637,10 @@ internal class MprisSession private constructor(
         entries.stringArray(Mpris.KEY_ALBUM_ARTIST, metadata.albumArtists)
         entries.int64(Mpris.KEY_LENGTH, metadata.durationMicros)
         entries.string(Mpris.KEY_ART_URL, metadata.artUrl)
-        entries.int64(Mpris.KEY_TRACK_NUMBER, metadata.trackNumber?.toLong())
+        // `i`, not `x`. The metadata specification says Integer, and a reader
+        // that follows it, this library's own included, finds nothing under the
+        // key when it arrives as an int64.
+        entries.int32(Mpris.KEY_TRACK_NUMBER, metadata.trackNumber)
     }
 
     private fun differs(property: String, before: SessionState, after: SessionState): Boolean =
@@ -573,14 +677,14 @@ internal class MprisSession private constructor(
         properties: List<String>,
         previous: SessionState,
         current: SessionState,
-    ) {
+    ): Boolean {
         val changed = properties.filter { has(it, current) && differs(it, previous, current) }
         // A property the player has stopped carrying cannot be given a new
         // value, so it goes in the invalidated array instead. That is what the
         // array is for: the reader is told to look again, and finds it is no
         // longer there.
         val invalidated = properties.filter { has(it, previous) && !has(it, current) }
-        emitChanged(iface, changed, invalidated, current)
+        return emitChanged(iface, changed, invalidated, current)
     }
 
     /** False only where the signal could not be built, which is what [publish] records. */
@@ -650,6 +754,12 @@ internal class MprisSession private constructor(
         }
     }
 
+    /** An answer for a call this object cannot route, skipped only where the caller wants none. */
+    private fun replyUnknown(message: MemorySegment, name: String, text: String) {
+        if ((symbols.handle("dbus_message_get_no_reply").invokeExact(message) as Int) != 0) return
+        replyError(message, name, text)
+    }
+
     /**
      * An unanswered method call blocks its caller to that caller's own timeout,
      * twenty-five seconds by default. Desktops probe players before subscribing,
@@ -665,10 +775,16 @@ internal class MprisSession private constructor(
         (symbols.handle(accessor).invokeExact(message) as MemorySegment).readCString()
 
     private fun fire(command: SessionCommand) {
-        handlers.forEach { handler ->
-            runCatching { handler(command) }
-                .onFailure { log.warn("command handler threw: {}", it.message) }
-        }
+        val snapshot = handlers.toList()
+        if (snapshot.isEmpty()) return
+        runCatching {
+            dispatch.execute {
+                snapshot.forEach { handler ->
+                    runCatching { handler(command) }
+                        .onFailure { log.warn("command handler threw: {}", it.message) }
+                }
+            }
+        }.onFailure { log.debug("command dropped, the session is closing") }
     }
 
     internal companion object {
@@ -678,6 +794,9 @@ internal class MprisSession private constructor(
         private const val ERROR_UNKNOWN_PROPERTY = "org.freedesktop.DBus.Error.UnknownProperty"
         private const val ERROR_INVALID_ARGS = "org.freedesktop.DBus.Error.InvalidArgs"
         private const val ERROR_NOT_SUPPORTED = "org.freedesktop.DBus.Error.NotSupported"
+        private const val ERROR_PROPERTY_READ_ONLY = "org.freedesktop.DBus.Error.PropertyReadOnly"
+        private const val ERROR_UNKNOWN_INTERFACE = "org.freedesktop.DBus.Error.UnknownInterface"
+        private const val ERROR_UNKNOWN_OBJECT = "org.freedesktop.DBus.Error.UnknownObject"
 
         private val ROOT_PROPERTIES = listOf(
             Mpris.PROP_CAN_QUIT, Mpris.PROP_CAN_RAISE, Mpris.PROP_HAS_TRACK_LIST,

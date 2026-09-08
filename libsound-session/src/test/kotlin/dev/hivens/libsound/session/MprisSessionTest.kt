@@ -33,6 +33,7 @@ class MprisSessionTest {
     private val others = CopyOnWriteArrayList<MediaSession>()
     private val received = CopyOnWriteArrayList<SessionCommand>()
     private val name = "libsoundTest${ProcessHandle.current().pid()}"
+    private val PEER = Mpris.PEER_INTERFACE
     private val busName = "org.mpris.MediaPlayer2.$name"
 
     @BeforeEach
@@ -295,7 +296,7 @@ class MprisSessionTest {
         await { SessionCommand.Quit in received }
 
         // The other half of the same gate. The state carries a fullscreen, so
-        // the property is on the interface and readable; what the desktop may
+        // the property is on the interface and readable. What the desktop may
         // not do is change it, and saying so is better than accepting a value
         // nothing acts on.
         player.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
@@ -352,6 +353,137 @@ class MprisSessionTest {
             Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS,
         )
         ("'None'" in read) shouldBe true
+    }
+
+    @Test
+    fun `a desktop entry nobody set is absent rather than blank`() {
+        // The main session names one, so both polarities are covered in one
+        // file. A blank entry sends GNOME and KDE looking for ".desktop", and
+        // the miss is indistinguishable from a player that meant it.
+        ("'DesktopEntry': <'libsound'>" in getAll(Mpris.ROOT_INTERFACE)) shouldBe true
+
+        val (_, anonymous) = openWith("NoEntry") { app -> SessionConfig(applicationName = app) }
+        val out = gdbus(
+            "call", "--dest", anonymous, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "org.freedesktop.DBus.Properties.GetAll", Mpris.ROOT_INTERFACE,
+        )
+        out.isNotEmpty() shouldBe true
+        ("DesktopEntry" in out) shouldBe false
+        val xml = gdbus("introspect", "--dest", anonymous, "--object-path", Mpris.OBJECT_PATH, "--xml")
+        ("DesktopEntry" in xml) shouldBe false
+    }
+
+    @Test
+    fun `a call this object cannot route is answered rather than left hanging`() {
+        // Nothing here runs libdbus's own dispatch, so nothing answers for us.
+        // Walking the object tree from the root is what busctl and gdbus do,
+        // and it used to sit for twenty-five seconds.
+        val started = System.nanoTime()
+        val elsewhere = gdbus("call", "--dest", busName, "--object-path", "/", "--method", "$PEER.Ping")
+        ("UnknownObject" in elsewhere) shouldBe true
+
+        val stranger = gdbus("call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "com.example.NotOurs.DoSomething")
+        ("UnknownInterface" in stranger) shouldBe true
+
+        // Both answered well inside the caller's own timeout, which is the
+        // whole point of answering at all.
+        ((System.nanoTime() - started) < 10_000_000_000L) shouldBe true
+    }
+
+    @Test
+    fun `a player nobody is driving says so in every can property`() {
+        // The spec: with CanControl false a client must assume no method is
+        // implemented and every other Can property is false. Answering
+        // CanPlay true beside CanControl false describes an object that does
+        // not exist, and a client that believes the flags draws dead buttons.
+        val (deaf, address) = openWith("Mute", listen = false) { app ->
+            SessionConfig(applicationName = app, canSetFullscreen = true)
+        }
+        deaf.publish(
+            SessionState(
+                playback = PlaybackState.PLAYING,
+                canPlay = true, canPause = true, canGoNext = true, canSeek = true,
+                fullscreen = false,
+            ),
+        )
+        val player = gdbus(
+            "call", "--dest", address, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "org.freedesktop.DBus.Properties.GetAll", Mpris.PLAYER_INTERFACE,
+        )
+        ("'CanControl': <false>" in player) shouldBe true
+        ("'CanPlay': <false>" in player) shouldBe true
+        ("'CanPause': <false>" in player) shouldBe true
+        ("'CanGoNext': <false>" in player) shouldBe true
+        ("'CanSeek': <false>" in player) shouldBe true
+        val root = gdbus(
+            "call", "--dest", address, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "org.freedesktop.DBus.Properties.GetAll", Mpris.ROOT_INTERFACE,
+        )
+        // The screen state is still readable. What is false is the claim that
+        // this player would resize on request.
+        ("'Fullscreen': <false>" in root) shouldBe true
+        ("'CanSetFullscreen': <false>" in root) shouldBe true
+    }
+
+    @Test
+    fun `a property that exists and cannot be written says which of the two it is`() {
+        // UnknownProperty tells a client the property is not there. A client
+        // that branches on the code then stops reading it as well.
+        val out = set(Mpris.PLAYER_INTERFACE, Mpris.PROP_PLAYBACK_STATUS, "<'Playing'>")
+        ("PropertyReadOnly" in out) shouldBe true
+        // Rate is the one the spec declares writable and this player refuses.
+        ("NotSupported" in set(Mpris.PLAYER_INTERFACE, Mpris.PROP_RATE, "<2.0>")) shouldBe true
+        // And a name nothing carries is still an unknown property.
+        ("UnknownProperty" in set(Mpris.PLAYER_INTERFACE, "NoSuchThing", "<1>")) shouldBe true
+    }
+
+    @Test
+    fun `a set whose value is not a variant is refused rather than read through`() {
+        // Set is `ssv`. Recursing into whatever container happens to be there
+        // reads an array's first element and acts on it, so a caller that sent
+        // `ssad` would set the volume with a message no spec allows.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING))
+        val out = dbusSend(
+            busName, "org.freedesktop.DBus.Properties.Set",
+            "string:${Mpris.PLAYER_INTERFACE}", "string:${Mpris.PROP_VOLUME}", "array:double:0.5",
+        )
+        ("InvalidArgs" in out) shouldBe true
+        Thread.sleep(300)
+        received.none { it is SessionCommand.SetVolume } shouldBe true
+    }
+
+    @Test
+    fun `the value a desktop sent is the value the command carries`() {
+        // Both polarities, because a handler that ignores its argument and
+        // always fires true passes every assertion a true-only test can make.
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, shuffle = true, fullscreen = true),
+        )
+        ("'Shuffle': <true>" in getAll(Mpris.PLAYER_INTERFACE)) shouldBe true
+
+        set(Mpris.PLAYER_INTERFACE, Mpris.PROP_SHUFFLE, "<false>")
+        await { received.any { it is SessionCommand.SetShuffle } }
+        received.filterIsInstance<SessionCommand.SetShuffle>().first().shuffle shouldBe false
+
+        set(Mpris.ROOT_INTERFACE, Mpris.PROP_FULLSCREEN, "<false>")
+        await { received.any { it is SessionCommand.SetFullscreen } }
+        received.filterIsInstance<SessionCommand.SetFullscreen>().first().fullscreen shouldBe false
+
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, shuffle = false, fullscreen = false),
+        )
+        ("'Shuffle': <false>" in getAll(Mpris.PLAYER_INTERFACE)) shouldBe true
+        ("'Fullscreen': <false>" in getAll(Mpris.ROOT_INTERFACE)) shouldBe true
+    }
+
+    @Test
+    fun `opening a uri is refused rather than answered politely`() {
+        // Advertised because the spec puts it on the interface. An empty reply
+        // tells a desktop the track it asked for is starting, and it never does.
+        val out = gdbus("call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "${Mpris.PLAYER_INTERFACE}.OpenUri", "file:///tmp/nothing.flac")
+        ("NotSupported" in out) shouldBe true
     }
 
     @Test
@@ -460,9 +592,22 @@ class MprisSessionTest {
         condition() shouldBe true
     }
 
-    /** `--session` goes after the subcommand, which is where gdbus wants it. */
-    private fun gdbus(vararg args: String): String =
-        run(listOf("gdbus", args[0], "--session") + args.drop(1))
+    /**
+     * `--session` goes after the subcommand, which is where gdbus wants it.
+     *
+     * The output is asserted on, including for absence, and [run] answers an
+     * empty string for a client that could not start. Empty would satisfy every
+     * "not in" check in this file at once, so it fails here instead.
+     */
+    private fun gdbus(vararg args: String): String {
+        val out = run(listOf("gdbus", args[0], "--session") + args.drop(1))
+        withClue("gdbus printed nothing for ${args.toList()}") { out.isNotEmpty() shouldBe true }
+        return out
+    }
+
+    private fun withClue(clue: String, body: () -> Unit) {
+        runCatching(body).onFailure { throw AssertionError(clue, it) }
+    }
 
     private fun gdbusAvailable(): Boolean = runCatching {
         ProcessBuilder("gdbus", "--version").redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS)

@@ -132,8 +132,19 @@ class MprisNamesTest {
     }
 
     @Test
+    fun `the document promises no method this object refuses`() {
+        // Advertising Peer.GetMachineId and answering UnknownMethod is the same
+        // dead button as an optional property that is not there. Messages are
+        // pulled off the connection by hand, so libdbus's own Peer handling
+        // never runs and nothing answers it.
+        val xml = Mpris.introspectionXml(loop = true, shuffle = true, fullscreen = true, desktopEntry = true)
+        ("GetMachineId" in xml) shouldBe false
+        ("Ping" in xml) shouldBe true
+    }
+
+    @Test
     fun `the introspection xml names every method the spec requires`() {
-        val xml = Mpris.introspectionXml(loop = true, shuffle = true, fullscreen = true)
+        val xml = Mpris.introspectionXml(loop = true, shuffle = true, fullscreen = true, desktopEntry = true)
         listOf(
             "Next", "Previous", "Pause", "PlayPause", "Stop", "Play",
             "Seek", "SetPosition", "OpenUri", "Seeked",
@@ -157,9 +168,9 @@ class MprisNamesTest {
         // the network is a test that fails when the network does.
         factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
         listOf(
-            Mpris.introspectionXml(loop = true, shuffle = true, fullscreen = true),
-            Mpris.introspectionXml(loop = false, shuffle = false, fullscreen = false),
-            Mpris.introspectionXml(loop = true, shuffle = false, fullscreen = true),
+            Mpris.introspectionXml(loop = true, shuffle = true, fullscreen = true, desktopEntry = true),
+            Mpris.introspectionXml(loop = false, shuffle = false, fullscreen = false, desktopEntry = false),
+            Mpris.introspectionXml(loop = true, shuffle = false, fullscreen = true, desktopEntry = false),
         ).forEach { xml ->
             val root = factory.newDocumentBuilder()
                 .parse(ByteArrayInputStream(xml.toByteArray()))
@@ -174,19 +185,25 @@ class MprisNamesTest {
         // Introspection is where a widget finds out which controls to draw, so
         // a document listing LoopStatus for a player whose Get answers
         // UnknownProperty is a repeat button that does nothing.
-        val bare = Mpris.introspectionXml(loop = false, shuffle = false, fullscreen = false)
+        val bare = Mpris.introspectionXml(loop = false, shuffle = false, fullscreen = false, desktopEntry = false)
         ("LoopStatus" in bare) shouldBe false
         ("Shuffle" in bare) shouldBe false
         ("Fullscreen" in bare) shouldBe false
-        ("CanSetFullscreen" in bare) shouldBe false
+        // DesktopEntry is the fifth the specification marks optional, and the
+        // one a desktop resolves an icon through: blank sends GNOME and KDE
+        // looking for a file called ".desktop".
+        ("DesktopEntry" in bare) shouldBe false
         // What is not optional stays, and the document is still one node.
         ("PlaybackStatus" in bare) shouldBe true
         ("CanRaise" in bare) shouldBe true
+        ("Identity" in bare) shouldBe true
         bare.trimEnd().endsWith("</node>") shouldBe true
 
         // Each is dropped on its own: a player that repeats but does not
         // shuffle is an ordinary player.
-        val loopOnly = Mpris.introspectionXml(loop = true, shuffle = false, fullscreen = false)
+        val loopOnly = Mpris.introspectionXml(
+            loop = true, shuffle = false, fullscreen = false, desktopEntry = false,
+        )
         ("LoopStatus" in loopOnly) shouldBe true
         ("Shuffle" in loopOnly) shouldBe false
     }
