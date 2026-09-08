@@ -118,7 +118,15 @@ class DBusConnection private constructor(
         }
         if (Thread.currentThread() === ioThread) return blockingCall(message, timeoutMillis, onError)
         val future = CompletableFuture<MemorySegment?>()
-        tasks.put(Runnable { future.complete(runCatching { blockingCall(message, timeoutMillis, onError) }.getOrNull()) })
+        tasks.put(
+            Runnable {
+                val reply = runCatching { blockingCall(message, timeoutMillis, onError) }.getOrNull()
+                // The caller may have stopped waiting. A reply nobody takes is
+                // a reply nobody unrefs, and a peer that has wedged hands one
+                // out per call for as long as it stays wedged.
+                if (!future.complete(reply) && reply != null) release(reply)
+            },
+        )
         return runCatching {
             // Past the peer's own timeout, plus slack for the loop to pick the
             // task up. A caller that waits forever here is a caller the I/O
@@ -126,8 +134,18 @@ class DBusConnection private constructor(
             future.get(timeoutMillis.toLong() + TASK_PICKUP_SLACK_MS, TimeUnit.MILLISECONDS)
         }.getOrElse {
             log.warn("round trip did not complete in time: {}", it.message)
+            // Claim the answer so a late one is released. Losing the race here
+            // means it landed while the wait was running out, and then it is
+            // sitting in a future nobody will read.
+            if (!future.complete(null)) {
+                runCatching { future.getNow(null) }.getOrNull()?.let { release(it) }
+            }
             null
         }
+    }
+
+    private fun release(message: MemorySegment) {
+        runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
     }
 
     /**

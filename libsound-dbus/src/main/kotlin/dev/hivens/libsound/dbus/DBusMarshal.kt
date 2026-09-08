@@ -107,6 +107,10 @@ fun DBusSymbols.appendVariantObjectPath(call: Arena, parent: MemorySegment, valu
     variant(call, parent, "o") { appendString(call, it, DBusAbi.TYPE_OBJECT_PATH, value) }
 }
 
+fun DBusSymbols.appendVariantInt32(call: Arena, parent: MemorySegment, value: Int) {
+    variant(call, parent, "i") { appendInt32(call, it, value) }
+}
+
 fun DBusSymbols.appendVariantInt64(call: Arena, parent: MemorySegment, value: Long) {
     variant(call, parent, "x") { appendInt64(call, it, value) }
 }
@@ -161,6 +165,18 @@ class DictWriter(
         symbols.closeContainer(array, entry)
     }
 
+    /**
+     * Give the entry up instead of closing it, for a writer that declined.
+     *
+     * A dict entry closed with a key and no value is not a message the daemon
+     * rejects, it is an assertion inside libdbus and a core dump, and the guard
+     * standing between the two is a caller filtering the same list it writes
+     * from. This is what libdbus offers for the case where that guard is wrong.
+     */
+    private fun abandon(entry: MemorySegment) {
+        symbols.handle("dbus_message_iter_abandon_container_if_open").invokeExact(array, entry) as Unit
+    }
+
     fun string(key: String, value: String?) {
         if (value == null) return
         entry(key) { symbols.appendVariantString(call, it, value) }
@@ -174,6 +190,12 @@ class DictWriter(
     fun int64(key: String, value: Long?) {
         if (value == null) return
         entry(key) { symbols.appendVariantInt64(call, it, value) }
+    }
+
+    /** `i` on the wire, which is what the metadata specification asks for a track number. */
+    fun int32(key: String, value: Int?) {
+        if (value == null) return
+        entry(key) { symbols.appendVariantInt32(call, it, value) }
     }
 
     fun double(key: String, value: Double?) {
@@ -196,13 +218,16 @@ class DictWriter(
      * An entry whose variant the caller writes.
      *
      * For values whose type is decided somewhere else -- a property table that
-     * knows which of a dozen shapes each name carries. [write] returns false to
-     * abandon the entry, which still has to be closed: libdbus records the
-     * closing bookkeeping in the parent, and an unbalanced pair corrupts the
-     * message rather than failing it.
+     * knows which of a dozen shapes each name carries. [write] returns false
+     * for a value it has none of, and the entry is then given up rather than
+     * closed: closing it would leave a key with no value, which libdbus meets
+     * with an assertion and a core dump rather than with a rejected message.
      */
     fun raw(key: String, write: (MemorySegment) -> Boolean) {
-        entry(key) { write(it) }
+        val entry = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
+        symbols.openContainer(array, DBusAbi.TYPE_DICT_ENTRY, MemorySegment.NULL, entry)
+        symbols.appendString(call, entry, DBusAbi.TYPE_STRING, key)
+        if (write(entry)) symbols.closeContainer(array, entry) else abandon(entry)
     }
 }
 
