@@ -110,6 +110,19 @@ int main(void) {
     SLOT(IAudioRenderClientVtbl, GetBuffer);
     SLOT(IAudioRenderClientVtbl, ReleaseBuffer);
 
+    /* The neighbour of IAudioRenderClient, and the one thing section 6.2 of
+     * the plan needs that a person with a Windows machine cannot give: wine
+     * reimplements the same vtable, so these are as good here as on hardware.
+     * The capture side hands back a frame count, flags and two timestamps where
+     * the render side takes a frame count, so the shapes differ as well as the
+     * slots. */
+    SECTION("IAudioCaptureClient");
+    SLOT(IAudioCaptureClientVtbl, GetBuffer);
+    SLOT(IAudioCaptureClientVtbl, ReleaseBuffer);
+    SLOT(IAudioCaptureClientVtbl, GetNextPacketSize);
+    printf("  %-52s = %llu\n", "slots in IAudioCaptureClientVtbl",
+           (unsigned long long)(sizeof(IAudioCaptureClientVtbl) / sizeof(void *)));
+
     SECTION("IAudioClock (the honest playhead)");
     SLOT(IAudioClockVtbl, GetFrequency);
     SLOT(IAudioClockVtbl, GetPosition);
@@ -206,6 +219,7 @@ int main(void) {
     GUID_OF(IID_IMMNotificationClient);
     GUID_OF(IID_IAudioClient);
     GUID_OF(IID_IAudioRenderClient);
+    GUID_OF(IID_IAudioCaptureClient);
     GUID_OF(IID_IAudioClock);
     GUID_OF(IID_ISimpleAudioVolume);
     GUID_OF(IID_IAudioSessionControl);
@@ -255,6 +269,10 @@ int main(void) {
     HEX(AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM);
     HEX(AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY);
     HEX(AUDCLNT_BUFFERFLAGS_SILENT);
+    /* The capture side's own flags, which the render side has no equivalent
+     * of: a consumer that ignores them treats a discontinuity as audio. */
+    HEX(AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY);
+    HEX(AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR);
     HEX(CLSCTX_ALL);
     HEX(COINIT_MULTITHREADED);
     HEX(COINIT_APARTMENTTHREADED);

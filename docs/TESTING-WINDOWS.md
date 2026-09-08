@@ -51,35 +51,55 @@ notifications is itself an answer worth sending.
 
 ## 3. Does the lock screen show the session, and do the media keys arrive?
 
-**No command exists yet.** The audio module has a smoke check a person can watch
-and the session module has none.
+```
+gradlew.bat :libsound-session:sessionSmoke
+```
 
-What it would take: a small program that publishes a session with a title, an
-artist and artwork, then waits. A person opens the lock screen, looks, presses
-the media keys and says what happened. Roughly forty lines beside the existing
-smoke check, and worth writing the moment somebody is on the other end of it.
+It publishes a player, changes the track every twelve seconds so a widget has
+something to follow, prints every command that reaches this process as it
+arrives, and stops on Enter or after ninety seconds. It drives no other player,
+changes no volume and writes nothing that outlives the run.
+
+While it runs, open the lock screen with `Win`+`L`, and the volume flyout beside
+the clock. Then press the media keys on the keyboard.
+
+It asks six questions at the end and they are the point of it. The two that
+matter most: whether the player appeared under its own name rather than as
+`java` or `javaw.exe`, and which media keys reached the process. A key that did
+nothing at all is the interesting answer.
 
 What it unblocks: the SMTC row in the README stops saying that whether the lock
-screen shows it needs a person. Everything about that backend below the lock
-screen has executed under wine, so this is the last unknown in it.
+screen shows it needs a person. Everything else in that backend has executed
+under wine, so this is the last unknown in it.
 
 ## 4. Does `IAudioSessionManager2` enumerate capture sessions?
 
-**No command exists yet, and this is the one worth the most.**
+**This is the one worth the most.** It decides whether Windows can list what is
+recording at all, which is the whole Windows half of the capture work in
+sections 6.2 and 11 of [docs/PLAN.md](PLAN.md).
 
-The documentation says a session manager activated on a capture endpoint
-enumerates that endpoint's sessions. Nothing anywhere has measured it, and the
-answer decides whether Windows can list what is recording at all, which is the
-whole Windows half of the capture work in sections 6.2 and 11 of
-[docs/PLAN.md](PLAN.md).
+`tools/wasapi-capture-probe.c` asks it. It needs a compiler once, and if that is
+in the way, say so and a built copy can be sent instead:
 
-What it would take: a probe of the shape `tools/smtc-probe.c` already has.
-Activate a session manager on a capture endpoint, enumerate, print what comes
-back. It answers yes or no in one run and nothing else can answer it.
+```
+x86_64-w64-mingw32-gcc -o wasapi-capture-probe.exe tools\wasapi-capture-probe.c -lole32 -loleaut32
+wasapi-capture-probe.exe
+```
 
-The ABI half of the same section, the vtable slots of `IAudioCaptureClient`,
-does not need this machine. Wine gives those correctly and the existing oracle
-can be extended to print them.
+It reads and prints. Nothing is opened, played, recorded or changed: a session
+enumeration is a list of what other programs are doing, and this asks for the
+list and puts it on the screen.
+
+**Run it twice**, once with nothing recording and once with something recording,
+a voice call or the Windows Voice Recorder. One run cannot tell an endpoint that
+does not enumerate from a machine with nothing to enumerate, which is also why
+it prints the render endpoint beside the capture one: the render side is known
+to enumerate, so it is the control.
+
+The ABI half of the same section is already answered and did not need this
+machine. `tools/wasapi-oracle.c` prints the vtable slots of
+`IAudioCaptureClient` and its interface identifier, and wine gives those
+correctly because matching the ABI is what wine is for.
 
 ## What to send back
 
