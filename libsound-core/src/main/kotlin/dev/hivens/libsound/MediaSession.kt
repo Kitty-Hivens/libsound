@@ -64,10 +64,10 @@ public data class TrackMetadata(
  *
  * Published as a unit means every field, every time. A field left out of a
  * later state is not carried over from the last one, it is that field's
- * default, and for [loop], [shuffle] and [fullscreen] the default is absent:
- * the desktop is told the player no longer has the property, and the button
- * drawn from it goes away. Build each state from the one before it rather than
- * from scratch.
+ * default, and for [loop], [shuffle] and [fullscreen] the default is absent.
+ * Where the platform can say so, which today is MPRIS, the desktop is told the
+ * player no longer has the property and the button drawn from it goes away.
+ * Build each state from the one before it rather than from scratch.
  */
 public data class SessionState(
     public val playback: PlaybackState = PlaybackState.STOPPED,
@@ -87,9 +87,9 @@ public data class SessionState(
      *
      * Null is not [LoopMode.NONE], and the difference is what a widget draws.
      * A player that publishes this gets a repeat button and is expected to
-     * honour [SessionCommand.SetLoop]; a player that publishes null gets no
-     * button at all, which is the right answer for a radio stream. Answering
-     * NONE instead would offer a control that changes nothing.
+     * honour [SessionCommand.SetLoop]. A player that publishes null gets no
+     * button at all, which is the right answer for a radio stream, where
+     * answering NONE would offer a control that changes nothing.
      */
     public val loop: LoopMode? = null,
     /**
@@ -160,7 +160,14 @@ public sealed interface SessionCommand {
     /** Play the queue in a random order. Arrives only where [SessionState.shuffle] was published. */
     public data class SetShuffle(public val shuffle: Boolean) : SessionCommand
 
-    /** Occupy the whole screen, or stop doing so. Arrives only where [SessionConfig.canSetFullscreen] allows it. */
+    /**
+     * Occupy the whole screen, or stop doing so.
+     *
+     * Needs both halves of the pair: [SessionConfig.canSetFullscreen] says the
+     * desktop may change it, and [SessionState.fullscreen] has to carry a value
+     * for there to be a property to change. A session that claims the first and
+     * publishes neither has no fullscreen on its interface and never sees this.
+     */
     public data class SetFullscreen(public val fullscreen: Boolean) : SessionCommand
 }
 
