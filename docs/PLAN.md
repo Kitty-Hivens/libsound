@@ -33,8 +33,9 @@ every capability already written stays exactly as it is, and the rows below are
 the distance between what exists and what the purpose asks for, not a list of
 mistakes.
 
-The table below is what this plan was written against. Sections 4, 5, 6.1, 6.4
-and 7 have since been built on Linux, and every row of it is now closed there:
+The table below is what this plan was written against. Sections 4, 5, 6.1, 6.4,
+7, 8.1, 8.2 and 8.4 have since been built on Linux, and every row of it is now
+closed there:
 
 | | Then | Now |
 |---|---|---|
@@ -46,7 +47,7 @@ and 7 have since been built on Linux, and every row of it is now closed there:
 | Underruns | Not counted | Counted by the PulseAudio and CoreAudio backends, with `UNDERRUN_COUNT` saying which numbers mean anything. |
 
 What is not built is stated where it belongs: Windows capture in 6.2, the
-processing module in 5.5 and 10, and MPRIS depth in 8.
+processing module in 5.5 and 10, and the two MPRIS interfaces of 8.3.
 
 ---
 
@@ -89,7 +90,7 @@ publishes and reads media sessions.
 |---|---|
 | `AudioSink`, `AudioBackend` | Done. Pulse, WASAPI, CoreAudio, JavaSound fallback. |
 | `VolumeMixer` | Done for both directions on Pulse. Playback only on WASAPI. |
-| `MediaSession`, `SessionReader` | Root and Player interfaces. MPRIS both directions, SMTC and MPNowPlayingInfoCenter publish. |
+| `MediaSession`, `SessionReader` | Root and Player interfaces, including the optional repeat, shuffle and fullscreen properties and the root's two methods. MPRIS both directions, SMTC and MPNowPlayingInfoCenter publish. |
 | Low latency | Done on Pulse, with a real-time writer thread behind an opt-in. Not honoured by the other three, which say so through `LOW_LATENCY`. |
 | Capture | Done on Pulse and JavaSound, including recording one application on its own. Absent on Windows and macOS, for the reasons in 6.2 and 10. |
 | Device and card control | Done on Pulse: device volume and mute, the default, ports, card profiles, virtual and combined sinks, and a sample cache. |
@@ -774,15 +775,15 @@ gets written when a feature needs it.
 
 ## 8. MPRIS depth
 
-The third stated purpose, and the current implementation covers the Root and
-Player interfaces and stops there.
+The third stated purpose. 8.1, 8.2 and 8.4 are built. 8.3 is named and not
+taken.
 
 ### 8.1 Properties a widget already expects
 
 `LoopStatus` and `Shuffle` are ordinary Player properties, they are writable,
-and nothing here publishes them. A desktop widget with repeat and shuffle
-buttons cannot drive this player because the properties it would set do not
-exist on the object.
+and nothing here published them. A desktop widget with repeat and shuffle
+buttons could not drive this player, because the properties it would set did
+not exist on the object.
 
 ```
 LoopStatus   "None" | "Track" | "Playlist"    read and write
@@ -790,19 +791,47 @@ Shuffle      boolean                          read and write
 ```
 
 Both arrive as commands the way `Volume` already does, through
-`Properties.Set`, and both go into `SessionState` so a consumer publishes them
+`Properties.Set`, and both went into `SessionState` so a consumer publishes them
 with everything else.
 
-`Rate` is currently refused with `NotSupported`, which is honest while nothing
-acts on it. Once a consumer can act on it, it becomes a command like the others.
+**They are carried as optional, which this plan did not anticipate.** Both are
+optional in the specification, so a `SessionState` that always carried them
+would put a repeat button on every player this library publishes, including a
+radio stream with nothing to repeat.
+So the fields are nullable: null means there is no such notion and the property
+is absent from the interface, `LoopMode.NONE` means there is a queue and it is
+not repeating, and the two are different answers everywhere the session is
+asked. `GetAll` omits an absent property, `Get` answers `UnknownProperty`, `Set`
+is refused, and the introspection document leaves it out, because that document
+is where a widget decides what to draw. A property that stops being carried is
+announced through the invalidated array of `PropertiesChanged`, which is the
+only thing the protocol offers for a property that is no longer there.
 
-`OpenUri` is currently refused for the same reason and the same path applies.
+Each of the three is behind a capability, which this plan did not ask for and
+section 5.6's own rule does: `SessionState` is shared by three platforms and
+only MPRIS carries any of them, so a consumer publishing a repeat mode on
+Windows was publishing into nothing and had no way to ask first.
+
+`Rate` is still refused with `NotSupported`, which is honest while nothing acts
+on it. Once a consumer can act on it, it becomes a command like the others.
+
+`OpenUri` is still refused for the same reason and the same path applies.
 
 ### 8.2 Root properties
 
 `Fullscreen` and `CanSetFullscreen` are Root properties a video player is
-expected to carry. They are cheap: a boolean in `SessionConfig` and a command
-when a desktop sets it.
+expected to carry, and they were cheap as predicted: a boolean in
+`SessionConfig` for whether the desktop may set it, a nullable boolean in
+`SessionState` for what it currently is, and a command when a desktop sets it.
+The pair appears and disappears together, since whether the desktop may change a
+state is worth nothing beside a state nobody publishes. A change to it is
+announced on the root's own interface rather than the player's, because a
+`PropertiesChanged` names the interface its properties belong to.
+
+`Raise` and `Quit` were answered and dropped, which made `canQuit` and
+`canRaise` decoration: a consumer could claim either and the desktop would draw
+a control that reached nothing. Both now arrive as commands, gated on what the
+configuration advertised.
 
 ### 8.3 The interfaces not yet touched
 
@@ -817,9 +846,13 @@ rather than an oversight.
 
 ### 8.4 On the reading side
 
-`SessionReader` reads Root and Player. The same additions apply in reverse: a
+`SessionReader` reads Root and Player. The same additions applied in reverse: a
 reader that can see another player's `LoopStatus` and `Shuffle` can draw the
-buttons for them, and one that cannot leaves them out.
+buttons for them, and one that cannot leaves them out. `ForeignPlayer` carries
+the three optional properties with the same null, and `canRaise`, `canQuit` and
+`canSetFullscreen` beside them, so a widget asks before it draws rather than
+finding out by being refused. `control` sends all of them, each on the interface
+that owns it.
 
 ---
 
@@ -931,9 +964,10 @@ volume first because a mixer without it is half a mixer, then cards because the
 bluetooth case is the one users hit, then per-application capture because it is
 nearly free once capture exists.
 
-**4. MPRIS depth.** Section 8.1 first and alone if nothing else is done:
-`LoopStatus` and `Shuffle` are two properties standing between this player and
-every desktop widget that draws more than transport buttons.
+**4. MPRIS depth.** Done, except 8.3. Section 8.1 was to come first and alone if
+nothing else was done, because `LoopStatus` and `Shuffle` are two properties
+standing between this player and every desktop widget that draws more than
+transport buttons. 8.2 and 8.4 came with them, for a handful of lines each.
 
 **5. The processing seam.** Cheap once capture has proved the shape twice. The
 contract rules are most of the work and the reference filters are the rest.

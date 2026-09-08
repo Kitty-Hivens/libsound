@@ -1,5 +1,6 @@
 package dev.hivens.libsound.session.mpris
 
+import dev.hivens.libsound.LoopMode
 import dev.hivens.libsound.PlaybackState
 
 /**
@@ -52,6 +53,8 @@ internal object Mpris {
     // -- properties ------------------------------------------------------------
 
     const val PROP_PLAYBACK_STATUS = "PlaybackStatus"
+    const val PROP_LOOP_STATUS = "LoopStatus"
+    const val PROP_SHUFFLE = "Shuffle"
     const val PROP_METADATA = "Metadata"
     const val PROP_POSITION = "Position"
     const val PROP_VOLUME = "Volume"
@@ -72,9 +75,11 @@ internal object Mpris {
     const val PROP_HAS_TRACK_LIST = "HasTrackList"
     const val PROP_SUPPORTED_URI_SCHEMES = "SupportedUriSchemes"
     const val PROP_SUPPORTED_MIME_TYPES = "SupportedMimeTypes"
+    const val PROP_FULLSCREEN = "Fullscreen"
+    const val PROP_CAN_SET_FULLSCREEN = "CanSetFullscreen"
 
     /**
-     * Properties that go into `PropertiesChanged`.
+     * Player properties that go into `PropertiesChanged`.
      *
      * [PROP_POSITION] is deliberately absent, and this is the one rule of the
      * protocol that is easy to break and hard to notice. Position changes
@@ -82,8 +87,10 @@ internal object Mpris {
      * every widget on it redraw at the emission rate. The spec says readers poll
      * it or follow `Seeked`, which is what the signal exists for.
      */
-    val CHANGING_PROPERTIES: List<String> = listOf(
+    val PLAYER_CHANGING_PROPERTIES: List<String> = listOf(
         PROP_PLAYBACK_STATUS,
+        PROP_LOOP_STATUS,
+        PROP_SHUFFLE,
         PROP_METADATA,
         PROP_VOLUME,
         PROP_RATE,
@@ -93,6 +100,17 @@ internal object Mpris {
         PROP_CAN_PAUSE,
         PROP_CAN_SEEK,
     )
+
+    /**
+     * Root properties that go into `PropertiesChanged`, on their own interface.
+     *
+     * A signal names the interface its properties belong to, so a fullscreen
+     * that moved cannot ride along with the player's. [PROP_CAN_SET_FULLSCREEN]
+     * is here for its presence rather than its value: it is fixed by the
+     * session's configuration and it arrives and leaves with
+     * [PROP_FULLSCREEN], so a reader following signals alone has to be told.
+     */
+    val ROOT_CHANGING_PROPERTIES: List<String> = listOf(PROP_FULLSCREEN, PROP_CAN_SET_FULLSCREEN)
 
     /** `PlaybackStatus` is one of exactly these three, capitalised exactly so. */
     fun statusOf(state: PlaybackState): String = when (state) {
@@ -105,6 +123,29 @@ internal object Mpris {
         "Playing" -> PlaybackState.PLAYING
         "Paused" -> PlaybackState.PAUSED
         else -> PlaybackState.STOPPED
+    }
+
+    /** `LoopStatus` is one of exactly these three, capitalised exactly so. */
+    fun loopOf(mode: LoopMode): String = when (mode) {
+        LoopMode.NONE -> "None"
+        LoopMode.TRACK -> "Track"
+        LoopMode.PLAYLIST -> "Playlist"
+    }
+
+    /**
+     * Null for anything that is not one of the three, which is deliberately not
+     * [LoopMode.NONE].
+     *
+     * The property is optional, so a reader meets its absence far more often
+     * than it meets a bad value, and both answers are the same one: this player
+     * has no repeat to draw. Turning either into NONE would put a button on
+     * every player on the bus.
+     */
+    fun modeOf(status: String?): LoopMode? = when (status) {
+        "None" -> LoopMode.NONE
+        "Track" -> LoopMode.TRACK
+        "Playlist" -> LoopMode.PLAYLIST
+        else -> null
     }
 
     /**
@@ -166,11 +207,61 @@ internal object Mpris {
     }
 
     /**
+     * What the object says it carries, for a caller that asked.
+     *
+     * Five of the properties in the specification are optional, and a player
+     * that has no repeat, no shuffle, no screen to fill and no desktop file
+     * must not advertise them: introspection is where a widget finds out which
+     * controls to draw,
+     * and a button whose `Set` comes back as an unknown property is worse than
+     * no button. So the document describes what this session currently answers
+     * rather than what the interface could hold.
+     */
+    fun introspectionXml(
+        loop: Boolean,
+        shuffle: Boolean,
+        fullscreen: Boolean,
+        desktopEntry: Boolean,
+    ): String {
+        val absent = buildSet {
+            if (!loop) add(PROP_LOOP_STATUS)
+            if (!shuffle) add(PROP_SHUFFLE)
+            if (!fullscreen) {
+                add(PROP_FULLSCREEN)
+                add(PROP_CAN_SET_FULLSCREEN)
+            }
+            if (!desktopEntry) add(PROP_DESKTOP_ENTRY)
+        }
+        if (absent.isEmpty()) return INTROSPECTION_TEMPLATE
+        return INTROSPECTION_TEMPLATE.lines()
+            .filterNot { declaredProperty(it) in absent }
+            .joinToString("\n")
+    }
+
+    /**
+     * The property a `<property .../>` line declares, or null for every other
+     * line of the document.
+     *
+     * Read out of the line rather than matched against a copy of it. A copy has
+     * to stay identical character for character, and the day somebody reflows
+     * the template or adds an attribute, the filter stops matching in silence
+     * and every player advertises properties it answers `UnknownProperty` for,
+     * which is the dead button this whole arrangement exists to prevent.
+     */
+    private fun declaredProperty(line: String): String? {
+        val trimmed = line.trim()
+        if (!trimmed.startsWith("<property ")) return null
+        return PROPERTY_NAME.find(trimmed)?.groupValues?.get(1)
+    }
+
+    private val PROPERTY_NAME = Regex("""name="([^"]*)"""")
+
+    /**
      * Hand-written, per the family convention: no generated bindings, and a
      * consumer that probes before subscribing needs an answer or it stalls to
      * its own timeout.
      */
-    val INTROSPECTION_XML: String = """
+    private val INTROSPECTION_TEMPLATE: String = """
         <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
           "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
         <node>
@@ -200,13 +291,14 @@ internal object Mpris {
           </interface>
           <interface name="org.freedesktop.DBus.Peer">
             <method name="Ping"/>
-            <method name="GetMachineId"><arg name="machine_uuid" type="s" direction="out"/></method>
           </interface>
           <interface name="org.mpris.MediaPlayer2">
             <method name="Raise"/>
             <method name="Quit"/>
             <property name="CanQuit" type="b" access="read"/>
             <property name="CanRaise" type="b" access="read"/>
+            <property name="Fullscreen" type="b" access="readwrite"/>
+            <property name="CanSetFullscreen" type="b" access="read"/>
             <property name="HasTrackList" type="b" access="read"/>
             <property name="Identity" type="s" access="read"/>
             <property name="DesktopEntry" type="s" access="read"/>
@@ -228,6 +320,8 @@ internal object Mpris {
             <method name="OpenUri"><arg name="Uri" type="s" direction="in"/></method>
             <signal name="Seeked"><arg name="Position" type="x"/></signal>
             <property name="PlaybackStatus" type="s" access="read"/>
+            <property name="LoopStatus" type="s" access="readwrite"/>
+            <property name="Shuffle" type="b" access="readwrite"/>
             <property name="Rate" type="d" access="readwrite"/>
             <property name="Metadata" type="a{sv}" access="read"/>
             <property name="Volume" type="d" access="readwrite"/>

@@ -6,6 +6,7 @@ import dev.hivens.libsound.dbus.allocateUtf8
 import dev.hivens.libsound.dbus.argType
 import dev.hivens.libsound.dbus.dict
 import dev.hivens.libsound.dbus.next
+import dev.hivens.libsound.dbus.readBoolean
 import dev.hivens.libsound.dbus.readDouble
 import dev.hivens.libsound.dbus.readInt64
 import dev.hivens.libsound.dbus.readString
@@ -90,6 +91,9 @@ class DBusMarshalTest {
                     entries.double("xesam:userRating", 0.75)
                     entries.objectPath("mpris:trackid", "/dev/hivens/libsound/track/1")
                     entries.boolean("xesam:autoRating", true)
+                    // And a false one, because a reader that answers a constant
+                    // passes every assertion a true-only fixture can make.
+                    entries.boolean("libsound:probe", false)
                 }
 
                 val found = mutableMapOf<String, Any?>()
@@ -104,7 +108,7 @@ class DBusMarshalTest {
                         DBusAbi.TYPE_INT64 -> s.readInt64(call, value)
                         DBusAbi.TYPE_DOUBLE -> s.readDouble(call, value)
                         DBusAbi.TYPE_ARRAY -> s.readStringArray(call, value)
-                        DBusAbi.TYPE_BOOLEAN -> true
+                        DBusAbi.TYPE_BOOLEAN -> s.readBoolean(call, value)
                         else -> null
                     }
                     s.next(array)
@@ -115,7 +119,9 @@ class DBusMarshalTest {
                 found["mpris:length"] shouldBe 245_000_000L
                 found["xesam:userRating"] shouldBe 0.75
                 found["mpris:trackid"] shouldBe "/dev/hivens/libsound/track/1"
-                found.size shouldBe 6
+                found["xesam:autoRating"] shouldBe true
+                found["libsound:probe"] shouldBe false
+                found.size shouldBe 7
             } finally {
                 s.handle("dbus_message_unref").invokeExact(message) as Unit
             }
