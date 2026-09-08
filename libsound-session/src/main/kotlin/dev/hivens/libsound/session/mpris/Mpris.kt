@@ -216,23 +216,38 @@ internal object Mpris {
      * no button. So the document describes what this session currently answers
      * rather than what the interface could hold.
      */
-    fun introspectionXml(loop: Boolean, shuffle: Boolean, fullscreen: Boolean): String =
-        INTROSPECTION_TEMPLATE.lines()
-            .filter { line ->
-                when (line.trim()) {
-                    LOOP_PROPERTY -> loop
-                    SHUFFLE_PROPERTY -> shuffle
-                    FULLSCREEN_PROPERTY, CAN_SET_FULLSCREEN_PROPERTY -> fullscreen
-                    else -> true
-                }
+    fun introspectionXml(loop: Boolean, shuffle: Boolean, fullscreen: Boolean): String {
+        val absent = buildSet {
+            if (!loop) add(PROP_LOOP_STATUS)
+            if (!shuffle) add(PROP_SHUFFLE)
+            if (!fullscreen) {
+                add(PROP_FULLSCREEN)
+                add(PROP_CAN_SET_FULLSCREEN)
             }
+        }
+        if (absent.isEmpty()) return INTROSPECTION_TEMPLATE
+        return INTROSPECTION_TEMPLATE.lines()
+            .filterNot { declaredProperty(it) in absent }
             .joinToString("\n")
+    }
 
-    private const val LOOP_PROPERTY = """<property name="LoopStatus" type="s" access="readwrite"/>"""
-    private const val SHUFFLE_PROPERTY = """<property name="Shuffle" type="b" access="readwrite"/>"""
-    private const val FULLSCREEN_PROPERTY = """<property name="Fullscreen" type="b" access="readwrite"/>"""
-    private const val CAN_SET_FULLSCREEN_PROPERTY =
-        """<property name="CanSetFullscreen" type="b" access="read"/>"""
+    /**
+     * The property a `<property .../>` line declares, or null for every other
+     * line of the document.
+     *
+     * Read out of the line rather than matched against a copy of it. A copy has
+     * to stay identical character for character, and the day somebody reflows
+     * the template or adds an attribute, the filter stops matching in silence
+     * and every player advertises properties it answers `UnknownProperty` for,
+     * which is the dead button this whole arrangement exists to prevent.
+     */
+    private fun declaredProperty(line: String): String? {
+        val trimmed = line.trim()
+        if (!trimmed.startsWith("<property ")) return null
+        return PROPERTY_NAME.find(trimmed)?.groupValues?.get(1)
+    }
+
+    private val PROPERTY_NAME = Regex("""name="([^"]*)"""")
 
     /**
      * Hand-written, per the family convention: no generated bindings, and a
