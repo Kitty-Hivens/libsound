@@ -205,18 +205,28 @@ class MprisReaderTest {
     }
 
     @Test
-    fun `a fullscreen that goes away reaches the reader as absent`() {
-        session!!.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = true))
-        awaitPlayer { it.fullscreen == true }
+    fun `the fullscreen pair arrives and leaves together, without a re-read`() {
+        // Read first while there is no fullscreen at all, so the reader's
+        // cached row says the property is absent and may not be set. Every
+        // assertion below is then about what the signal carried: awaitPlayer
+        // would take a fresh GetAll and hide the question.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING))
+        val before = awaitPlayer()
+        before.fullscreen shouldBe null
+        before.canSetFullscreen shouldBe false
 
         val seen = CopyOnWriteArrayList<ForeignPlayer>()
         reader!!.onChange { if (it is PlayerEvent.Changed && it.player.id == busName) seen.add(it.player) }
         // On the root's own interface, which is the half a reader watching only
-        // the player interface would never see.
+        // the player interface would never see. CanSetFullscreen has to ride
+        // along: its value never changes, but it appears with the property it
+        // describes, and a widget told only about Fullscreen would draw a
+        // read-only indicator on a player that accepts being resized.
         session!!.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
-        awaitIn(seen) { it.fullscreen == false }
+        awaitIn(seen) { it.fullscreen == false && it.canSetFullscreen }
+
         session!!.publish(SessionState(playback = PlaybackState.PLAYING))
-        awaitIn(seen) { it.fullscreen == null }
+        awaitIn(seen) { it.fullscreen == null && !it.canSetFullscreen }
     }
 
     @Test

@@ -450,8 +450,21 @@ internal class MprisReader private constructor(
         invalidated: List<String>,
     ): ForeignPlayer = when (iface) {
         Mpris.ROOT_INTERFACE -> previous.copy(
+            // A player without an Identity keeps the name it was listed under,
+            // the same fallback the first read makes, because a row that went
+            // blank is worse than one that never changed.
+            identity = (changed[Mpris.PROP_IDENTITY] as? String)?.takeIf { it.isNotBlank() }
+                ?: previous.identity,
             fullscreen = optional(previous.fullscreen, Mpris.PROP_FULLSCREEN, changed, invalidated),
-            canSetFullscreen = changed[Mpris.PROP_CAN_SET_FULLSCREEN] as? Boolean ?: previous.canSetFullscreen,
+            // The three flags say what the player will accept, and a player is
+            // free to change its mind while it runs. Invalidated means the
+            // property is gone, and a capability nobody advertises is one a
+            // widget must not draw.
+            canRaise = flag(previous.canRaise, Mpris.PROP_CAN_RAISE, changed, invalidated),
+            canQuit = flag(previous.canQuit, Mpris.PROP_CAN_QUIT, changed, invalidated),
+            canSetFullscreen = flag(
+                previous.canSetFullscreen, Mpris.PROP_CAN_SET_FULLSCREEN, changed, invalidated,
+            ),
         )
         else -> previous.copy(
             playback = changed[Mpris.PROP_PLAYBACK_STATUS]?.let { Mpris.stateOf(it as? String) }
@@ -483,6 +496,20 @@ internal class MprisReader private constructor(
         changed: Map<String, Any?>,
         invalidated: List<String>,
     ): Boolean? = if (key in invalidated) null else changed[key] as? Boolean ?: previous
+
+    /**
+     * The same, for a flag that says what the player will accept.
+     *
+     * Absent reads as false rather than as null: these are answers about
+     * whether a control may be drawn, and the specification's own default for
+     * one a player does not publish is that it may not.
+     */
+    private fun flag(
+        previous: Boolean,
+        key: String,
+        changed: Map<String, Any?>,
+        invalidated: List<String>,
+    ): Boolean = if (key in invalidated) false else changed[key] as? Boolean ?: previous
 
     /**
      * Set one property on somebody else's player, on the interface that carries
