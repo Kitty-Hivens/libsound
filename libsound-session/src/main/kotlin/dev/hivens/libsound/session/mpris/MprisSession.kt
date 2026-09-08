@@ -535,6 +535,11 @@ internal class MprisSession private constructor(
             Mpris.PROP_LOOP_STATUS -> before.loop != after.loop
             Mpris.PROP_SHUFFLE -> before.shuffle != after.shuffle
             Mpris.PROP_FULLSCREEN -> before.fullscreen != after.fullscreen
+            // Its value is fixed by the configuration and its presence is not:
+            // it arrives and leaves with the property it describes, and a
+            // reader following signals alone would otherwise hold whatever the
+            // last full read said.
+            Mpris.PROP_CAN_SET_FULLSCREEN -> has(property, before) != has(property, after)
             Mpris.PROP_METADATA -> before.metadata != after.metadata
             Mpris.PROP_VOLUME -> before.volume != after.volume
             Mpris.PROP_RATE -> before.rate != after.rate
