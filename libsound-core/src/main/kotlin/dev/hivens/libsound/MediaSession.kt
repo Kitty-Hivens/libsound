@@ -61,6 +61,13 @@ public data class TrackMetadata(
  * The complete outward state of our own session. Published as a unit: the
  * protocols emit property changes in batches, and a partial update is what
  * produces a widget showing the previous track's art beside the new title.
+ *
+ * Published as a unit means every field, every time. A field left out of a
+ * later state is not carried over from the last one, it is that field's
+ * default, and for [loop], [shuffle] and [fullscreen] the default is absent:
+ * the desktop is told the player no longer has the property, and the button
+ * drawn from it goes away. Build each state from the one before it rather than
+ * from scratch.
  */
 public data class SessionState(
     public val playback: PlaybackState = PlaybackState.STOPPED,

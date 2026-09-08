@@ -85,9 +85,16 @@ public interface SessionReader : AutoCloseable {
      * it, and takes the whole arrangement away by closing its session. Nothing
      * is left behind for it to be broken by.
      *
-     * Returns false when the player is gone or refused. Commands are
-     * fire-and-forget past that: a player is free to ignore one, and no protocol
-     * here reports back that it did.
+     * Returns false when the player is gone or answered with an error, which is
+     * what setting a property it does not carry produces.
+     *
+     * A method is a weaker signal than that, and the difference matters because
+     * the two kinds of command are mixed here. The protocol has a player answer
+     * `Raise`, `Quit` and the transport calls whether or not it acts on them,
+     * so true for one of those means the call was delivered rather than
+     * honoured. [ForeignPlayer.canControl], [ForeignPlayer.canRaise] and
+     * [ForeignPlayer.canQuit] are the player's own answer about what it will
+     * act on, and they are meant to be read before asking.
      */
     public fun control(playerId: String, command: SessionCommand): Boolean
 

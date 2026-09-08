@@ -176,8 +176,10 @@ class MprisSessionTest {
         gdbus("call", "--dest", busName, "--object-path", Mpris.OBJECT_PATH,
             "--method", "${Mpris.ROOT_INTERFACE}.Raise")
         await { SessionCommand.Raise in received }
-        // Ordered on one connection and dispatched on one thread, so Raise
-        // arriving means Quit has already been through the same path.
+        // Each gdbus run is its own connection, so the bus guarantees nothing
+        // about the order of the two. What does: the first call blocks until
+        // the session has answered it, and the answer goes out before a
+        // command would have been fired.
         (SessionCommand.Quit in received) shouldBe false
     }
 
@@ -355,8 +357,9 @@ class MprisSessionTest {
     @Test
     fun `playerctl reads the repeat mode and sets it back`() {
         // The properties section 8 was written for, checked by the tool a
-        // desktop widget behaves like. gdbus proves the message is well formed;
-        // this proves it is the message an MPRIS client goes looking for.
+        // desktop widget behaves like. gdbus proves the message is well
+        // formed, and this proves it is the message an MPRIS client goes
+        // looking for.
         SessionTestGate.require("dbus", commandExists("playerctl"), "playerctl not installed")
         session!!.publish(
             SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.TRACK, shuffle = true),
