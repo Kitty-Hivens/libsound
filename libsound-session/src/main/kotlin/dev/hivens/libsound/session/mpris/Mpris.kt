@@ -185,6 +185,52 @@ internal object Mpris {
         return TRACK_ID_PREFIX + escaped.ifEmpty { "unknown" }
     }
 
+    /**
+     * The path to send for a track somebody else published.
+     *
+     * Their id is already the object path they put on the wire, and it is what
+     * they compare a seek against. Minting one from it would name a track no
+     * player has, so it goes back as it came. An id that is not a path at all
+     * is one a caller made up, and that is what [trackPath] is for.
+     */
+    fun foreignTrackPath(trackId: String?): String =
+        trackId?.takeIf { OBJECT_PATH_PATTERN.matches(it) } ?: trackPath(trackId)
+
+    /**
+     * The identity [trackPath] was given, back out of the path it made.
+     *
+     * Without this a seek from a desktop is dropped by whoever receives it.
+     * `SetPosition` carries the track the sender believed was playing, a
+     * consumer compares it against its own id before accepting the seek, and an
+     * escaped path never equals the id it was made from. So the scrubber in
+     * every media widget moved and nothing happened.
+     *
+     * A path this library did not mint comes back as it stands, because that is
+     * what the player it came from calls the track.
+     */
+    fun trackIdOf(path: String?): String? {
+        if (path == null || path == NO_TRACK) return null
+        if (!path.startsWith(TRACK_ID_PREFIX)) return path
+        val escaped = path.removePrefix(TRACK_ID_PREFIX)
+        val bytes = java.io.ByteArrayOutputStream(escaped.length)
+        var index = 0
+        while (index < escaped.length) {
+            val ch = escaped[index]
+            if (ch != '_') {
+                bytes.write(ch.code)
+                index += 1
+                continue
+            }
+            // Two hex digits, written by trackPath for one byte. Anything else
+            // is not ours however much it looks it, so the path stands as sent.
+            if (index + 2 >= escaped.length) return path
+            val byte = escaped.substring(index + 1, index + 3).toIntOrNull(16) ?: return path
+            bytes.write(byte)
+            index += 3
+        }
+        return bytes.toByteArray().toString(Charsets.UTF_8)
+    }
+
     /** The grammar an object path element has to satisfy, for tests and guards. */
     val OBJECT_PATH_PATTERN: Regex = Regex("^/([A-Za-z0-9_]+)(/[A-Za-z0-9_]+)*$")
 
