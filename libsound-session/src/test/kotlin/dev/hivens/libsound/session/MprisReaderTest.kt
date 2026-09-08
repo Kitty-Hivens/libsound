@@ -1,5 +1,7 @@
 package dev.hivens.libsound.session
 
+import dev.hivens.libsound.ForeignPlayer
+import dev.hivens.libsound.LoopMode
 import dev.hivens.libsound.MediaSession
 import dev.hivens.libsound.PlaybackState
 import dev.hivens.libsound.PlayerEvent
@@ -41,7 +43,11 @@ class MprisReaderTest {
     @BeforeEach
     fun open() {
         session = MprisSession.openOrNull(
-            SessionConfig(applicationName = name, identity = "libsound loop"),
+            SessionConfig(
+                applicationName = name,
+                identity = "libsound loop",
+                canSetFullscreen = true,
+            ),
         )
         SessionTestGate.require("dbus", session != null, "no session bus reachable")
         session!!.onCommand { commands.add(it) }
@@ -117,6 +123,79 @@ class MprisReaderTest {
     }
 
     @Test
+    fun `the reader sees a repeat mode only where the player publishes one`() {
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, canPlay = true))
+        val plain = awaitPlayer()
+        // Null on both sides means the same thing, which is the point of
+        // carrying it rather than defaulting: this player has no repeat and no
+        // shuffle, so a widget draws neither.
+        plain.loop shouldBe null
+        plain.shuffle shouldBe null
+        plain.fullscreen shouldBe null
+
+        session!!.publish(
+            SessionState(
+                playback = PlaybackState.PLAYING,
+                canPlay = true,
+                loop = LoopMode.PLAYLIST,
+                shuffle = true,
+                fullscreen = false,
+            ),
+        )
+        val full = awaitPlayer { it.loop != null }
+        full.loop shouldBe LoopMode.PLAYLIST
+        full.shuffle shouldBe true
+        full.fullscreen shouldBe false
+        full.canSetFullscreen shouldBe true
+    }
+
+    @Test
+    fun `a repeat mode that changes reaches a subscriber without a re-read`() {
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.NONE, shuffle = false),
+        )
+        awaitPlayer()
+
+        val seen = CopyOnWriteArrayList<ForeignPlayer>()
+        reader!!.onChange { if (it is PlayerEvent.Changed && it.player.id == busName) seen.add(it.player) }
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.TRACK, shuffle = true),
+        )
+        awaitIn(seen) { it.loop == LoopMode.TRACK && it.shuffle == true }
+
+        // And a player that stops carrying the property says so through the
+        // invalidated array, which is the only thing the protocol offers for a
+        // property that went away. A reader that ignored it would keep drawing
+        // a repeat button for a player that no longer has one.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING))
+        awaitIn(seen) { it.loop == null && it.shuffle == null }
+    }
+
+    @Test
+    fun `the reader can set a repeat mode on the player it found`() {
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.NONE, shuffle = false),
+        )
+        awaitPlayer()
+
+        reader!!.control(busName, SessionCommand.SetLoop(LoopMode.TRACK)) shouldBe true
+        awaitCommand { it is SessionCommand.SetLoop && it.loop == LoopMode.TRACK }
+
+        reader!!.control(busName, SessionCommand.SetShuffle(true)) shouldBe true
+        awaitCommand { it is SessionCommand.SetShuffle && it.shuffle }
+    }
+
+    @Test
+    fun `setting a property the player does not carry comes back as a refusal`() {
+        // Nothing published a fullscreen state, so the property is not on the
+        // object and the Set answers an error. False rather than a silent
+        // success is what lets a consumer tell the two apart.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING))
+        awaitPlayer()
+        reader!!.control(busName, SessionCommand.SetFullscreen(true)) shouldBe false
+    }
+
+    @Test
     fun `a command to a player that is not there fails rather than hangs`() {
         reader!!.control(
             "org.mpris.MediaPlayer2.NoSuchPlayer${ProcessHandle.current().pid()}",
@@ -124,13 +203,28 @@ class MprisReaderTest {
         ) shouldBe false
     }
 
-    private fun awaitPlayer(): dev.hivens.libsound.ForeignPlayer {
+    /**
+     * The player, once it is on the bus and [predicate] holds of it.
+     *
+     * A publish is queued rather than sent inline, so a read taken straight
+     * after one can still answer with the state before it.
+     */
+    private fun awaitPlayer(predicate: (ForeignPlayer) -> Boolean = { true }): ForeignPlayer {
         val deadline = System.nanoTime() + 10_000_000_000L
         while (System.nanoTime() < deadline) {
-            reader!!.players().firstOrNull { it.id == busName }?.let { return it }
+            reader!!.players().firstOrNull { it.id == busName && predicate(it) }?.let { return it }
             Thread.sleep(100)
         }
-        error("the reader never saw $busName")
+        error("the reader never saw $busName in the state the test was waiting for")
+    }
+
+    private fun awaitIn(seen: List<ForeignPlayer>, predicate: (ForeignPlayer) -> Boolean) {
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (System.nanoTime() < deadline) {
+            if (seen.any(predicate)) return
+            Thread.sleep(50)
+        }
+        error("no change matched; saw $seen")
     }
 
     private fun awaitCommand(predicate: (SessionCommand) -> Boolean) {

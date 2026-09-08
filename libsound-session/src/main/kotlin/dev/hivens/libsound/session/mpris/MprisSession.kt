@@ -23,6 +23,7 @@ import dev.hivens.libsound.dbus.closeContainer
 import dev.hivens.libsound.dbus.dict
 import dev.hivens.libsound.dbus.next
 import dev.hivens.libsound.dbus.openContainer
+import dev.hivens.libsound.dbus.readBoolean
 import dev.hivens.libsound.dbus.readCString
 import dev.hivens.libsound.dbus.readDouble
 import dev.hivens.libsound.dbus.readInt64
@@ -88,16 +89,15 @@ internal class MprisSession private constructor(
         if (closed.get()) return
         val previous = published
         this.state = state
+        published = state
         if (previous == null) {
             // Nothing has been said yet, so everything is news.
-            emitPropertiesChanged(Mpris.CHANGING_PROPERTIES)
-            published = state
+            emitChanged(Mpris.PLAYER_INTERFACE, carried(Mpris.PLAYER_CHANGING_PROPERTIES, state), emptyList(), state)
+            emitChanged(Mpris.ROOT_INTERFACE, carried(Mpris.ROOT_CHANGING_PROPERTIES, state), emptyList(), state)
             return
         }
-        val changed = Mpris.CHANGING_PROPERTIES.filter { differs(it, previous, state) }
-        published = state
-        if (changed.isEmpty()) return
-        emitPropertiesChanged(changed)
+        announce(Mpris.PLAYER_INTERFACE, Mpris.PLAYER_CHANGING_PROPERTIES, previous, state)
+        announce(Mpris.ROOT_INTERFACE, Mpris.ROOT_CHANGING_PROPERTIES, previous, state)
     }
 
     override fun seeked(positionMicros: Long) {
@@ -150,7 +150,7 @@ internal class MprisSession private constructor(
                 true
             }
             Mpris.INTROSPECTABLE_INTERFACE -> {
-                if (member == "Introspect") replyString(message, Mpris.INTROSPECTION_XML)
+                if (member == "Introspect") replyIntrospection(message)
                 else replyUnknownMethod(message, iface, member)
                 true
             }
@@ -173,13 +173,21 @@ internal class MprisSession private constructor(
     }
 
     private fun handleRootMethod(message: MemorySegment, member: String) {
-        when (member) {
-            // Both are advertised as unsupported by default through CanQuit and
-            // CanRaise, and a desktop that calls them anyway gets an answer
-            // rather than silence.
-            "Raise", "Quit" -> replyEmpty(message)
-            else -> replyUnknownMethod(message, Mpris.ROOT_INTERFACE, member)
+        val command: SessionCommand? = when (member) {
+            // Each is gated on what the configuration advertised. The spec says
+            // a call made where CanRaise or CanQuit is false has no effect, and
+            // a consumer that claimed neither should not be handed a command it
+            // has no reason to expect. Answered either way: silence is a shell
+            // that hangs rather than a call that was ignored.
+            "Raise" -> SessionCommand.Raise.takeIf { config.canRaise }
+            "Quit" -> SessionCommand.Quit.takeIf { config.canQuit }
+            else -> {
+                replyUnknownMethod(message, Mpris.ROOT_INTERFACE, member)
+                return
+            }
         }
+        replyEmpty(message)
+        command?.let { fire(it) }
     }
 
     private fun handlePlayerMethod(message: MemorySegment, member: String) {
@@ -249,7 +257,7 @@ internal class MprisSession private constructor(
             val reply = newReturn(message) ?: return
             val replyIter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(reply, replyIter) as Unit
-            if (!appendProperty(call, replyIter, iface, property)) {
+            if (!appendProperty(call, replyIter, iface, property, state)) {
                 symbols.handle("dbus_message_unref").invokeExact(reply) as Unit
                 replyError(message, ERROR_UNKNOWN_PROPERTY, "No such property $iface.$property")
                 return
@@ -266,6 +274,12 @@ internal class MprisSession private constructor(
                 return
             }
             val iface = symbols.readString(call, iter)
+            // One snapshot for both halves of the answer. The list is filtered
+            // by what the state carries and the values are read from the same
+            // state, because a publish landing between the two would leave a
+            // dictionary entry with a key and no value, which is a malformed
+            // message rather than a missing field.
+            val current = state
             val names = when (iface) {
                 Mpris.ROOT_INTERFACE -> ROOT_PROPERTIES
                 Mpris.PLAYER_INTERFACE -> PLAYER_PROPERTIES
@@ -275,12 +289,12 @@ internal class MprisSession private constructor(
                     // "nothing" as its answer.
                     emptyList()
                 }
-            }
+            }.filter { has(it, current) }
             val reply = newReturn(message) ?: return
             val replyIter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(reply, replyIter) as Unit
             symbols.dict(call, replyIter) { entries ->
-                names.forEach { writeProperty(call, entries, iface ?: "", it) }
+                names.forEach { writeProperty(call, entries, iface ?: "", it, current) }
             }
             bus.send(reply)
         }
@@ -293,12 +307,24 @@ internal class MprisSession private constructor(
                 replyError(message, ERROR_INVALID_ARGS, "Set takes an interface, a property and a value")
                 return
             }
-            symbols.readString(call, iter)
+            val iface = symbols.readString(call, iter)
             symbols.next(iter)
             val property = symbols.readString(call, iter)
             symbols.next(iter)
             val value = symbols.recurse(call, iter)
+            val current = state
 
+            // The interface is read rather than skipped now that both of them
+            // carry a writable property: Fullscreen belongs to the root and
+            // Volume to the player, and a Set aimed at the wrong one is asking
+            // for something that is not there. The second half of the same
+            // question is whether this session carries the property at all,
+            // since the optional four are absent until a consumer publishes
+            // them.
+            if (property == null || property !in writableOn(iface) || !has(property, current)) {
+                replyError(message, ERROR_UNKNOWN_PROPERTY, "No writable property ${iface ?: "?"}.$property")
+                return
+            }
             when (property) {
                 Mpris.PROP_VOLUME -> {
                     val volume = symbols.readDouble(call, value)
@@ -308,6 +334,41 @@ internal class MprisSession private constructor(
                     }
                     replyEmpty(message)
                     fire(SessionCommand.SetVolume(volume.coerceIn(0.0, 1.0)))
+                }
+                Mpris.PROP_LOOP_STATUS -> {
+                    val mode = Mpris.modeOf(symbols.readString(call, value))
+                    if (mode == null) {
+                        replyError(message, ERROR_INVALID_ARGS, "LoopStatus is None, Track or Playlist")
+                        return
+                    }
+                    replyEmpty(message)
+                    fire(SessionCommand.SetLoop(mode))
+                }
+                Mpris.PROP_SHUFFLE -> {
+                    val shuffle = symbols.readBoolean(call, value)
+                    if (shuffle == null) {
+                        replyError(message, ERROR_INVALID_ARGS, "Shuffle is a boolean")
+                        return
+                    }
+                    replyEmpty(message)
+                    fire(SessionCommand.SetShuffle(shuffle))
+                }
+                Mpris.PROP_FULLSCREEN -> {
+                    // The property is readable wherever there is a screen state
+                    // to report and writable only where the consumer said the
+                    // desktop may change it, which is what CanSetFullscreen
+                    // advertises beside it.
+                    if (!config.canSetFullscreen) {
+                        replyError(message, ERROR_NOT_SUPPORTED, "CanSetFullscreen is false")
+                        return
+                    }
+                    val fullscreen = symbols.readBoolean(call, value)
+                    if (fullscreen == null) {
+                        replyError(message, ERROR_INVALID_ARGS, "Fullscreen is a boolean")
+                        return
+                    }
+                    replyEmpty(message)
+                    fire(SessionCommand.SetFullscreen(fullscreen))
                 }
                 // Rate is writable per the spec and refused here, because the
                 // library reports playback rate and does not set it -- saying so
@@ -321,14 +382,28 @@ internal class MprisSession private constructor(
     }
 
     /** Writes the variant for one property, or returns false when there is no such property. */
-    private fun appendProperty(call: Arena, parent: MemorySegment, iface: String, name: String): Boolean {
-        val current = state
+    private fun appendProperty(
+        call: Arena,
+        parent: MemorySegment,
+        iface: String,
+        name: String,
+        current: SessionState,
+    ): Boolean {
         when (iface) {
             Mpris.ROOT_INTERFACE -> when (name) {
                 Mpris.PROP_IDENTITY -> symbols.appendVariantString(call, parent, config.identity)
                 Mpris.PROP_DESKTOP_ENTRY -> symbols.appendVariantString(call, parent, config.desktopEntry ?: "")
                 Mpris.PROP_CAN_QUIT -> symbols.appendVariantBoolean(call, parent, config.canQuit)
                 Mpris.PROP_CAN_RAISE -> symbols.appendVariantBoolean(call, parent, config.canRaise)
+                // Both halves of the pair answer only where there is a screen
+                // state to report, so a player with no window advertises
+                // neither rather than advertising that it cannot be resized.
+                Mpris.PROP_FULLSCREEN ->
+                    symbols.appendVariantBoolean(call, parent, current.fullscreen ?: return false)
+                Mpris.PROP_CAN_SET_FULLSCREEN -> {
+                    if (current.fullscreen == null) return false
+                    symbols.appendVariantBoolean(call, parent, config.canSetFullscreen)
+                }
                 Mpris.PROP_HAS_TRACK_LIST -> symbols.appendVariantBoolean(call, parent, false)
                 Mpris.PROP_SUPPORTED_URI_SCHEMES ->
                     symbols.appendVariantStringArray(call, parent, emptyList())
@@ -339,6 +414,10 @@ internal class MprisSession private constructor(
             Mpris.PLAYER_INTERFACE -> when (name) {
                 Mpris.PROP_PLAYBACK_STATUS ->
                     symbols.appendVariantString(call, parent, Mpris.statusOf(current.playback))
+                Mpris.PROP_LOOP_STATUS ->
+                    symbols.appendVariantString(call, parent, Mpris.loopOf(current.loop ?: return false))
+                Mpris.PROP_SHUFFLE ->
+                    symbols.appendVariantBoolean(call, parent, current.shuffle ?: return false)
                 Mpris.PROP_METADATA -> symbols.variant(call, parent, "a{sv}") { inner ->
                     symbols.dict(call, inner) { entries -> writeMetadata(entries, current) }
                 }
@@ -363,8 +442,54 @@ internal class MprisSession private constructor(
         return true
     }
 
-    private fun writeProperty(call: Arena, entries: DictWriter, iface: String, name: String) {
-        entries.raw(name) { parent -> appendProperty(call, parent, iface, name) }
+    private fun writeProperty(
+        call: Arena,
+        entries: DictWriter,
+        iface: String,
+        name: String,
+        current: SessionState,
+    ) {
+        entries.raw(name) { parent -> appendProperty(call, parent, iface, name, current) }
+    }
+
+    /**
+     * Whether the session currently carries [property] at all.
+     *
+     * Four properties in the specification are optional, and a consumer that
+     * published nothing for them has none: a widget draws a repeat button for a
+     * player that has LoopStatus and leaves it out for one that does not, so
+     * answering "None" would put a dead button on every player this library
+     * publishes. The answer has to be the same one everywhere, which is why
+     * GetAll, Get, Set, the change signal and the introspection all ask here.
+     */
+    private fun has(property: String, current: SessionState): Boolean = when (property) {
+        Mpris.PROP_LOOP_STATUS -> current.loop != null
+        Mpris.PROP_SHUFFLE -> current.shuffle != null
+        Mpris.PROP_FULLSCREEN, Mpris.PROP_CAN_SET_FULLSCREEN -> current.fullscreen != null
+        else -> true
+    }
+
+    private fun carried(properties: List<String>, current: SessionState): List<String> =
+        properties.filter { has(it, current) }
+
+    /** The properties [iface] accepts a `Set` for, whether or not this session carries them. */
+    private fun writableOn(iface: String?): Set<String> = when (iface) {
+        Mpris.ROOT_INTERFACE -> setOf(Mpris.PROP_FULLSCREEN)
+        Mpris.PLAYER_INTERFACE ->
+            setOf(Mpris.PROP_VOLUME, Mpris.PROP_RATE, Mpris.PROP_LOOP_STATUS, Mpris.PROP_SHUFFLE)
+        else -> emptySet()
+    }
+
+    private fun replyIntrospection(message: MemorySegment) {
+        val current = state
+        replyString(
+            message,
+            Mpris.introspectionXml(
+                loop = current.loop != null,
+                shuffle = current.shuffle != null,
+                fullscreen = current.fullscreen != null,
+            ),
+        )
     }
 
     private fun writeMetadata(entries: DictWriter, current: SessionState) {
@@ -385,6 +510,9 @@ internal class MprisSession private constructor(
     private fun differs(property: String, before: SessionState, after: SessionState): Boolean =
         when (property) {
             Mpris.PROP_PLAYBACK_STATUS -> before.playback != after.playback
+            Mpris.PROP_LOOP_STATUS -> before.loop != after.loop
+            Mpris.PROP_SHUFFLE -> before.shuffle != after.shuffle
+            Mpris.PROP_FULLSCREEN -> before.fullscreen != after.fullscreen
             Mpris.PROP_METADATA -> before.metadata != after.metadata
             Mpris.PROP_VOLUME -> before.volume != after.volume
             Mpris.PROP_RATE -> before.rate != after.rate
@@ -396,20 +524,50 @@ internal class MprisSession private constructor(
             else -> false
         }
 
-    private fun emitPropertiesChanged(names: List<String>) {
+    /**
+     * Announce what moved on one interface.
+     *
+     * A signal names the interface its properties belong to, so the root's
+     * Fullscreen and the player's PlaybackStatus cannot travel together however
+     * closely they changed.
+     */
+    private fun announce(
+        iface: String,
+        properties: List<String>,
+        previous: SessionState,
+        current: SessionState,
+    ) {
+        val changed = properties.filter { has(it, current) && differs(it, previous, current) }
+        // A property the player has stopped carrying cannot be given a new
+        // value, so it goes in the invalidated array instead. That is what the
+        // array is for: the reader is told to look again, and finds it is no
+        // longer there.
+        val invalidated = properties.filter { has(it, previous) && !has(it, current) }
+        emitChanged(iface, changed, invalidated, current)
+    }
+
+    private fun emitChanged(
+        iface: String,
+        changed: List<String>,
+        invalidated: List<String>,
+        current: SessionState,
+    ) {
+        if (changed.isEmpty() && invalidated.isEmpty()) return
         Arena.ofConfined().use { call ->
             val signal = newSignal(call, Mpris.PROPERTIES_INTERFACE, "PropertiesChanged") ?: return
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(signal, iter) as Unit
-            symbols.appendString(call, iter, DBusAbi.TYPE_STRING, Mpris.PLAYER_INTERFACE)
+            symbols.appendString(call, iter, DBusAbi.TYPE_STRING, iface)
             symbols.dict(call, iter) { entries ->
-                names.forEach { writeProperty(call, entries, Mpris.PLAYER_INTERFACE, it) }
+                changed.forEach { writeProperty(call, entries, iface, it, current) }
             }
-            // The invalidated array, empty. It is not optional: the signature is
-            // (sa{sv}as) and a reader iterating three arguments finds two.
-            val invalidated = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
-            symbols.openContainer(iter, DBusAbi.TYPE_ARRAY, call.allocateUtf8("s"), invalidated)
-            symbols.closeContainer(iter, invalidated)
+            // The invalidated array, usually empty. It is not optional even
+            // then: the signature is (sa{sv}as) and a reader iterating three
+            // arguments finds two.
+            val names = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
+            symbols.openContainer(iter, DBusAbi.TYPE_ARRAY, call.allocateUtf8("s"), names)
+            invalidated.forEach { symbols.appendString(call, names, DBusAbi.TYPE_STRING, it) }
+            symbols.closeContainer(iter, names)
             bus.send(signal)
         }
     }
@@ -486,10 +644,12 @@ internal class MprisSession private constructor(
             Mpris.PROP_CAN_QUIT, Mpris.PROP_CAN_RAISE, Mpris.PROP_HAS_TRACK_LIST,
             Mpris.PROP_IDENTITY, Mpris.PROP_DESKTOP_ENTRY,
             Mpris.PROP_SUPPORTED_URI_SCHEMES, Mpris.PROP_SUPPORTED_MIME_TYPES,
+            Mpris.PROP_FULLSCREEN, Mpris.PROP_CAN_SET_FULLSCREEN,
         )
 
         private val PLAYER_PROPERTIES = listOf(
-            Mpris.PROP_PLAYBACK_STATUS, Mpris.PROP_METADATA, Mpris.PROP_POSITION,
+            Mpris.PROP_PLAYBACK_STATUS, Mpris.PROP_LOOP_STATUS, Mpris.PROP_SHUFFLE,
+            Mpris.PROP_METADATA, Mpris.PROP_POSITION,
             Mpris.PROP_VOLUME, Mpris.PROP_RATE, Mpris.PROP_MINIMUM_RATE, Mpris.PROP_MAXIMUM_RATE,
             Mpris.PROP_CAN_GO_NEXT, Mpris.PROP_CAN_GO_PREVIOUS, Mpris.PROP_CAN_PLAY,
             Mpris.PROP_CAN_PAUSE, Mpris.PROP_CAN_SEEK, Mpris.PROP_CAN_CONTROL,

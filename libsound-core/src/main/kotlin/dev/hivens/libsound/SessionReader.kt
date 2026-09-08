@@ -24,6 +24,26 @@ public data class ForeignPlayer(
     public val canControl: Boolean = false,
     public val canGoNext: Boolean = false,
     public val canGoPrevious: Boolean = false,
+    /**
+     * What the player does at the end of the track, or null where it publishes
+     * no such property.
+     *
+     * The reading half of [SessionState.loop], and null means the same thing on
+     * both sides: this player has no repeat to draw. Most players in the wild
+     * omit it, so a widget that assumed a value would draw a button for every
+     * one of them.
+     */
+    public val loop: LoopMode? = null,
+    /** Whether the player is shuffling, or null where it publishes no such property. */
+    public val shuffle: Boolean? = null,
+    /** Whether the player fills the screen, or null where it publishes no such property. */
+    public val fullscreen: Boolean? = null,
+    /** Whether the player accepts being asked to show its window. */
+    public val canRaise: Boolean = false,
+    /** Whether the player accepts being asked to exit. */
+    public val canQuit: Boolean = false,
+    /** Whether the player accepts being put in and out of fullscreen. */
+    public val canSetFullscreen: Boolean = false,
 )
 
 /**

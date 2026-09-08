@@ -1,5 +1,6 @@
 package dev.hivens.libsound.session
 
+import dev.hivens.libsound.LoopMode
 import dev.hivens.libsound.PlaybackState
 import dev.hivens.libsound.session.mpris.Mpris
 import io.kotest.matchers.shouldBe
@@ -28,6 +29,23 @@ class MprisNamesTest {
         // crashing a launcher over.
         Mpris.stateOf("playing") shouldBe PlaybackState.STOPPED
         Mpris.stateOf(null) shouldBe PlaybackState.STOPPED
+    }
+
+    @Test
+    fun `loop status is capitalised the way the spec spells it`() {
+        Mpris.loopOf(LoopMode.NONE) shouldBe "None"
+        Mpris.loopOf(LoopMode.TRACK) shouldBe "Track"
+        Mpris.loopOf(LoopMode.PLAYLIST) shouldBe "Playlist"
+        Mpris.modeOf("None") shouldBe LoopMode.NONE
+        Mpris.modeOf("Track") shouldBe LoopMode.TRACK
+        Mpris.modeOf("Playlist") shouldBe LoopMode.PLAYLIST
+        // Null, not NONE, and the difference is a button on the screen. The
+        // property is optional, so absence is the common case, and reading it
+        // as "no repeat" would draw a repeat control for every player that
+        // never published one.
+        Mpris.modeOf(null) shouldBe null
+        Mpris.modeOf("none") shouldBe null
+        Mpris.modeOf("Album") shouldBe null
     }
 
     @Test
@@ -99,22 +117,52 @@ class MprisNamesTest {
         // notice: Position changes continuously, so emitting it as a property
         // change floods the bus and makes every widget redraw at that rate.
         // Readers poll it or follow Seeked.
-        (Mpris.PROP_POSITION in Mpris.CHANGING_PROPERTIES) shouldBe false
-        (Mpris.PROP_PLAYBACK_STATUS in Mpris.CHANGING_PROPERTIES) shouldBe true
-        (Mpris.PROP_METADATA in Mpris.CHANGING_PROPERTIES) shouldBe true
+        (Mpris.PROP_POSITION in Mpris.PLAYER_CHANGING_PROPERTIES) shouldBe false
+        (Mpris.PROP_PLAYBACK_STATUS in Mpris.PLAYER_CHANGING_PROPERTIES) shouldBe true
+        (Mpris.PROP_METADATA in Mpris.PLAYER_CHANGING_PROPERTIES) shouldBe true
+        (Mpris.PROP_LOOP_STATUS in Mpris.PLAYER_CHANGING_PROPERTIES) shouldBe true
+        (Mpris.PROP_SHUFFLE in Mpris.PLAYER_CHANGING_PROPERTIES) shouldBe true
+        // Fullscreen belongs to the root, and a signal names the interface its
+        // properties came from: announced with the player's, it would reach a
+        // reader as a player property nobody has.
+        (Mpris.PROP_FULLSCREEN in Mpris.PLAYER_CHANGING_PROPERTIES) shouldBe false
+        (Mpris.PROP_FULLSCREEN in Mpris.ROOT_CHANGING_PROPERTIES) shouldBe true
     }
 
     @Test
     fun `the introspection xml names every method the spec requires`() {
-        val xml = Mpris.INTROSPECTION_XML
+        val xml = Mpris.introspectionXml(loop = true, shuffle = true, fullscreen = true)
         listOf(
             "Next", "Previous", "Pause", "PlayPause", "Stop", "Play",
             "Seek", "SetPosition", "OpenUri", "Seeked",
             "PlaybackStatus", "Metadata", "Position", "Volume", "CanControl",
+            "LoopStatus", "Shuffle", "Fullscreen", "CanSetFullscreen",
             "Raise", "Quit", "Identity", "DesktopEntry",
         ).forEach { (it in xml) shouldBe true }
         // The object path is fixed by the spec, and a player that answers on
         // another one is a player nobody finds.
         Mpris.OBJECT_PATH shouldBe "/org/mpris/MediaPlayer2"
+    }
+
+    @Test
+    fun `an optional property a player does not carry is not advertised`() {
+        // Introspection is where a widget finds out which controls to draw, so
+        // a document listing LoopStatus for a player whose Get answers
+        // UnknownProperty is a repeat button that does nothing.
+        val bare = Mpris.introspectionXml(loop = false, shuffle = false, fullscreen = false)
+        ("LoopStatus" in bare) shouldBe false
+        ("Shuffle" in bare) shouldBe false
+        ("Fullscreen" in bare) shouldBe false
+        ("CanSetFullscreen" in bare) shouldBe false
+        // What is not optional stays, and the document is still one node.
+        ("PlaybackStatus" in bare) shouldBe true
+        ("CanRaise" in bare) shouldBe true
+        bare.trimEnd().endsWith("</node>") shouldBe true
+
+        // Each is dropped on its own: a player that repeats but does not
+        // shuffle is an ordinary player.
+        val loopOnly = Mpris.introspectionXml(loop = true, shuffle = false, fullscreen = false)
+        ("LoopStatus" in loopOnly) shouldBe true
+        ("Shuffle" in loopOnly) shouldBe false
     }
 }
