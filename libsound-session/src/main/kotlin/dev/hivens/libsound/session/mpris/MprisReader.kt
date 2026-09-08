@@ -32,6 +32,7 @@ import java.lang.foreign.MemorySegment
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -166,7 +167,11 @@ internal class MprisReader private constructor(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         listeners.clear()
-        dispatch.shutdownNow()
+        // Waited for, not merely signalled. The dispatch thread reads a player
+        // it has just seen appear, and that read goes through downcall handles
+        // bound to the arena bus.close() is about to free.
+        dispatch.shutdown()
+        runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         bus.close()
     }
 
@@ -221,12 +226,14 @@ internal class MprisReader private constructor(
                 // A fresh player. Reading it here would block the bus thread on
                 // a round trip to somebody who has only just arrived, so the
                 // read happens on the dispatch thread with everything else.
-                dispatch.execute {
-                    read(name)?.let { player ->
-                        synchronized(known) { known[name] = player }
-                        emit(PlayerEvent.Appeared(player))
+                runCatching {
+                    dispatch.execute {
+                        read(name)?.let { player ->
+                            synchronized(known) { known[name] = player }
+                            emit(PlayerEvent.Appeared(player))
+                        }
                     }
-                }
+                }.onFailure { log.debug("player appearance dropped, the reader is closing") }
             }
         }
     }
@@ -345,9 +352,8 @@ internal class MprisReader private constructor(
             canGoNext = player[Mpris.PROP_CAN_GO_NEXT] as? Boolean ?: false,
             canGoPrevious = player[Mpris.PROP_CAN_GO_PREVIOUS] as? Boolean ?: false,
             // Null rather than a default, because these are optional in the
-            // specification and most players on a bus carry none of them: a
-            // widget reading false here would draw a shuffle button for every
-            // one of them.
+            // specification: a widget reading a missing property as false would
+            // draw a shuffle button for a player that never offered one.
             loop = Mpris.modeOf(player[Mpris.PROP_LOOP_STATUS] as? String),
             shuffle = player[Mpris.PROP_SHUFFLE] as? Boolean,
             fullscreen = root[Mpris.PROP_FULLSCREEN] as? Boolean,
@@ -477,10 +483,16 @@ internal class MprisReader private constructor(
             canControl = changed[Mpris.PROP_CAN_CONTROL] as? Boolean ?: previous.canControl,
             canGoNext = changed[Mpris.PROP_CAN_GO_NEXT] as? Boolean ?: previous.canGoNext,
             canGoPrevious = changed[Mpris.PROP_CAN_GO_PREVIOUS] as? Boolean ?: previous.canGoPrevious,
-            loop = if (Mpris.PROP_LOOP_STATUS in invalidated) {
-                null
-            } else {
-                Mpris.modeOf(changed[Mpris.PROP_LOOP_STATUS] as? String) ?: previous.loop
+            // Mentioned in the signal means the answer comes from the signal,
+            // including when it is a mode this library does not model: reading
+            // that as "unchanged" leaves players() and this disagreeing about
+            // the same player, and a widget's repeat button appearing or
+            // vanishing depending on which of the two last spoke.
+            loop = when {
+                Mpris.PROP_LOOP_STATUS in invalidated -> null
+                Mpris.PROP_LOOP_STATUS in changed ->
+                    Mpris.modeOf(changed[Mpris.PROP_LOOP_STATUS] as? String)
+                else -> previous.loop
             },
             shuffle = optional(previous.shuffle, Mpris.PROP_SHUFFLE, changed, invalidated),
         )
@@ -495,7 +507,11 @@ internal class MprisReader private constructor(
         key: String,
         changed: Map<String, Any?>,
         invalidated: List<String>,
-    ): Boolean? = if (key in invalidated) null else changed[key] as? Boolean ?: previous
+    ): Boolean? = when {
+        key in invalidated -> null
+        key in changed -> changed[key] as? Boolean
+        else -> previous
+    }
 
     /**
      * The same, for a flag that says what the player will accept.
@@ -509,7 +525,11 @@ internal class MprisReader private constructor(
         key: String,
         changed: Map<String, Any?>,
         invalidated: List<String>,
-    ): Boolean = if (key in invalidated) false else changed[key] as? Boolean ?: previous
+    ): Boolean = when {
+        key in invalidated -> false
+        key in changed -> changed[key] as? Boolean ?: false
+        else -> previous
+    }
 
     /**
      * Set one property on somebody else's player, on the interface that carries
