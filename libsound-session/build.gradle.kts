@@ -48,6 +48,20 @@ tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
+// The half of the session nothing can assert: whether a desktop drew it, and
+// whether a key on a keyboard reached this process. The audio module has the
+// same task for the same reason, and this is the layer above it.
+//
+// In the test source set, so it stays out of the published jar.
+tasks.register<JavaExec>("sessionSmoke") {
+    group = "verification"
+    description = "Publish a session and hold it up for a person to look at."
+    mainClass.set("dev.hivens.libsound.session.smoke.SessionSmokeCheckKt")
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    standardInput = System.`in`
+}
+
 mavenPublishing {
     // What is in the artifact, not what is planned for it -- which is why this
     // line moved when SMTC and MPNowPlayingInfoCenter landed. Naming only MPRIS

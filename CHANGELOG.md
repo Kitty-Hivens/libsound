@@ -58,6 +58,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   published a repeat mode on Windows was publishing into nothing, and the guide
   told it to ask a capability that did not exist.
 
+- `tools/wasapi-capture-probe.c`, which asks the one question the Windows half
+  of capture waits on: whether a session manager activated on a capture endpoint
+  enumerates anything. It prints the render endpoint beside it as a control,
+  because a machine with nothing recording and an endpoint that cannot be
+  enumerated look identical in a single run.
+- `:libsound-session:sessionSmoke`, the session's own hand check. A suite can
+  prove a message is well formed and cannot prove a desktop drew it, that the
+  artwork arrived, or that a key on a keyboard reached the process, which is
+  what the SMTC row has been waiting on.
+- The vtable slots of `IAudioCaptureClient` and its interface identifier, in
+  `tools/wasapi-oracle.c`. Half of an open question in section 6.2 of the plan,
+  and the half that never needed a Windows machine.
+
 ### Fixed
 - A seek sent by a desktop is accepted rather than dropped as stale.
   `mpris:trackid` went out escaped into an object path and came back raw, and

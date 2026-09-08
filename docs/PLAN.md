@@ -553,10 +553,13 @@ says a session manager activated on a capture endpoint enumerates that
 endpoint's sessions. Nothing here has measured it, and the answer decides
 whether the Windows half of section 5.3 exists at all.
 
-**What are `IAudioCaptureClient`'s slots?** It is the neighbour of
-`IAudioRenderClient`, whose slots are already in `WasapiAbi`. Its two methods
-are `GetBuffer` and `ReleaseBuffer` with a different shape: the capture side
-hands back a frame count, flags and two timestamps.
+**What are `IAudioCaptureClient`'s slots? Answered.** `tools/wasapi-oracle.c`
+prints them, and this never needed a Windows machine: wine reimplements the same
+vtable, which is the one thing it is a good oracle for. `GetBuffer` is slot 3,
+`ReleaseBuffer` 4, `GetNextPacketSize` 5, six slots in the table, and the
+interface identifier is printed beside them. The shape differs from the render
+side as expected: the capture side hands back a frame count, flags and two
+timestamps where the render side takes a count.
 
 Additions once both are answered:
 
@@ -934,7 +937,7 @@ seam is public so somebody else's project can go further.
 | Where does `libsound-audio` get a D-Bus connection for RealtimeKit? | 4.5 | **Answered.** The D-Bus layer moved to `libsound-dbus`, which both modules depend on. Its types are public because a Kotlin `internal` cannot cross a module boundary, and fenced behind an opt-in marker that carries what `internal` used to. |
 | Does `ADJUST_LATENCY` behave the same through `pipewire-pulse` as on PulseAudio? | 4.3 | **Measured on pipewire-pulse 1.6.8.** The request is honoured and shortened: 200 ms granted 150, 40 granted 30, 10 granted 16, which was that machine's `clock.quantum` and the floor under everything. What a native PulseAudio grants is still unmeasured, and the sink reports what it got either way. |
 | What is the lowest profile that survives on an ordinary desktop? | 4.2 | **Still open, and now answerable by a consumer rather than by this plan.** `underrunCount` is what a soak would read, and the granted number is logged at open. |
-| Does `IAudioSessionManager2` enumerate capture sessions? | 6.2 | **Still open.** Windows capture waits on it, and on `IAudioCaptureClient`'s slots coming from an oracle. |
+| Does `IAudioSessionManager2` enumerate capture sessions? | 6.2 | **Still open, and now askable.** `tools/wasapi-capture-probe.c` puts the question to a real machine, printing the render endpoint beside the capture one so a quiet machine is not mistaken for an endpoint that does not enumerate. `IAudioCaptureClient`'s slots are no longer part of this: the oracle prints them and wine answers correctly. |
 | Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | **Answered, in the negative.** `pa_stream_set_monitor_stream` narrows a monitor to one sink input because a monitor carries everything its sink plays. A real source has no equivalent call, so the only level available for a capture row is the device's own, shared by everything reading it. A row that moved because somebody else was talking would be worse than no meter, so the capability is absent. |
 | Where does the processing module live? | 5.5 | **Still open.** The rules and the fixture are in `libsound-core`, so either answer stays available. |
 | Does `streams()` returning both directions break a consumer badly enough to warrant a separate call? | 5.3 | **Answered: no.** It returns both, rows carry a direction, and stream ids now name the facility they came from, because a sink input and a source output can hold the same index at once. |
