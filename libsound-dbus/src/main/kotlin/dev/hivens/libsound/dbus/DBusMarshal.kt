@@ -254,6 +254,14 @@ fun DBusSymbols.readInt32(call: Arena, iter: MemorySegment): Int? {
     return out.get(ValueLayout.JAVA_INT, 0)
 }
 
+/** `b` is four bytes at the cursor, the same width the append side writes. */
+fun DBusSymbols.readBoolean(call: Arena, iter: MemorySegment): Boolean? {
+    if (argType(iter) != DBusAbi.TYPE_BOOLEAN) return null
+    val out = call.allocate(ValueLayout.JAVA_INT)
+    handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
+    return out.get(ValueLayout.JAVA_INT, 0) != 0
+}
+
 fun DBusSymbols.readDouble(call: Arena, iter: MemorySegment): Double? {
     if (argType(iter) != DBusAbi.TYPE_DOUBLE) return null
     val out = call.allocate(ValueLayout.JAVA_DOUBLE)
