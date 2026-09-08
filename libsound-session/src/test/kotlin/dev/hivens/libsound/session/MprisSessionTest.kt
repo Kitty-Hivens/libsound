@@ -286,8 +286,8 @@ class MprisSessionTest {
 
     @Test
     fun `quit reaches a player that claimed it, and fullscreen does not without permission`() {
-        val quitter = openWith("Quit") { it ->
-            SessionConfig(applicationName = it, canQuit = true, canSetFullscreen = false)
+        val (player, quitter) = openWith("Quit", listen = true) { app ->
+            SessionConfig(applicationName = app, canQuit = true, canSetFullscreen = false)
         }
         call(quitter, Mpris.ROOT_INTERFACE, "Quit")
         await { SessionCommand.Quit in received }
@@ -296,7 +296,7 @@ class MprisSessionTest {
         // the property is on the interface and readable; what the desktop may
         // not do is change it, and saying so is better than accepting a value
         // nothing acts on.
-        others.first().publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
+        player.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
         val out = gdbus(
             "call", "--dest", quitter, "--object-path", Mpris.OBJECT_PATH,
             "--method", "org.freedesktop.DBus.Properties.Set",
@@ -324,6 +324,32 @@ class MprisSessionTest {
         // The player answered, and is still there to answer the next one.
         session!!.isOpen shouldBe true
         ("'Volume'" in getAll(Mpris.PLAYER_INTERFACE)) shouldBe true
+    }
+
+    @Test
+    fun `a player nobody is driving refuses a set rather than pretending`() {
+        // CanControl is false where no handler is registered, and the spec says
+        // a set made then has no effect and raises an error. An empty reply
+        // would leave a widget showing the mode it asked for over a player that
+        // never heard the request.
+        val (deaf, address) = openWith("Deaf", listen = false) { app ->
+            SessionConfig(applicationName = app)
+        }
+        deaf.publish(SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.NONE))
+        val out = gdbus(
+            "call", "--dest", address, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "org.freedesktop.DBus.Properties.Set",
+            Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS, "<'Track'>",
+        )
+        ("NotSupported" in out) shouldBe true
+        // And the property is still readable, which is the half that does not
+        // depend on anybody listening.
+        val read = gdbus(
+            "call", "--dest", address, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "org.freedesktop.DBus.Properties.Get",
+            Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS,
+        )
+        ("'None'" in read) shouldBe true
     }
 
     @Test
@@ -362,13 +388,19 @@ class MprisSessionTest {
      * configuration is fixed when the session opens, so the negative half of
      * each one needs a session that claimed something different.
      */
-    private fun openWith(suffix: String, build: (String) -> SessionConfig): String {
+    private fun openWith(
+        suffix: String,
+        listen: Boolean = true,
+        build: (String) -> SessionConfig,
+    ): Pair<MediaSession, String> {
         val other = name + suffix
         val session = MprisSession.openOrNull(build(other))
         SessionTestGate.require("dbus", session != null, "no session bus reachable")
         others.add(session!!)
-        session.onCommand { received.add(it) }
-        return "org.mpris.MediaPlayer2.$other"
+        // CanControl follows whether anything is listening, so a test about a
+        // player nobody is driving has to be able to leave this out.
+        if (listen) session.onCommand { received.add(it) }
+        return session to "org.mpris.MediaPlayer2.$other"
     }
 
     /** dbus-send rather than gdbus, because gdbus builds the arguments the interface says it should. */

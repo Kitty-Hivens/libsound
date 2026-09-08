@@ -324,6 +324,16 @@ internal class MprisSession private constructor(
                 replyError(message, ERROR_UNKNOWN_PROPERTY, "No writable property ${iface ?: "?"}.$property")
                 return
             }
+            // Setting a property is controlling the player, and CanControl is
+            // this session's answer to whether it may be controlled at all. An
+            // empty reply where nothing is listening tells a widget the change
+            // took, and it draws the state it asked for over a player that
+            // never heard the request, which is the argument the OpenUri branch
+            // above makes for refusing rather than answering politely.
+            if (iface == Mpris.PLAYER_INTERFACE && handlers.isEmpty()) {
+                replyError(message, ERROR_NOT_SUPPORTED, "CanControl is false: nothing is listening")
+                return
+            }
             // The value is the third argument and nothing has established that
             // there is one. Recursing into an iterator that ran out asserts
             // inside libdbus, which aborts the process, so the shape is checked
@@ -384,7 +394,11 @@ internal class MprisSession private constructor(
                 Mpris.PROP_RATE -> replyError(
                     message, ERROR_NOT_SUPPORTED, "Rate is read-only in this player",
                 )
-                else -> replyError(message, ERROR_UNKNOWN_PROPERTY, "No writable property $property")
+                // Unreachable while every name in writableOn has a branch
+                // above, and kept because the cost of the two disagreeing is
+                // not a wrong answer but no answer, and an unanswered call
+                // blocks its caller for twenty-five seconds.
+                else -> replyError(message, ERROR_NOT_SUPPORTED, "$property cannot be set here")
             }
         }
     }
