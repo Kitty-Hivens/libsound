@@ -343,6 +343,52 @@ session.onCommand { command ->
 }
 ```
 
+Repeat and shuffle are the two properties standing between a player and every
+desktop widget that draws more than transport buttons. They are optional in the
+protocol, and that is the whole design of them here:
+
+```kotlin
+// Copied from the state that came before rather than built fresh: a
+// field left out is not "unchanged", it is that field's default, and a
+// state assembled from scratch here would blank the title and every
+// can-flag along with it.
+session.publish(nowPlaying.copy(loop = LoopMode.PLAYLIST, shuffle = false))
+// A widget draws a repeat button for a player that publishes
+// LoopStatus and draws none for one that leaves it null, so a radio
+// stream publishes null rather than NONE.
+session.onCommand { command ->
+    when (command) {
+        is SessionCommand.SetLoop -> setLoop(command.loop)
+        is SessionCommand.SetShuffle -> setShuffle(command.shuffle)
+        else -> Unit
+    }
+}
+```
+
+**Every state is published whole.** A field left out of the next one is not
+carried over, it is that field's default, and for these three the default is
+that the property leaves the interface. Copy the state you last published and
+change what moved.
+
+**Null and `LoopMode.NONE` are different answers.** Null means the player has no
+such notion, so the property is not on the interface at all: a desktop asking
+for it gets an unknown property, and a widget that checked draws no button.
+`NONE` means the player has a queue and is not repeating it. The same holds for
+`shuffle`, and for `fullscreen` on the root interface, whose companion
+`SessionConfig.canSetFullscreen` says whether the desktop may change it rather
+than only read it.
+
+None of this exists on the other two platforms yet, and the session says so
+before a consumer publishes into nothing:
+`Capability.SESSION_LOOP_SHUFFLE`, `Capability.SESSION_FULLSCREEN` and
+`Capability.SESSION_RAISE_QUIT` are on `MediaSession.capabilities` beside
+`SESSION_PUBLISH`. A settings screen asks them the way it asks every other one.
+
+`Raise` and `Quit` arrive as commands too, and only where `canRaise` and
+`canQuit` said they would be honoured. A desktop that offers "show the window"
+and reaches a player which does nothing with it is the dead button the
+capability query exists to prevent.
+
 ## Driving everybody else
 
 ```kotlin
@@ -355,6 +401,18 @@ return reader.use {
         .filter { player -> player.canControl && player.playback == PlaybackState.PLAYING }
         .count { player -> it.control(player.id, SessionCommand.Pause) }
 }
+```
+
+The same properties are readable in that direction, and absent just as often:
+
+```kotlin
+return reader.players()
+    // A player that publishes no repeat mode has none, so there is
+    // nothing to turn off and no button to draw for it. The property is
+    // optional, and absent is a common answer.
+    .filter { it.canControl && it.loop != null }
+    .filter { reader.control(it.id, SessionCommand.SetLoop(LoopMode.NONE)) }
+    .map { it.id }
 ```
 
 Controlling another player is a different kind of act from changing its volume.
@@ -393,6 +451,7 @@ backend closes the sinks it handed out. Closing a mixer restores what it changed
 | Record one application | yes | **no** | **no** |
 | Publish a media session | MPRIS | SMTC | MPNowPlayingInfoCenter |
 | Read other media sessions | MPRIS | not yet | **no** -- private API only |
+| Repeat, shuffle and fullscreen | yes, both directions | **not yet** | **not yet** |
 
 The Windows meter is a toolchain gap rather than a platform one: Windows has
 `IAudioMeterInformation`, and mingw-w64 declares the interface without its vtable

@@ -24,6 +24,26 @@ public data class ForeignPlayer(
     public val canControl: Boolean = false,
     public val canGoNext: Boolean = false,
     public val canGoPrevious: Boolean = false,
+    /**
+     * What the player does at the end of the track, or null where it publishes
+     * no such property.
+     *
+     * The reading half of [SessionState.loop], and null means the same thing on
+     * both sides: this player has no repeat to draw. The property is optional,
+     * so a widget that read its absence as a value would draw a button for a
+     * player that never offered one.
+     */
+    public val loop: LoopMode? = null,
+    /** Whether the player is shuffling, or null where it publishes no such property. */
+    public val shuffle: Boolean? = null,
+    /** Whether the player fills the screen, or null where it publishes no such property. */
+    public val fullscreen: Boolean? = null,
+    /** Whether the player accepts being asked to show its window. */
+    public val canRaise: Boolean = false,
+    /** Whether the player accepts being asked to exit. */
+    public val canQuit: Boolean = false,
+    /** Whether the player accepts being put in and out of fullscreen. */
+    public val canSetFullscreen: Boolean = false,
 )
 
 /**
@@ -65,9 +85,16 @@ public interface SessionReader : AutoCloseable {
      * it, and takes the whole arrangement away by closing its session. Nothing
      * is left behind for it to be broken by.
      *
-     * Returns false when the player is gone or refused. Commands are
-     * fire-and-forget past that: a player is free to ignore one, and no protocol
-     * here reports back that it did.
+     * Returns false when the player is gone or answered with an error, which is
+     * what setting a property it does not carry produces.
+     *
+     * A method is a weaker signal than that, and the difference matters because
+     * the two kinds of command are mixed here. The protocol has a player answer
+     * `Raise`, `Quit` and the transport calls whether or not it acts on them,
+     * so true for one of those means the call was delivered rather than
+     * honoured. [ForeignPlayer.canControl], [ForeignPlayer.canRaise] and
+     * [ForeignPlayer.canQuit] are the player's own answer about what it will
+     * act on, and they are meant to be read before asking.
      */
     public fun control(playerId: String, command: SessionCommand): Boolean
 

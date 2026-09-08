@@ -107,6 +107,10 @@ fun DBusSymbols.appendVariantObjectPath(call: Arena, parent: MemorySegment, valu
     variant(call, parent, "o") { appendString(call, it, DBusAbi.TYPE_OBJECT_PATH, value) }
 }
 
+fun DBusSymbols.appendVariantInt32(call: Arena, parent: MemorySegment, value: Int) {
+    variant(call, parent, "i") { appendInt32(call, it, value) }
+}
+
 fun DBusSymbols.appendVariantInt64(call: Arena, parent: MemorySegment, value: Long) {
     variant(call, parent, "x") { appendInt64(call, it, value) }
 }
@@ -161,6 +165,18 @@ class DictWriter(
         symbols.closeContainer(array, entry)
     }
 
+    /**
+     * Give the entry up instead of closing it, for a writer that declined.
+     *
+     * A dict entry closed with a key and no value is not a message the daemon
+     * rejects, it is an assertion inside libdbus and a core dump, and the guard
+     * standing between the two is a caller filtering the same list it writes
+     * from. This is what libdbus offers for the case where that guard is wrong.
+     */
+    private fun abandon(entry: MemorySegment) {
+        symbols.handle("dbus_message_iter_abandon_container_if_open").invokeExact(array, entry) as Unit
+    }
+
     fun string(key: String, value: String?) {
         if (value == null) return
         entry(key) { symbols.appendVariantString(call, it, value) }
@@ -174,6 +190,12 @@ class DictWriter(
     fun int64(key: String, value: Long?) {
         if (value == null) return
         entry(key) { symbols.appendVariantInt64(call, it, value) }
+    }
+
+    /** `i` on the wire, which is what the metadata specification asks for a track number. */
+    fun int32(key: String, value: Int?) {
+        if (value == null) return
+        entry(key) { symbols.appendVariantInt32(call, it, value) }
     }
 
     fun double(key: String, value: Double?) {
@@ -196,13 +218,16 @@ class DictWriter(
      * An entry whose variant the caller writes.
      *
      * For values whose type is decided somewhere else -- a property table that
-     * knows which of a dozen shapes each name carries. [write] returns false to
-     * abandon the entry, which still has to be closed: libdbus records the
-     * closing bookkeeping in the parent, and an unbalanced pair corrupts the
-     * message rather than failing it.
+     * knows which of a dozen shapes each name carries. [write] returns false
+     * for a value it has none of, and the entry is then given up rather than
+     * closed: closing it would leave a key with no value, which libdbus meets
+     * with an assertion and a core dump rather than with a rejected message.
      */
     fun raw(key: String, write: (MemorySegment) -> Boolean) {
-        entry(key) { write(it) }
+        val entry = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
+        symbols.openContainer(array, DBusAbi.TYPE_DICT_ENTRY, MemorySegment.NULL, entry)
+        symbols.appendString(call, entry, DBusAbi.TYPE_STRING, key)
+        if (write(entry)) symbols.closeContainer(array, entry) else abandon(entry)
     }
 }
 
@@ -219,6 +244,27 @@ fun DBusSymbols.recurse(call: Arena, iter: MemorySegment): MemorySegment {
     val sub = scratch(call)
     handle("dbus_message_iter_recurse").invokeExact(iter, sub) as Unit
     return sub
+}
+
+/**
+ * Recurse into the container at the cursor, or null where the cursor is not on
+ * one.
+ *
+ * Not a convenience, and the reason is the same one [DBusAbi] gives for reading
+ * the ABI off an oracle. `dbus_message_iter_recurse` asserts that the current
+ * type is a container, and libdbus answers a failed assertion with
+ * `_dbus_abort()`: it dumps core and takes the host process with it. Measured,
+ * on a `Properties.Set` carrying two arguments where the signature says three.
+ *
+ * Every argument here comes off a socket that anybody on the bus can write to,
+ * so a peer that sends the wrong shape must get an error rather than the last
+ * word on whether this process keeps running.
+ */
+fun DBusSymbols.recurseOrNull(call: Arena, iter: MemorySegment): MemorySegment? {
+    val type = argType(iter)
+    val container = type == DBusAbi.TYPE_ARRAY || type == DBusAbi.TYPE_VARIANT ||
+        type == DBusAbi.TYPE_STRUCT || type == DBusAbi.TYPE_DICT_ENTRY
+    return if (container) recurse(call, iter) else null
 }
 
 /**
@@ -252,6 +298,14 @@ fun DBusSymbols.readInt32(call: Arena, iter: MemorySegment): Int? {
     val out = call.allocate(ValueLayout.JAVA_INT)
     handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
     return out.get(ValueLayout.JAVA_INT, 0)
+}
+
+/** `b` is four bytes at the cursor, the same width the append side writes. */
+fun DBusSymbols.readBoolean(call: Arena, iter: MemorySegment): Boolean? {
+    if (argType(iter) != DBusAbi.TYPE_BOOLEAN) return null
+    val out = call.allocate(ValueLayout.JAVA_INT)
+    handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
+    return out.get(ValueLayout.JAVA_INT, 0) != 0
 }
 
 fun DBusSymbols.readDouble(call: Arena, iter: MemorySegment): Double? {

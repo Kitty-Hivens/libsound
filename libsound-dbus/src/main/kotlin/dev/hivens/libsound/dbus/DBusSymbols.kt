@@ -93,6 +93,12 @@ class DBusSymbols private constructor(
             Triple("dbus_message_iter_append_basic", I32, listOf(ADDR, I32, ADDR)),
             Triple("dbus_message_iter_open_container", I32, listOf(ADDR, I32, ADDR, ADDR)),
             Triple("dbus_message_iter_close_container", I32, listOf(ADDR, ADDR)),
+            // Closing a container the writer gave up on leaves a dictionary
+            // entry holding a key and no value, and libdbus answers that with
+            // an assertion rather than a rejected message. libdbus has carried
+            // this since 1.10, which is old enough that requiring it costs
+            // nothing a JDK 22 floor has not already cost.
+            Triple("dbus_message_iter_abandon_container_if_open", null, listOf(ADDR, ADDR)),
             Triple("dbus_message_iter_recurse", null, listOf(ADDR, ADDR)),
             Triple("dbus_message_iter_next", I32, listOf(ADDR)),
             Triple("dbus_message_iter_get_arg_type", I32, listOf(ADDR)),

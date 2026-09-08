@@ -12,22 +12,27 @@ import dev.hivens.libsound.dbus.DBusConnection
 import dev.hivens.libsound.dbus.allocateUtf8
 import dev.hivens.libsound.dbus.appendInt64
 import dev.hivens.libsound.dbus.appendString
+import dev.hivens.libsound.dbus.appendVariantBoolean
 import dev.hivens.libsound.dbus.appendVariantDouble
+import dev.hivens.libsound.dbus.appendVariantString
 import dev.hivens.libsound.dbus.argType
 import dev.hivens.libsound.dbus.next
+import dev.hivens.libsound.dbus.readBoolean
 import dev.hivens.libsound.dbus.readCString
 import dev.hivens.libsound.dbus.readDouble
+import dev.hivens.libsound.dbus.readInt32
 import dev.hivens.libsound.dbus.readInt64
 import dev.hivens.libsound.dbus.readString
 import dev.hivens.libsound.dbus.readStringArray
 import dev.hivens.libsound.dbus.recurse
+import dev.hivens.libsound.dbus.recurseOrNull
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
-import java.lang.foreign.ValueLayout
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -98,20 +103,42 @@ internal class MprisReader private constructor(
     override fun control(playerId: String, command: SessionCommand): Boolean {
         if (closed.get()) return false
         return Arena.ofConfined().use { call ->
-            val (member, argument) = when (command) {
-                SessionCommand.Play -> "Play" to null
-                SessionCommand.Pause -> "Pause" to null
-                SessionCommand.PlayPause -> "PlayPause" to null
-                SessionCommand.Stop -> "Stop" to null
-                SessionCommand.Next -> "Next" to null
-                SessionCommand.Previous -> "Previous" to null
-                is SessionCommand.Seek -> "Seek" to command.offsetMicros
-                is SessionCommand.SetPosition -> "SetPosition" to command.positionMicros
-                // Volume is a property rather than a method, so it goes through
-                // Properties.Set like any other.
-                is SessionCommand.SetVolume -> return@use setVolume(call, playerId, command.volume)
+            val (iface, member, argument) = when (command) {
+                SessionCommand.Play -> Triple(Mpris.PLAYER_INTERFACE, "Play", null)
+                SessionCommand.Pause -> Triple(Mpris.PLAYER_INTERFACE, "Pause", null)
+                SessionCommand.PlayPause -> Triple(Mpris.PLAYER_INTERFACE, "PlayPause", null)
+                SessionCommand.Stop -> Triple(Mpris.PLAYER_INTERFACE, "Stop", null)
+                SessionCommand.Next -> Triple(Mpris.PLAYER_INTERFACE, "Next", null)
+                SessionCommand.Previous -> Triple(Mpris.PLAYER_INTERFACE, "Previous", null)
+                is SessionCommand.Seek -> Triple(Mpris.PLAYER_INTERFACE, "Seek", command.offsetMicros)
+                is SessionCommand.SetPosition ->
+                    Triple(Mpris.PLAYER_INTERFACE, "SetPosition", command.positionMicros)
+                // Raise and Quit are the root's, not the player's. Both are
+                // offers the target published and advertises through CanRaise
+                // and CanQuit, which is why they are here at all: this asks a
+                // player to do what it said it would accept.
+                SessionCommand.Raise -> Triple(Mpris.ROOT_INTERFACE, "Raise", null)
+                SessionCommand.Quit -> Triple(Mpris.ROOT_INTERFACE, "Quit", null)
+                // The rest are properties rather than methods, so they go
+                // through Properties.Set like Volume always did.
+                is SessionCommand.SetVolume ->
+                    return@use setProperty(call, playerId, Mpris.PLAYER_INTERFACE, Mpris.PROP_VOLUME) {
+                        symbols.appendVariantDouble(call, it, command.volume)
+                    }
+                is SessionCommand.SetLoop ->
+                    return@use setProperty(call, playerId, Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS) {
+                        symbols.appendVariantString(call, it, Mpris.loopOf(command.loop))
+                    }
+                is SessionCommand.SetShuffle ->
+                    return@use setProperty(call, playerId, Mpris.PLAYER_INTERFACE, Mpris.PROP_SHUFFLE) {
+                        symbols.appendVariantBoolean(call, it, command.shuffle)
+                    }
+                is SessionCommand.SetFullscreen ->
+                    return@use setProperty(call, playerId, Mpris.ROOT_INTERFACE, Mpris.PROP_FULLSCREEN) {
+                        symbols.appendVariantBoolean(call, it, command.fullscreen)
+                    }
             }
-            val message = bus.newCall(call, playerId, Mpris.OBJECT_PATH, Mpris.PLAYER_INTERFACE, member)
+            val message = bus.newCall(call, playerId, Mpris.OBJECT_PATH, iface, member)
                 ?: return@use false
             if (argument != null) {
                 val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
@@ -140,7 +167,11 @@ internal class MprisReader private constructor(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         listeners.clear()
-        dispatch.shutdownNow()
+        // Waited for, not merely signalled. The dispatch thread reads a player
+        // it has just seen appear, and that read goes through downcall handles
+        // bound to the arena bus.close() is about to free.
+        dispatch.shutdown()
+        runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         bus.close()
     }
 
@@ -195,12 +226,14 @@ internal class MprisReader private constructor(
                 // A fresh player. Reading it here would block the bus thread on
                 // a round trip to somebody who has only just arrived, so the
                 // read happens on the dispatch thread with everything else.
-                dispatch.execute {
-                    read(name)?.let { player ->
-                        synchronized(known) { known[name] = player }
-                        emit(PlayerEvent.Appeared(player))
+                runCatching {
+                    dispatch.execute {
+                        read(name)?.let { player ->
+                            synchronized(known) { known[name] = player }
+                            emit(PlayerEvent.Appeared(player))
+                        }
                     }
-                }
+                }.onFailure { log.debug("player appearance dropped, the reader is closing") }
             }
         }
     }
@@ -210,10 +243,18 @@ internal class MprisReader private constructor(
         Arena.ofConfined().use { call ->
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             if ((symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int) == 0) return
-            if (symbols.readString(call, iter) != Mpris.PLAYER_INTERFACE) return
+            // Both interfaces, because Fullscreen is a root property and the
+            // signal names the interface its properties came from.
+            val iface = symbols.readString(call, iter)
+            if (iface != Mpris.PLAYER_INTERFACE && iface != Mpris.ROOT_INTERFACE) return
             symbols.next(iter)
             val changed = readVariantDict(call, iter)
-            if (changed.isEmpty()) return
+            symbols.next(iter)
+            // A property the player stopped carrying arrives here rather than
+            // in the dictionary, since there is no new value to send. Reading
+            // it is how a repeat button drawn from LoopStatus goes away again.
+            val invalidated = symbols.readStringArray(call, iter)
+            if (changed.isEmpty() && invalidated.isEmpty()) return
 
             // The signal comes from a unique name and the map is keyed by the
             // well-known one, so there is no cheaper branch to try first: a
@@ -221,7 +262,7 @@ internal class MprisReader private constructor(
             val id = knownIdForOwner(sender) ?: return
             val merged = synchronized(known) {
                 val previous = known[id] ?: return@synchronized null
-                val updated = merge(previous, changed)
+                val updated = merge(previous, iface, changed, invalidated)
                 known[id] = updated
                 updated
             } ?: return
@@ -302,14 +343,23 @@ internal class MprisReader private constructor(
             id = name,
             // Falls back to the bus suffix: a player without an Identity is
             // still a player, and an unnamed row is worse than an ugly one.
-            identity = (root["Identity"] as? String)?.takeIf { it.isNotBlank() }
+            identity = (root[Mpris.PROP_IDENTITY] as? String)?.takeIf { it.isNotBlank() }
                 ?: name.removePrefix(Mpris.BUS_NAME_PREFIX),
-            playback = Mpris.stateOf(player["PlaybackStatus"] as? String),
-            metadata = metadataOf(player["Metadata"]),
-            positionMicros = player["Position"] as? Long ?: 0L,
-            canControl = player["CanControl"] as? Boolean ?: false,
-            canGoNext = player["CanGoNext"] as? Boolean ?: false,
-            canGoPrevious = player["CanGoPrevious"] as? Boolean ?: false,
+            playback = Mpris.stateOf(player[Mpris.PROP_PLAYBACK_STATUS] as? String),
+            metadata = metadataOf(player[Mpris.PROP_METADATA]),
+            positionMicros = player[Mpris.PROP_POSITION] as? Long ?: 0L,
+            canControl = player[Mpris.PROP_CAN_CONTROL] as? Boolean ?: false,
+            canGoNext = player[Mpris.PROP_CAN_GO_NEXT] as? Boolean ?: false,
+            canGoPrevious = player[Mpris.PROP_CAN_GO_PREVIOUS] as? Boolean ?: false,
+            // Null rather than a default, because these are optional in the
+            // specification: a widget reading a missing property as false would
+            // draw a shuffle button for a player that never offered one.
+            loop = Mpris.modeOf(player[Mpris.PROP_LOOP_STATUS] as? String),
+            shuffle = player[Mpris.PROP_SHUFFLE] as? Boolean,
+            fullscreen = root[Mpris.PROP_FULLSCREEN] as? Boolean,
+            canRaise = root[Mpris.PROP_CAN_RAISE] as? Boolean ?: false,
+            canQuit = root[Mpris.PROP_CAN_QUIT] as? Boolean ?: false,
+            canSetFullscreen = root[Mpris.PROP_CAN_SET_FULLSCREEN] as? Boolean ?: false,
         )
     }
 
@@ -342,13 +392,17 @@ internal class MprisReader private constructor(
      */
     private fun readVariantDict(call: Arena, iter: MemorySegment): Map<String, Any?> {
         if (symbols.argType(iter) != DBusAbi.TYPE_ARRAY) return emptyMap()
-        val array = symbols.recurse(call, iter)
+        val array = symbols.recurseOrNull(call, iter) ?: return emptyMap()
         val values = mutableMapOf<String, Any?>()
         while (symbols.argType(array) != DBusAbi.TYPE_INVALID) {
-            val entry = symbols.recurse(call, array)
+            // Every recursion here is into something a peer wrote. An `as`
+            // where an `a{sv}` was expected leaves the cursor on a string, and
+            // recursing into one aborts the process from inside libdbus, so a
+            // shape that is not the one this reads stops the walk instead.
+            val entry = symbols.recurseOrNull(call, array) ?: break
             val key = symbols.readString(call, entry)
             symbols.next(entry)
-            val variant = symbols.recurse(call, entry)
+            val variant = symbols.recurseOrNull(call, entry) ?: break
             if (key != null) {
                 when (symbols.argType(variant)) {
                     DBusAbi.TYPE_STRING, DBusAbi.TYPE_OBJECT_PATH ->
@@ -356,8 +410,8 @@ internal class MprisReader private constructor(
                     DBusAbi.TYPE_INT64, DBusAbi.TYPE_UINT64 ->
                         values[key] = symbols.readInt64(call, variant)
                     DBusAbi.TYPE_DOUBLE -> values[key] = symbols.readDouble(call, variant)
-                    DBusAbi.TYPE_BOOLEAN -> values[key] = readBoolean(call, variant)
-                    DBusAbi.TYPE_INT32, DBusAbi.TYPE_UINT32 -> values[key] = readInt32(call, variant)
+                    DBusAbi.TYPE_BOOLEAN -> values[key] = symbols.readBoolean(call, variant)
+                    DBusAbi.TYPE_INT32, DBusAbi.TYPE_UINT32 -> values[key] = symbols.readInt32(call, variant)
                     // An array is either `as` or `a{sv}` -- artists or the
                     // metadata map -- and the variant's own type does not say
                     // which. Reading both as string arrays turned every track's
@@ -380,18 +434,6 @@ internal class MprisReader private constructor(
         return values
     }
 
-    private fun readBoolean(call: Arena, iter: MemorySegment): Boolean {
-        val out = call.allocate(ValueLayout.JAVA_INT)
-        symbols.handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
-        return out.get(ValueLayout.JAVA_INT, 0) != 0
-    }
-
-    private fun readInt32(call: Arena, iter: MemorySegment): Int {
-        val out = call.allocate(ValueLayout.JAVA_INT)
-        symbols.handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
-        return out.get(ValueLayout.JAVA_INT, 0)
-    }
-
     @Suppress("UNCHECKED_CAST")
     private fun metadataOf(raw: Any?): TrackMetadata {
         val map = raw as? Map<String, Any?> ?: return TrackMetadata.EMPTY
@@ -407,22 +449,112 @@ internal class MprisReader private constructor(
         )
     }
 
-    private fun merge(previous: ForeignPlayer, changed: Map<String, Any?>): ForeignPlayer = previous.copy(
-        playback = changed["PlaybackStatus"]?.let { Mpris.stateOf(it as? String) } ?: previous.playback,
-        metadata = if ("Metadata" in changed) metadataOf(changed["Metadata"]) else previous.metadata,
-        canControl = changed["CanControl"] as? Boolean ?: previous.canControl,
-        canGoNext = changed["CanGoNext"] as? Boolean ?: previous.canGoNext,
-        canGoPrevious = changed["CanGoPrevious"] as? Boolean ?: previous.canGoPrevious,
-    )
+    private fun merge(
+        previous: ForeignPlayer,
+        iface: String?,
+        changed: Map<String, Any?>,
+        invalidated: List<String>,
+    ): ForeignPlayer = when (iface) {
+        Mpris.ROOT_INTERFACE -> previous.copy(
+            // A player without an Identity keeps the name it was listed under,
+            // the same fallback the first read makes, because a row that went
+            // blank is worse than one that never changed.
+            identity = (changed[Mpris.PROP_IDENTITY] as? String)?.takeIf { it.isNotBlank() }
+                ?: previous.identity,
+            fullscreen = optional(previous.fullscreen, Mpris.PROP_FULLSCREEN, changed, invalidated),
+            // The three flags say what the player will accept, and a player is
+            // free to change its mind while it runs. Invalidated means the
+            // property is gone, and a capability nobody advertises is one a
+            // widget must not draw.
+            canRaise = flag(previous.canRaise, Mpris.PROP_CAN_RAISE, changed, invalidated),
+            canQuit = flag(previous.canQuit, Mpris.PROP_CAN_QUIT, changed, invalidated),
+            canSetFullscreen = flag(
+                previous.canSetFullscreen, Mpris.PROP_CAN_SET_FULLSCREEN, changed, invalidated,
+            ),
+        )
+        else -> previous.copy(
+            playback = changed[Mpris.PROP_PLAYBACK_STATUS]?.let { Mpris.stateOf(it as? String) }
+                ?: previous.playback,
+            metadata = if (Mpris.PROP_METADATA in changed) {
+                metadataOf(changed[Mpris.PROP_METADATA])
+            } else {
+                previous.metadata
+            },
+            canControl = changed[Mpris.PROP_CAN_CONTROL] as? Boolean ?: previous.canControl,
+            canGoNext = changed[Mpris.PROP_CAN_GO_NEXT] as? Boolean ?: previous.canGoNext,
+            canGoPrevious = changed[Mpris.PROP_CAN_GO_PREVIOUS] as? Boolean ?: previous.canGoPrevious,
+            // Mentioned in the signal means the answer comes from the signal,
+            // including when it is a mode this library does not model: reading
+            // that as "unchanged" leaves players() and this disagreeing about
+            // the same player, and a widget's repeat button appearing or
+            // vanishing depending on which of the two last spoke.
+            loop = when {
+                Mpris.PROP_LOOP_STATUS in invalidated -> null
+                Mpris.PROP_LOOP_STATUS in changed ->
+                    Mpris.modeOf(changed[Mpris.PROP_LOOP_STATUS] as? String)
+                else -> previous.loop
+            },
+            shuffle = optional(previous.shuffle, Mpris.PROP_SHUFFLE, changed, invalidated),
+        )
+    }
 
-    private fun setVolume(call: Arena, playerId: String, volume: Double): Boolean {
+    /**
+     * What an optional boolean is now: unchanged where the signal did not
+     * mention it, and gone where the player said it no longer carries it.
+     */
+    private fun optional(
+        previous: Boolean?,
+        key: String,
+        changed: Map<String, Any?>,
+        invalidated: List<String>,
+    ): Boolean? = when {
+        key in invalidated -> null
+        key in changed -> changed[key] as? Boolean
+        else -> previous
+    }
+
+    /**
+     * The same, for a flag that says what the player will accept.
+     *
+     * Absent reads as false rather than as null: these are answers about
+     * whether a control may be drawn, and the specification's own default for
+     * one a player does not publish is that it may not.
+     */
+    private fun flag(
+        previous: Boolean,
+        key: String,
+        changed: Map<String, Any?>,
+        invalidated: List<String>,
+    ): Boolean = when {
+        key in invalidated -> false
+        key in changed -> changed[key] as? Boolean ?: false
+        else -> previous
+    }
+
+    /**
+     * Set one property on somebody else's player, on the interface that carries
+     * it: Volume, LoopStatus and Shuffle belong to the player and Fullscreen to
+     * the root.
+     *
+     * False covers both a player that is gone and one that refused, because
+     * both come back as no reply. A refusal is the ordinary answer for an
+     * optional property the target does not carry, which is what
+     * [ForeignPlayer.loop] and its neighbours are read for beforehand.
+     */
+    private fun setProperty(
+        call: Arena,
+        playerId: String,
+        iface: String,
+        property: String,
+        value: (MemorySegment) -> Unit,
+    ): Boolean {
         val message = bus.newCall(call, playerId, Mpris.OBJECT_PATH, Mpris.PROPERTIES_INTERFACE, "Set")
             ?: return false
         val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
         symbols.handle("dbus_message_iter_init_append").invokeExact(message, iter) as Unit
-        symbols.appendString(call, iter, DBusAbi.TYPE_STRING, Mpris.PLAYER_INTERFACE)
-        symbols.appendString(call, iter, DBusAbi.TYPE_STRING, Mpris.PROP_VOLUME)
-        symbols.appendVariantDouble(call, iter, volume)
+        symbols.appendString(call, iter, DBusAbi.TYPE_STRING, iface)
+        symbols.appendString(call, iter, DBusAbi.TYPE_STRING, property)
+        value(iter)
         val reply = bus.call(message) ?: return false
         runCatching { symbols.handle("dbus_message_unref").invokeExact(reply) as Unit }
         return true

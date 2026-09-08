@@ -8,6 +8,24 @@ public enum class PlaybackState {
 }
 
 /**
+ * What a player does when it reaches the end of what it is playing.
+ *
+ * Three values because that is what the desktop protocols carry, and a queue
+ * that repeats is a different thing from a track that repeats: a widget draws
+ * the two as separate states of one button.
+ */
+public enum class LoopMode {
+    /** Stop at the end. */
+    NONE,
+
+    /** Play the current track again. */
+    TRACK,
+
+    /** Start the queue over. */
+    PLAYLIST,
+}
+
+/**
  * What is playing.
  *
  * Shaped after MPRIS's metadata map because that is the richest of the three
@@ -43,6 +61,13 @@ public data class TrackMetadata(
  * The complete outward state of our own session. Published as a unit: the
  * protocols emit property changes in batches, and a partial update is what
  * produces a widget showing the previous track's art beside the new title.
+ *
+ * Published as a unit means every field, every time. A field left out of a
+ * later state is not carried over from the last one, it is that field's
+ * default, and for [loop], [shuffle] and [fullscreen] the default is absent.
+ * Where the platform can say so, which today is MPRIS, the desktop is told the
+ * player no longer has the property and the button drawn from it goes away.
+ * Build each state from the one before it rather than from scratch.
  */
 public data class SessionState(
     public val playback: PlaybackState = PlaybackState.STOPPED,
@@ -56,6 +81,31 @@ public data class SessionState(
     /** 1.0 is normal speed. Reported, never requested -- rate control is not in scope. */
     public val rate: Double = 1.0,
     public val volume: Double = 1.0,
+    /**
+     * What happens at the end of the track, or null for a player that has no
+     * such notion.
+     *
+     * Null is not [LoopMode.NONE], and the difference is what a widget draws.
+     * A player that publishes this gets a repeat button and is expected to
+     * honour [SessionCommand.SetLoop]. A player that publishes null gets no
+     * button at all, which is the right answer for a radio stream, where
+     * answering NONE would offer a control that changes nothing.
+     */
+    public val loop: LoopMode? = null,
+    /**
+     * Whether the queue is played in a random order. Null carries the same
+     * meaning it does for [loop]: there is no such notion here, so no control
+     * for it should be drawn.
+     */
+    public val shuffle: Boolean? = null,
+    /**
+     * Whether the player currently occupies the whole screen, or null for one
+     * with no window to do it with.
+     *
+     * Whether the desktop may change it is [SessionConfig.canSetFullscreen],
+     * because that is a property of the application rather than of the moment.
+     */
+    public val fullscreen: Boolean? = null,
 )
 
 /**
@@ -69,6 +119,19 @@ public sealed interface SessionCommand {
     public data object Stop : SessionCommand
     public data object Next : SessionCommand
     public data object Previous : SessionCommand
+
+    /**
+     * Show the application's window, because somebody clicked the player's name
+     * in a widget.
+     *
+     * Delivered only where [SessionConfig.canRaise] said it would be honoured.
+     * A desktop that offers the action and reaches a player which does nothing
+     * with it is the dead button [MediaSession.onCommand] exists to avoid.
+     */
+    public data object Raise : SessionCommand
+
+    /** Exit, at the desktop's request. Delivered only where [SessionConfig.canQuit] allows it. */
+    public data object Quit : SessionCommand
 
     /** Move by [offsetMicros] from the current position; negative seeks back. */
     public data class Seek(public val offsetMicros: Long) : SessionCommand
@@ -84,6 +147,28 @@ public sealed interface SessionCommand {
     ) : SessionCommand
 
     public data class SetVolume(public val volume: Double) : SessionCommand
+
+    /**
+     * Repeat what is playing, or the queue, or nothing.
+     *
+     * Arrives only for a player that published [SessionState.loop], and the
+     * player answers by publishing the new mode: the desktop set a property and
+     * waits to be told what it now holds.
+     */
+    public data class SetLoop(public val loop: LoopMode) : SessionCommand
+
+    /** Play the queue in a random order. Arrives only where [SessionState.shuffle] was published. */
+    public data class SetShuffle(public val shuffle: Boolean) : SessionCommand
+
+    /**
+     * Occupy the whole screen, or stop doing so.
+     *
+     * Needs both halves of the pair: [SessionConfig.canSetFullscreen] says the
+     * desktop may change it, and [SessionState.fullscreen] has to carry a value
+     * for there to be a property to change. A session that claims the first and
+     * publishes neither has no fullscreen on its interface and never sees this.
+     */
+    public data class SetFullscreen(public val fullscreen: Boolean) : SessionCommand
 }
 
 /**
@@ -102,6 +187,15 @@ public data class SessionConfig(
     public val canQuit: Boolean = false,
     /** Whether the desktop may ask the application to show its window. */
     public val canRaise: Boolean = false,
+    /**
+     * Whether the desktop may put the application in and out of fullscreen.
+     *
+     * The current state is [SessionState.fullscreen], and this flag is only
+     * about who may change it. Both are needed before a desktop can offer the
+     * control: a player that never publishes a fullscreen state is one with no
+     * screen to fill, whatever it says here.
+     */
+    public val canSetFullscreen: Boolean = false,
     /**
      * The application's window, on Windows only. Ignored everywhere else.
      *

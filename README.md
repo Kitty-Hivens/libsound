@@ -41,8 +41,11 @@ server actually granted is reported rather than assumed. Capture is here on
 Linux, including recording one application's output on its own, and so is the
 device half of a mixer: volume and mute on the devices themselves, card
 profiles, ports, and devices that do not exist in hardware.
+MPRIS carries repeat, shuffle and fullscreen in both directions, each optional
+the way the specification means it: a player with no queue to repeat does not
+advertise the property, so a widget draws no button for it.
 [docs/PLAN.md](docs/PLAN.md) specifies what is left, which is the Windows half
-of capture and the parts of MPRIS this does not publish yet. Everything
+of capture and the two MPRIS interfaces that describe a queue. Everything
 described below is in and exercised.
 
 For any JVM desktop application that draws its own UI -- whether it wants to be a
@@ -191,7 +194,7 @@ depend on this by accident. The API will still shift.
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
 | Windows audio (WASAPI) | Runs. Device enumeration, playback, playhead and volume execute on every push against a Windows JVM under wine, and so does the sink contract suite -- the rules a consumer's clock rides on, asserted against a real WASAPI implementation rather than argued from the code. Gradle cannot run there, so the suite is started through the JUnit launcher directly. What none of it checks is hardware: real devices need [docs/TESTING.md](docs/TESTING.md). |
 | Windows mixer (IAudioSessionManager2) | Enumeration, volume, mute and the same restore obligation as the Linux mixer, executing under wine. Per-session events are still unexecuted: wine answers `E_NOTIMPL` to `RegisterSessionNotification`, so only hardware can exercise that path. No routing at all -- Windows exposes no way to move another application's session, so the capability is absent rather than faked. |
-| Linux session (MPRIS) | Done and exercised on every push, under both libcs, on a session bus CI starts. The assertions are made through `gdbus` and `playerctl` rather than through our own marshalling, which would pass on a message no reader could parse. |
+| Linux session (MPRIS) | Done and exercised on every push, under both libcs, on a session bus CI starts. Root and Player, including repeat, shuffle and fullscreen, each absent from the interface until a consumer publishes one, and the root's own methods delivered as commands rather than answered and dropped. The assertions are made through `gdbus` and `playerctl` rather than through our own marshalling, which would pass on a message no reader could parse. |
 | Windows session (SMTC) | Written and executed once on a Windows JVM under wine: metadata, playback state, timeline and media keys. Whether the lock screen shows it needs a person. |
 | macOS session (MPNowPlayingInfoCenter) | Written, and its suite runs on every push against the real framework. A process with no bundle can publish -- measured before any of it was written. Whether the widget shows it, and whether a media key arrives, needs a person. |
 | macOS audio (CoreAudio) | Done and exercised. Output unit fed from a ring buffer, device enumeration by uid, events, honest playhead. The contract suite runs on every push against a real output unit. |

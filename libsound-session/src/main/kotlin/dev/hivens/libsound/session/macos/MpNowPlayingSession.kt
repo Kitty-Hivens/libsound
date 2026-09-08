@@ -68,6 +68,10 @@ internal class MpNowPlayingSession private constructor(
     @Volatile
     private var lastPublished: SessionState? = null
 
+    // SESSION_PUBLISH and nothing beyond it. Repeat and shuffle live on the
+    // remote command centre rather than on the now-playing info this binds, and
+    // the platform has no fullscreen or raise for a player at all, so a
+    // consumer that publishes a loop here is publishing into nothing.
     override val capabilities: Capabilities = Capabilities.of(Capability.SESSION_PUBLISH)
 
     override val isOpen: Boolean get() = !closed.get()
