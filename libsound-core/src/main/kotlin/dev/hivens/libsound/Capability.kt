@@ -158,6 +158,39 @@ public enum class Capability {
 
     /** Other applications' media sessions can be read. */
     SESSION_READ,
+
+    /**
+     * Repeat and shuffle can be published, and come back as
+     * [SessionCommand.SetLoop] and [SessionCommand.SetShuffle].
+     *
+     * Absent means [SessionState.loop] and [SessionState.shuffle] go nowhere.
+     * The fields are on the type because the type is shared by every platform,
+     * and a platform whose session protocol has no property to put them in
+     * drops them without saying so, which is what this is for.
+     *
+     * On the reading side the same question is asked of each player rather than
+     * of the backend, through [ForeignPlayer.loop], because there it is the
+     * player that answers it.
+     */
+    SESSION_LOOP_SHUFFLE,
+
+    /**
+     * The player's fullscreen state can be published, and the desktop can put
+     * it in and out of fullscreen where [SessionConfig.canSetFullscreen] says
+     * it may.
+     */
+    SESSION_FULLSCREEN,
+
+    /**
+     * The desktop can ask the application to show its window or to exit, and
+     * the request arrives as [SessionCommand.Raise] or [SessionCommand.Quit].
+     *
+     * [SessionConfig.canRaise] and [SessionConfig.canQuit] say whether this
+     * session offers either. This says whether the platform can carry the offer
+     * at all, and a consumer that sets those two where it is absent has claimed
+     * something nothing will ask it for.
+     */
+    SESSION_RAISE_QUIT,
 }
 
 /**

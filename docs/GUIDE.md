@@ -378,6 +378,12 @@ for it gets an unknown property, and a widget that checked draws no button.
 `SessionConfig.canSetFullscreen` says whether the desktop may change it rather
 than only read it.
 
+None of this exists on the other two platforms yet, and the session says so
+before a consumer publishes into nothing:
+`Capability.SESSION_LOOP_SHUFFLE`, `Capability.SESSION_FULLSCREEN` and
+`Capability.SESSION_RAISE_QUIT` are on `MediaSession.capabilities` beside
+`SESSION_PUBLISH`. A settings screen asks them the way it asks every other one.
+
 `Raise` and `Quit` arrive as commands too, and only where `canRaise` and
 `canQuit` said they would be honoured. A desktop that offers "show the window"
 and reaches a player which does nothing with it is the dead button the

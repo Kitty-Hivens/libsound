@@ -110,7 +110,12 @@ internal class MprisSession private constructor(
     @Volatile
     private var published: SessionState? = null
 
-    override val capabilities: Capabilities = Capabilities.of(Capability.SESSION_PUBLISH)
+    override val capabilities: Capabilities = Capabilities.of(
+        Capability.SESSION_PUBLISH,
+        Capability.SESSION_LOOP_SHUFFLE,
+        Capability.SESSION_FULLSCREEN,
+        Capability.SESSION_RAISE_QUIT,
+    )
 
     override val isOpen: Boolean get() = !closed.get() && bus.isOpen
 
