@@ -59,6 +59,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   told it to ask a capability that did not exist.
 
 ### Fixed
+- A seek sent by a desktop is accepted rather than dropped as stale.
+  `mpris:trackid` went out escaped into an object path and came back raw, and
+  `SetPosition` carries the track the sender believed was playing so a consumer
+  can reject a stale one: an escaped path never equals the id it was made from,
+  so every scrubber in every media widget moved and nothing happened. The
+  escaping is reversed on the way in now, and a track id read off somebody
+  else's player goes back to them untouched, because the path they published is
+  the one they compare against.
+- `players()` no longer undoes what a signal did while it was reading. The
+  round trips happen off the lock and the answers were written back under it
+  without checking whether anything had arrived in between, so a row could go
+  back to before a change a subscriber had already been told about, and the
+  next unrelated signal then reported the change undone.
+- Signals are resolved and merged off the bus thread. Turning a sender into the
+  name it is known by can cost a round trip per player already listed, and the
+  connection's own documentation says a handler must not block, because the
+  thread it would block is the one the answer has to arrive on. Enumeration
+  records each owner as it goes, so the common case is a map lookup.
 - A `Properties.Set` carrying fewer arguments than its signature took the
   process down. `dbus_message_iter_init` proves there is a first argument and
   nothing more, and `dbus_message_iter_recurse` on an iterator that has run out

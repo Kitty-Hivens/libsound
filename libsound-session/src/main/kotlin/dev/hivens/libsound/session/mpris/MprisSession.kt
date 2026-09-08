@@ -296,13 +296,14 @@ internal class MprisSession private constructor(
     private fun readSetPosition(message: MemorySegment): SessionCommand? = Arena.ofConfined().use { call ->
         val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
         if ((symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int) == 0) return null
-        val trackId = symbols.readString(call, iter)
+        val path = symbols.readString(call, iter)
         symbols.next(iter)
         val position = symbols.readInt64(call, iter) ?: return null
-        // The track id is carried so a stale command can be dropped: a desktop
-        // may send a seek for the track it last saw, and by then we may be
-        // playing the next one.
-        SessionCommand.SetPosition(trackId, position)
+        // Back through the escaping it went out with. The id is carried so a
+        // stale command can be dropped, a consumer compares it against its own,
+        // and a path handed over raw never matches the id it was made from: the
+        // seek was then dropped as stale every single time.
+        SessionCommand.SetPosition(Mpris.trackIdOf(path), position)
     }
 
     // -- properties ------------------------------------------------------------

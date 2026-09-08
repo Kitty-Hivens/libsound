@@ -74,6 +74,18 @@ internal class MprisReader private constructor(
     /** Last known state per bus name, so a change signal can be merged into it. */
     private val known = HashMap<String, ForeignPlayer>()
 
+    /**
+     * How many times a signal has changed each row, guarded by [known].
+     *
+     * [players] reads every player over the bus and writes the answers back
+     * afterwards, and a signal that arrives in between is newer than what it is
+     * about to write. Without a mark to compare, the write puts the row back to
+     * before the change, a subscriber has already been told about the change,
+     * and the next unrelated signal merges onto the old value and reports the
+     * change undone.
+     */
+    private val merges = HashMap<String, Long>()
+
     /** Unique sender to well-known name. Fixed for as long as a player lives. */
     private val owners = ConcurrentHashMap<String, String>()
 
@@ -94,10 +106,22 @@ internal class MprisReader private constructor(
 
     override fun players(): List<ForeignPlayer> {
         if (closed.get()) return emptyList()
-        return listNames()
+        val marks = synchronized(known) { HashMap(merges) }
+        val fresh = listNames()
             .filter { it.startsWith(Mpris.BUS_NAME_PREFIX) }
             .mapNotNull { read(it) }
-            .also { fresh -> synchronized(known) { fresh.forEach { known[it.id] = it } } }
+        return synchronized(known) {
+            fresh.map { player ->
+                if (merges[player.id] != marks[player.id]) {
+                    // Something arrived while this was reading, and it knows
+                    // more than a round trip started before it did.
+                    known[player.id] ?: player
+                } else {
+                    known[player.id] = player
+                    player
+                }
+            }
+        }
     }
 
     override fun control(playerId: String, command: SessionCommand): Boolean {
@@ -146,9 +170,12 @@ internal class MprisReader private constructor(
                 if (command is SessionCommand.SetPosition) {
                     // SetPosition takes the track id first, and the player drops
                     // the command when it names a track that is no longer
-                    // current -- which is the whole reason it is carried.
+                    // current -- which is the whole reason it is carried. The id
+                    // read off that player is the path it published, so it goes
+                    // back untouched: escaping it here named a track nobody had
+                    // and every seek sent from this side was discarded.
                     symbols.appendString(
-                        call, iter, DBusAbi.TYPE_OBJECT_PATH, Mpris.trackPath(command.trackId),
+                        call, iter, DBusAbi.TYPE_OBJECT_PATH, Mpris.foreignTrackPath(command.trackId),
                     )
                 }
                 symbols.appendInt64(call, iter, argument)
@@ -218,7 +245,10 @@ internal class MprisReader private constructor(
             newOwner?.takeIf { it.isNotEmpty() }?.let { owners[it] = name }
 
             if (newOwner.isNullOrEmpty()) {
-                synchronized(known) { known.remove(name) }
+                synchronized(known) {
+                    known.remove(name)
+                    merges.remove(name)
+                }
                 emit(PlayerEvent.Gone(name))
                 return
             }
@@ -229,7 +259,10 @@ internal class MprisReader private constructor(
                 runCatching {
                     dispatch.execute {
                         read(name)?.let { player ->
-                            synchronized(known) { known[name] = player }
+                            synchronized(known) {
+                                known[name] = player
+                                merges[name] = (merges[name] ?: 0L) + 1
+                            }
                             emit(PlayerEvent.Appeared(player))
                         }
                     }
@@ -240,51 +273,75 @@ internal class MprisReader private constructor(
 
     private fun onPropertiesChanged(message: MemorySegment) {
         val sender = readMessageString("dbus_message_get_sender", message) ?: return
-        Arena.ofConfined().use { call ->
-            val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
-            if ((symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int) == 0) return
-            // Both interfaces, because Fullscreen is a root property and the
-            // signal names the interface its properties came from.
-            val iface = symbols.readString(call, iter)
-            if (iface != Mpris.PLAYER_INTERFACE && iface != Mpris.ROOT_INTERFACE) return
-            symbols.next(iter)
-            val changed = readVariantDict(call, iter)
-            symbols.next(iter)
-            // A property the player stopped carrying arrives here rather than
-            // in the dictionary, since there is no new value to send. Reading
-            // it is how a repeat button drawn from LoopStatus goes away again.
-            val invalidated = symbols.readStringArray(call, iter)
-            if (changed.isEmpty() && invalidated.isEmpty()) return
-
-            // The signal comes from a unique name and the map is keyed by the
-            // well-known one, so there is no cheaper branch to try first: a
-            // sender can never equal a key here.
-            val id = knownIdForOwner(sender) ?: return
+        val change = readChange(message) ?: return
+        // Resolved and merged off the bus thread. Turning a sender into the
+        // name it is known by can cost a round trip, and a handler that makes
+        // one is a handler blocking the connection the answer has to come back
+        // on, which the connection's own documentation says not to do.
+        onDispatch {
+            val id = knownIdForOwner(sender) ?: return@onDispatch
             val merged = synchronized(known) {
                 val previous = known[id] ?: return@synchronized null
-                val updated = merge(previous, iface, changed, invalidated)
+                val updated = merge(previous, change.iface, change.changed, change.invalidated)
                 known[id] = updated
+                merges[id] = (merges[id] ?: 0L) + 1
                 updated
-            } ?: return
-            emit(PlayerEvent.Changed(merged))
+            } ?: return@onDispatch
+            deliver(PlayerEvent.Changed(merged))
         }
+    }
+
+    /** One signal's payload, read on the bus thread and carried off it. */
+    private class Change(
+        val iface: String,
+        val changed: Map<String, Any?>,
+        val invalidated: List<String>,
+    )
+
+    private fun readChange(message: MemorySegment): Change? = Arena.ofConfined().use { call ->
+        val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
+        if ((symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int) == 0) return null
+        // Both interfaces, because Fullscreen is a root property and the
+        // signal names the interface its properties came from.
+        val iface = symbols.readString(call, iter)
+        if (iface != Mpris.PLAYER_INTERFACE && iface != Mpris.ROOT_INTERFACE) return null
+        symbols.next(iter)
+        val changed = readVariantDict(call, iter)
+        symbols.next(iter)
+        // A property the player stopped carrying arrives here rather than
+        // in the dictionary, since there is no new value to send. Reading
+        // it is how a repeat button drawn from LoopStatus goes away again.
+        val invalidated = symbols.readStringArray(call, iter)
+        if (changed.isEmpty() && invalidated.isEmpty()) return null
+        Change(iface, changed, invalidated)
     }
 
     private fun onSeeked(message: MemorySegment) {
         val sender = readMessageString("dbus_message_get_sender", message) ?: return
-        Arena.ofConfined().use { call ->
+        val position = Arena.ofConfined().use { call ->
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
-            if ((symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int) == 0) return
-            val position = symbols.readInt64(call, iter) ?: return
-            val id = knownIdForOwner(sender) ?: return
+            if ((symbols.handle("dbus_message_iter_init").invokeExact(message, iter) as Int) == 0) {
+                return@use null
+            }
+            symbols.readInt64(call, iter)
+        } ?: return
+        onDispatch {
+            val id = knownIdForOwner(sender) ?: return@onDispatch
             val merged = synchronized(known) {
                 val previous = known[id] ?: return@synchronized null
                 val updated = previous.copy(positionMicros = position)
                 known[id] = updated
+                merges[id] = (merges[id] ?: 0L) + 1
                 updated
-            } ?: return
-            emit(PlayerEvent.Changed(merged))
+            } ?: return@onDispatch
+            deliver(PlayerEvent.Changed(merged))
         }
+    }
+
+    /** Hand work to the dispatch thread, or drop it where the reader is closing. */
+    private fun onDispatch(body: () -> Unit) {
+        runCatching { dispatch.execute(body) }
+            .onFailure { log.debug("signal dropped, the reader is closing") }
     }
 
     /**
@@ -338,6 +395,9 @@ internal class MprisReader private constructor(
     /** Both interfaces of one player, or null when it went away mid-read. */
     private fun read(name: String): ForeignPlayer? {
         val player = getAll(name, Mpris.PLAYER_INTERFACE) ?: return null
+        // Recorded while off the bus thread, where a round trip is affordable.
+        // Every signal from this player afterwards resolves out of the map.
+        nameOwner(name)?.let { owners[it] = name }
         val root = getAll(name, Mpris.ROOT_INTERFACE).orEmpty()
         return ForeignPlayer(
             id = name,
@@ -564,15 +624,14 @@ internal class MprisReader private constructor(
         (symbols.handle(accessor).invokeExact(message) as MemorySegment).readCString()
 
     private fun emit(event: PlayerEvent) {
-        val snapshot = listeners.toList()
-        if (snapshot.isEmpty()) return
-        runCatching {
-            dispatch.execute {
-                snapshot.forEach { listener ->
-                    runCatching { listener(event) }
-                        .onFailure { log.warn("player listener threw: {}", it.message) }
-                }
-            }
+        onDispatch { deliver(event) }
+    }
+
+    /** Already on the dispatch thread, which is the only thread that calls this. */
+    private fun deliver(event: PlayerEvent) {
+        listeners.toList().forEach { listener ->
+            runCatching { listener(event) }
+                .onFailure { log.warn("player listener threw: {}", it.message) }
         }
     }
 
