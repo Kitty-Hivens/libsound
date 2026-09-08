@@ -46,6 +46,8 @@ class MprisReaderTest {
             SessionConfig(
                 applicationName = name,
                 identity = "libsound loop",
+                canRaise = true,
+                canQuit = true,
                 canSetFullscreen = true,
             ),
         )
@@ -183,6 +185,38 @@ class MprisReaderTest {
 
         reader!!.control(busName, SessionCommand.SetShuffle(true)) shouldBe true
         awaitCommand { it is SessionCommand.SetShuffle && it.shuffle }
+    }
+
+    @Test
+    fun `the root's own methods reach the player through the reader`() {
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, canPlay = true))
+        val player = awaitPlayer()
+        // Read before asked, the way the transport buttons already are: these
+        // say whether the target will act on the call rather than merely answer
+        // it, and a widget that skipped the question would draw both actions
+        // for every player on the bus.
+        player.canRaise shouldBe true
+        player.canQuit shouldBe true
+
+        reader!!.control(busName, SessionCommand.Raise) shouldBe true
+        awaitCommand { it == SessionCommand.Raise }
+        reader!!.control(busName, SessionCommand.Quit) shouldBe true
+        awaitCommand { it == SessionCommand.Quit }
+    }
+
+    @Test
+    fun `a fullscreen that goes away reaches the reader as absent`() {
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = true))
+        awaitPlayer { it.fullscreen == true }
+
+        val seen = CopyOnWriteArrayList<ForeignPlayer>()
+        reader!!.onChange { if (it is PlayerEvent.Changed && it.player.id == busName) seen.add(it.player) }
+        // On the root's own interface, which is the half a reader watching only
+        // the player interface would never see.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
+        awaitIn(seen) { it.fullscreen == false }
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING))
+        awaitIn(seen) { it.fullscreen == null }
     }
 
     @Test

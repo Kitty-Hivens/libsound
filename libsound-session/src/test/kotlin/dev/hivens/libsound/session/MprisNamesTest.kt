@@ -5,6 +5,8 @@ import dev.hivens.libsound.PlaybackState
 import dev.hivens.libsound.session.mpris.Mpris
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
+import javax.xml.parsers.DocumentBuilderFactory
 
 /**
  * The string-shaped half of the protocol, which fails silently when wrong.
@@ -142,6 +144,29 @@ class MprisNamesTest {
         // The object path is fixed by the spec, and a player that answers on
         // another one is a player nobody finds.
         Mpris.OBJECT_PATH shouldBe "/org/mpris/MediaPlayer2"
+    }
+
+    @Test
+    fun `the introspection document parses, with the optional properties in or out`() {
+        // The optional four are dropped by removing their lines, so the
+        // assertions above would pass just as happily on a document a parser
+        // rejects. A desktop that cannot parse this sees a player with no
+        // interfaces at all.
+        val factory = DocumentBuilderFactory.newInstance()
+        // The DOCTYPE names a DTD on freedesktop.org, and a test that reaches
+        // the network is a test that fails when the network does.
+        factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+        listOf(
+            Mpris.introspectionXml(loop = true, shuffle = true, fullscreen = true),
+            Mpris.introspectionXml(loop = false, shuffle = false, fullscreen = false),
+            Mpris.introspectionXml(loop = true, shuffle = false, fullscreen = true),
+        ).forEach { xml ->
+            val root = factory.newDocumentBuilder()
+                .parse(ByteArrayInputStream(xml.toByteArray()))
+                .documentElement
+            root.tagName shouldBe "node"
+            root.getElementsByTagName("interface").length shouldBe 5
+        }
     }
 
     @Test

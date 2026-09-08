@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit
 class MprisSessionTest {
 
     private var session: MediaSession? = null
+    private val others = CopyOnWriteArrayList<MediaSession>()
     private val received = CopyOnWriteArrayList<SessionCommand>()
     private val name = "libsoundTest${ProcessHandle.current().pid()}"
     private val busName = "org.mpris.MediaPlayer2.$name"
@@ -55,6 +56,8 @@ class MprisSessionTest {
 
     @AfterEach
     fun unpublish() {
+        others.forEach { runCatching { it.close() } }
+        others.clear()
         session?.let { runCatching { it.close() } }
         session = null
     }
@@ -133,6 +136,34 @@ class MprisSessionTest {
         set(Mpris.ROOT_INTERFACE, Mpris.PROP_FULLSCREEN, "<true>")
         await { received.any { it is SessionCommand.SetFullscreen } }
         received.filterIsInstance<SessionCommand.SetFullscreen>().firstOrNull()?.fullscreen shouldBe true
+    }
+
+    @Test
+    fun `a value of the wrong type is refused rather than read as something else`() {
+        session!!.publish(
+            SessionState(playback = PlaybackState.PLAYING, loop = LoopMode.NONE, shuffle = false),
+        )
+        // A desktop that sends the wrong shape gets told so. The reads return
+        // null for a type they did not expect, and the alternative to answering
+        // here is firing a command built out of whatever the variant held.
+        ("InvalidArgs" in set(Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS, "<42>")) shouldBe true
+        ("InvalidArgs" in set(Mpris.PLAYER_INTERFACE, Mpris.PROP_SHUFFLE, "<'yes'>")) shouldBe true
+        ("InvalidArgs" in set(Mpris.PLAYER_INTERFACE, Mpris.PROP_LOOP_STATUS, "<'Album'>")) shouldBe true
+        Thread.sleep(300)
+        received.none { it is SessionCommand.SetLoop || it is SessionCommand.SetShuffle } shouldBe true
+    }
+
+    @Test
+    fun `a property set on the wrong interface is not the one this player carries`() {
+        // Volume belongs to the player and Fullscreen to the root. The two
+        // interfaces are separate objects as far as the protocol is concerned,
+        // and a Set that names the wrong one is asking for a property that is
+        // not there.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
+        ("UnknownProperty" in set(Mpris.ROOT_INTERFACE, Mpris.PROP_VOLUME, "<0.5>")) shouldBe true
+        ("UnknownProperty" in set(Mpris.PLAYER_INTERFACE, Mpris.PROP_FULLSCREEN, "<true>")) shouldBe true
+        Thread.sleep(300)
+        received.none { it is SessionCommand.SetVolume || it is SessionCommand.SetFullscreen } shouldBe true
     }
 
     @Test
@@ -254,6 +285,29 @@ class MprisSessionTest {
     }
 
     @Test
+    fun `quit reaches a player that claimed it, and fullscreen does not without permission`() {
+        val quitter = openWith("Quit") { it ->
+            SessionConfig(applicationName = it, canQuit = true, canSetFullscreen = false)
+        }
+        call(quitter, Mpris.ROOT_INTERFACE, "Quit")
+        await { SessionCommand.Quit in received }
+
+        // The other half of the same gate. The state carries a fullscreen, so
+        // the property is on the interface and readable; what the desktop may
+        // not do is change it, and saying so is better than accepting a value
+        // nothing acts on.
+        others.first().publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
+        val out = gdbus(
+            "call", "--dest", quitter, "--object-path", Mpris.OBJECT_PATH,
+            "--method", "org.freedesktop.DBus.Properties.Set",
+            Mpris.ROOT_INTERFACE, Mpris.PROP_FULLSCREEN, "<true>",
+        )
+        ("NotSupported" in out) shouldBe true
+        Thread.sleep(300)
+        received.none { it is SessionCommand.SetFullscreen } shouldBe true
+    }
+
+    @Test
     fun `playerctl reads the repeat mode and sets it back`() {
         // The properties section 8 was written for, checked by the tool a
         // desktop widget behaves like. gdbus proves the message is well formed;
@@ -281,6 +335,26 @@ class MprisSessionTest {
         while (received.isEmpty() && System.nanoTime() < deadline) Thread.sleep(20)
         (SessionCommand.PlayPause in received) shouldBe true
     }
+
+    /**
+     * A second player with a configuration of its own, on its own bus name.
+     *
+     * The gates in this file are read from the configuration, and a
+     * configuration is fixed when the session opens, so the negative half of
+     * each one needs a session that claimed something different.
+     */
+    private fun openWith(suffix: String, build: (String) -> SessionConfig): String {
+        val other = name + suffix
+        val session = MprisSession.openOrNull(build(other))
+        SessionTestGate.require("dbus", session != null, "no session bus reachable")
+        others.add(session!!)
+        session.onCommand { received.add(it) }
+        return "org.mpris.MediaPlayer2.$other"
+    }
+
+    private fun call(dest: String, iface: String, member: String): String = gdbus(
+        "call", "--dest", dest, "--object-path", Mpris.OBJECT_PATH, "--method", "$iface.$member",
+    )
 
     /**
      * Run a client and capture what it printed, with the charset pinned.
