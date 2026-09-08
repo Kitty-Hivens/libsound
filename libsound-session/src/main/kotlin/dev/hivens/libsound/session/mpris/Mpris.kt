@@ -209,14 +209,20 @@ internal object Mpris {
     /**
      * What the object says it carries, for a caller that asked.
      *
-     * Four of the properties in the specification are optional, and a player
-     * that has no repeat, no shuffle and no screen to fill must not advertise
-     * them: introspection is where a widget finds out which controls to draw,
+     * Five of the properties in the specification are optional, and a player
+     * that has no repeat, no shuffle, no screen to fill and no desktop file
+     * must not advertise them: introspection is where a widget finds out which
+     * controls to draw,
      * and a button whose `Set` comes back as an unknown property is worse than
      * no button. So the document describes what this session currently answers
      * rather than what the interface could hold.
      */
-    fun introspectionXml(loop: Boolean, shuffle: Boolean, fullscreen: Boolean): String {
+    fun introspectionXml(
+        loop: Boolean,
+        shuffle: Boolean,
+        fullscreen: Boolean,
+        desktopEntry: Boolean,
+    ): String {
         val absent = buildSet {
             if (!loop) add(PROP_LOOP_STATUS)
             if (!shuffle) add(PROP_SHUFFLE)
@@ -224,6 +230,7 @@ internal object Mpris {
                 add(PROP_FULLSCREEN)
                 add(PROP_CAN_SET_FULLSCREEN)
             }
+            if (!desktopEntry) add(PROP_DESKTOP_ENTRY)
         }
         if (absent.isEmpty()) return INTROSPECTION_TEMPLATE
         return INTROSPECTION_TEMPLATE.lines()
@@ -284,7 +291,6 @@ internal object Mpris {
           </interface>
           <interface name="org.freedesktop.DBus.Peer">
             <method name="Ping"/>
-            <method name="GetMachineId"><arg name="machine_uuid" type="s" direction="out"/></method>
           </interface>
           <interface name="org.mpris.MediaPlayer2">
             <method name="Raise"/>
