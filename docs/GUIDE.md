@@ -343,6 +343,44 @@ session.onCommand { command ->
 }
 ```
 
+Repeat and shuffle are the two properties standing between a player and every
+desktop widget that draws more than transport buttons. They are optional in the
+protocol, and that is the whole design of them here:
+
+```kotlin
+// Null until there is a queue to repeat, because a widget draws a
+// repeat button for a player that publishes LoopStatus and draws none
+// for one that does not. Publishing NONE would put a button on a radio
+// stream, and pressing it would change nothing.
+session.publish(
+    SessionState(
+        playback = PlaybackState.PLAYING,
+        loop = LoopMode.PLAYLIST,
+        shuffle = false,
+    ),
+)
+session.onCommand { command ->
+    when (command) {
+        is SessionCommand.SetLoop -> setLoop(command.loop)
+        is SessionCommand.SetShuffle -> setShuffle(command.shuffle)
+        else -> Unit
+    }
+}
+```
+
+**Null and `LoopMode.NONE` are different answers.** Null means the player has no
+such notion, so the property is not on the interface at all: a desktop asking
+for it gets an unknown property, and a widget that checked draws no button.
+`NONE` means the player has a queue and is not repeating it. The same holds for
+`shuffle`, and for `fullscreen` on the root interface, whose companion
+`SessionConfig.canSetFullscreen` says whether the desktop may change it rather
+than only read it.
+
+`Raise` and `Quit` arrive as commands too, and only where `canRaise` and
+`canQuit` said they would be honoured. A desktop that offers "show the window"
+and reaches a player which does nothing with it is the dead button the
+capability query exists to prevent.
+
 ## Driving everybody else
 
 ```kotlin
@@ -355,6 +393,18 @@ return reader.use {
         .filter { player -> player.canControl && player.playback == PlaybackState.PLAYING }
         .count { player -> it.control(player.id, SessionCommand.Pause) }
 }
+```
+
+The same properties are readable in that direction, and absent just as often:
+
+```kotlin
+return reader.players()
+    // A player that publishes no repeat mode has none, so there is
+    // nothing to turn off and no button to draw for it. Null is the
+    // usual answer: most players on a bus carry neither property.
+    .filter { it.canControl && it.loop != null }
+    .filter { reader.control(it.id, SessionCommand.SetLoop(LoopMode.NONE)) }
+    .map { it.id }
 ```
 
 Controlling another player is a different kind of act from changing its volume.
@@ -393,6 +443,7 @@ backend closes the sinks it handed out. Closing a mixer restores what it changed
 | Record one application | yes | **no** | **no** |
 | Publish a media session | MPRIS | SMTC | MPNowPlayingInfoCenter |
 | Read other media sessions | MPRIS | not yet | **no** -- private API only |
+| Repeat, shuffle and fullscreen | yes, both directions | **not yet** | **not yet** |
 
 The Windows meter is a toolchain gap rather than a platform one: Windows has
 `IAudioMeterInformation`, and mingw-w64 declares the interface without its vtable

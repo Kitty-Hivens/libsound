@@ -24,6 +24,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   term would get it wrong differently on every machine.
 
 ### Added
+- Repeat, shuffle and fullscreen over MPRIS, in both directions. `LoopStatus`
+  and `Shuffle` are the two properties standing between this player and every
+  desktop widget that draws more than transport buttons, and `Fullscreen` is
+  the root property a video player is expected to carry. All three are optional
+  in the specification and optional here: `SessionState` holds them as null
+  until a consumer publishes one, and a session that published none leaves them
+  out of `GetAll`, answers an unknown property to a `Get`, refuses a `Set` and
+  says the same thing in its introspection, which is where a widget decides
+  what to draw. Null is not `LoopMode.NONE`: the first means there is no queue
+  to repeat, the second means there is one and it is not repeating, and
+  publishing NONE for a radio stream would put a button on it that changes
+  nothing. A property that goes away afterwards is announced through the
+  invalidated array, the only thing the protocol offers for one that is no
+  longer there, and the reader follows it.
+- `Raise` and `Quit` arrive as commands, gated on the `canRaise` and `canQuit`
+  the session configuration advertised. Both were answered and dropped before,
+  so a consumer that claimed either had a control the desktop drew and nothing
+  acted on. `SessionConfig.canSetFullscreen` is the third of the same kind, and
+  the reader reports all three for other players so a widget can ask before it
+  draws.
 - Latency that means something on Linux. `LatencyProfile` names four targets
   from 200 ms down to 5, `PA_STREAM_ADJUST_LATENCY` makes `tlength` a latency
   the server shortens its own path to meet rather than a buffer size it may
