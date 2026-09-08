@@ -89,13 +89,23 @@ internal class MprisSession private constructor(
         if (closed.get()) return
         val previous = published
         this.state = state
-        published = state
         if (previous == null) {
-            // Nothing has been said yet, so everything is news.
-            emitChanged(Mpris.PLAYER_INTERFACE, carried(Mpris.PLAYER_CHANGING_PROPERTIES, state), emptyList(), state)
-            emitChanged(Mpris.ROOT_INTERFACE, carried(Mpris.ROOT_CHANGING_PROPERTIES, state), emptyList(), state)
+            // Nothing has been said yet, so everything the state carries is
+            // news. Recorded as published only once both signals are out: a
+            // first emission that never went leaves the next publish to say
+            // everything again rather than to diff against something no reader
+            // saw. `and` rather than `&&`, because the second one has to be
+            // attempted whatever the first one did.
+            val player = emitChanged(
+                Mpris.PLAYER_INTERFACE, carried(Mpris.PLAYER_CHANGING_PROPERTIES, state), emptyList(), state,
+            )
+            val root = emitChanged(
+                Mpris.ROOT_INTERFACE, carried(Mpris.ROOT_CHANGING_PROPERTIES, state), emptyList(), state,
+            )
+            if (player and root) published = state
             return
         }
+        published = state
         announce(Mpris.PLAYER_INTERFACE, Mpris.PLAYER_CHANGING_PROPERTIES, previous, state)
         announce(Mpris.ROOT_INTERFACE, Mpris.ROOT_CHANGING_PROPERTIES, previous, state)
     }
@@ -573,15 +583,16 @@ internal class MprisSession private constructor(
         emitChanged(iface, changed, invalidated, current)
     }
 
+    /** False only where the signal could not be built, which is what [publish] records. */
     private fun emitChanged(
         iface: String,
         changed: List<String>,
         invalidated: List<String>,
         current: SessionState,
-    ) {
-        if (changed.isEmpty() && invalidated.isEmpty()) return
+    ): Boolean {
+        if (changed.isEmpty() && invalidated.isEmpty()) return true
         Arena.ofConfined().use { call ->
-            val signal = newSignal(call, Mpris.PROPERTIES_INTERFACE, "PropertiesChanged") ?: return
+            val signal = newSignal(call, Mpris.PROPERTIES_INTERFACE, "PropertiesChanged") ?: return false
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)
             symbols.handle("dbus_message_iter_init_append").invokeExact(signal, iter) as Unit
             symbols.appendString(call, iter, DBusAbi.TYPE_STRING, iface)
@@ -596,6 +607,7 @@ internal class MprisSession private constructor(
             invalidated.forEach { symbols.appendString(call, names, DBusAbi.TYPE_STRING, it) }
             symbols.closeContainer(iter, names)
             bus.send(signal)
+            return true
         }
     }
 
