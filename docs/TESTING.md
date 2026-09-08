@@ -21,6 +21,11 @@ cannot run on that JVM. It went unexecuted for a while on the assumption that it
 needed a Windows machine, which turned out to be false: the Windows JVM was
 already there, and so was the launcher.
 
+There is a second page for somebody willing to go further:
+[docs/TESTING-WINDOWS.md](TESTING-WINDOWS.md) collects the questions CI cannot
+answer at all, with what each one unblocks. This page is the ten minute version
+and stands on its own.
+
 ## What you need
 
 - **A JDK, version 22 or newer.** [Temurin](https://adoptium.net/) is the usual
