@@ -25,6 +25,7 @@ import dev.hivens.libsound.dbus.readInt64
 import dev.hivens.libsound.dbus.readString
 import dev.hivens.libsound.dbus.readStringArray
 import dev.hivens.libsound.dbus.recurse
+import dev.hivens.libsound.dbus.recurseOrNull
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -385,13 +386,17 @@ internal class MprisReader private constructor(
      */
     private fun readVariantDict(call: Arena, iter: MemorySegment): Map<String, Any?> {
         if (symbols.argType(iter) != DBusAbi.TYPE_ARRAY) return emptyMap()
-        val array = symbols.recurse(call, iter)
+        val array = symbols.recurseOrNull(call, iter) ?: return emptyMap()
         val values = mutableMapOf<String, Any?>()
         while (symbols.argType(array) != DBusAbi.TYPE_INVALID) {
-            val entry = symbols.recurse(call, array)
+            // Every recursion here is into something a peer wrote. An `as`
+            // where an `a{sv}` was expected leaves the cursor on a string, and
+            // recursing into one aborts the process from inside libdbus, so a
+            // shape that is not the one this reads stops the walk instead.
+            val entry = symbols.recurseOrNull(call, array) ?: break
             val key = symbols.readString(call, entry)
             symbols.next(entry)
-            val variant = symbols.recurse(call, entry)
+            val variant = symbols.recurseOrNull(call, entry) ?: break
             if (key != null) {
                 when (symbols.argType(variant)) {
                     DBusAbi.TYPE_STRING, DBusAbi.TYPE_OBJECT_PATH ->
