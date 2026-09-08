@@ -308,6 +308,25 @@ class MprisSessionTest {
     }
 
     @Test
+    fun `a set with the value left off is answered rather than aborting the process`() {
+        // dbus_message_iter_init proves there is a first argument and nothing
+        // more, and dbus_message_iter_recurse on an iterator that ran out
+        // asserts inside libdbus, which calls _dbus_abort and takes the whole
+        // host process with it. Measured: this killed the test JVM with
+        // SIGABRT before the shape was checked, and it reproduces against the
+        // commit this branch started from. Anybody on the session bus can send
+        // it.
+        val out = dbusSend(
+            busName, "org.freedesktop.DBus.Properties.Set",
+            "string:${Mpris.PLAYER_INTERFACE}", "string:${Mpris.PROP_VOLUME}",
+        )
+        ("InvalidArgs" in out) shouldBe true
+        // The player answered, and is still there to answer the next one.
+        session!!.isOpen shouldBe true
+        ("'Volume'" in getAll(Mpris.PLAYER_INTERFACE)) shouldBe true
+    }
+
+    @Test
     fun `playerctl reads the repeat mode and sets it back`() {
         // The properties section 8 was written for, checked by the tool a
         // desktop widget behaves like. gdbus proves the message is well formed;
@@ -351,6 +370,10 @@ class MprisSessionTest {
         session.onCommand { received.add(it) }
         return "org.mpris.MediaPlayer2.$other"
     }
+
+    /** dbus-send rather than gdbus, because gdbus builds the arguments the interface says it should. */
+    private fun dbusSend(dest: String, method: String, vararg args: String): String =
+        run(listOf("dbus-send", "--session", "--print-reply", "--dest=$dest", Mpris.OBJECT_PATH, method) + args)
 
     private fun call(dest: String, iface: String, member: String): String = gdbus(
         "call", "--dest", dest, "--object-path", Mpris.OBJECT_PATH, "--method", "$iface.$member",

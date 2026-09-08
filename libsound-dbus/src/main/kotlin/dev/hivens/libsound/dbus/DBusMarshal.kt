@@ -222,6 +222,27 @@ fun DBusSymbols.recurse(call: Arena, iter: MemorySegment): MemorySegment {
 }
 
 /**
+ * Recurse into the container at the cursor, or null where the cursor is not on
+ * one.
+ *
+ * Not a convenience, and the reason is the same one [DBusAbi] gives for reading
+ * the ABI off an oracle. `dbus_message_iter_recurse` asserts that the current
+ * type is a container, and libdbus answers a failed assertion with
+ * `_dbus_abort()`: it dumps core and takes the host process with it. Measured,
+ * on a `Properties.Set` carrying two arguments where the signature says three.
+ *
+ * Every argument here comes off a socket that anybody on the bus can write to,
+ * so a peer that sends the wrong shape must get an error rather than the last
+ * word on whether this process keeps running.
+ */
+fun DBusSymbols.recurseOrNull(call: Arena, iter: MemorySegment): MemorySegment? {
+    val type = argType(iter)
+    val container = type == DBusAbi.TYPE_ARRAY || type == DBusAbi.TYPE_VARIANT ||
+        type == DBusAbi.TYPE_STRUCT || type == DBusAbi.TYPE_DICT_ENTRY
+    return if (container) recurse(call, iter) else null
+}
+
+/**
  * Read a string at the cursor.
  *
  * STRING, OBJECT_PATH and SIGNATURE are all NUL-terminated `char *` on the

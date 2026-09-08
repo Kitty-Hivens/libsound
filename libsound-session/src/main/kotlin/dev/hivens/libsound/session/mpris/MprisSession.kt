@@ -28,7 +28,7 @@ import dev.hivens.libsound.dbus.readCString
 import dev.hivens.libsound.dbus.readDouble
 import dev.hivens.libsound.dbus.readInt64
 import dev.hivens.libsound.dbus.readString
-import dev.hivens.libsound.dbus.recurse
+import dev.hivens.libsound.dbus.recurseOrNull
 import dev.hivens.libsound.dbus.variant
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
@@ -311,7 +311,6 @@ internal class MprisSession private constructor(
             symbols.next(iter)
             val property = symbols.readString(call, iter)
             symbols.next(iter)
-            val value = symbols.recurse(call, iter)
             val current = state
 
             // The interface is read rather than skipped now that both of them
@@ -323,6 +322,15 @@ internal class MprisSession private constructor(
             // them.
             if (property == null || property !in writableOn(iface) || !has(property, current)) {
                 replyError(message, ERROR_UNKNOWN_PROPERTY, "No writable property ${iface ?: "?"}.$property")
+                return
+            }
+            // The value is the third argument and nothing has established that
+            // there is one. Recursing into an iterator that ran out asserts
+            // inside libdbus, which aborts the process, so the shape is checked
+            // before it is read.
+            val value = symbols.recurseOrNull(call, iter)
+            if (value == null) {
+                replyError(message, ERROR_INVALID_ARGS, "Set takes an interface, a property and a value")
                 return
             }
             when (property) {

@@ -23,6 +23,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   plus the server's share, plus the device's. A consumer estimating the middle
   term would get it wrong differently on every machine.
 
+### Fixed
+- A `Properties.Set` carrying fewer arguments than its signature took the
+  process down. `dbus_message_iter_init` proves there is a first argument and
+  nothing more, and `dbus_message_iter_recurse` on an iterator that has run out
+  asserts inside libdbus, which answers a failed assertion with `_dbus_abort`.
+  Measured as a SIGABRT that killed the test JVM, reachable by any process on
+  the session bus, and present since the session was written. The shape is
+  checked before it is read now, here and on the reading side, where an `as`
+  arriving where an `a{sv}` was expected reached the same abort through the
+  metadata walk.
+
 ### Added
 - Repeat, shuffle and fullscreen over MPRIS, in both directions. `LoopStatus`
   and `Shuffle` are the two properties standing between this player and every
