@@ -10,6 +10,7 @@ import dev.hivens.libsound.SessionConfig
 import dev.hivens.libsound.SessionReader
 import dev.hivens.libsound.SessionState
 import dev.hivens.libsound.TrackMetadata
+import dev.hivens.libsound.session.mpris.Mpris
 import dev.hivens.libsound.session.mpris.MprisReader
 import dev.hivens.libsound.session.mpris.MprisSession
 import io.kotest.matchers.shouldBe
@@ -237,6 +238,56 @@ class MprisReaderTest {
         session!!.publish(SessionState(playback = PlaybackState.PLAYING))
         awaitPlayer()
         reader!!.control(busName, SessionCommand.SetFullscreen(true)) shouldBe false
+    }
+
+    @Test
+    fun `the reader survives a properties signal shaped like something else`() {
+        // The reading half of the same abort. readVariantDict recurses into
+        // what a peer wrote, and an `as` where an `a{sv}` was expected leaves
+        // the cursor on a string: recursing into one asserts inside libdbus and
+        // takes the process down. Anybody on the bus can send this by claiming
+        // to be a player, and the parser runs before the sender is resolved, so
+        // being unknown is no protection.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, canPlay = true))
+        awaitPlayer()
+
+        ProcessBuilder(
+            "dbus-send", "--session", "--type=signal", Mpris.OBJECT_PATH,
+            "org.freedesktop.DBus.Properties.PropertiesChanged",
+            "string:${Mpris.PLAYER_INTERFACE}", "array:string:not,a,dictionary", "array:string:",
+        ).redirectErrorStream(true).start().waitFor(10, TimeUnit.SECONDS)
+        Thread.sleep(500)
+
+        // Still reading, and still reading correctly.
+        reader!!.isOpen shouldBe true
+        awaitPlayer().playback shouldBe PlaybackState.PLAYING
+    }
+
+    @Test
+    fun `the reader sets fullscreen on the interface that carries it`() {
+        // The negative test below passes just as happily when the property is
+        // set on the wrong interface, because both answer an error. This is the
+        // half that only passes when it is sent to the root.
+        session!!.publish(SessionState(playback = PlaybackState.PLAYING, fullscreen = false))
+        awaitPlayer { it.fullscreen == false }
+
+        reader!!.control(busName, SessionCommand.SetFullscreen(true)) shouldBe true
+        awaitCommand { it is SessionCommand.SetFullscreen && it.fullscreen }
+    }
+
+    @Test
+    fun `a track number survives the trip out and back`() {
+        // The metadata specification says Integer, and this library reads its
+        // own published session: written as an int64 the key is present on the
+        // wire and invisible to every reader that follows the spec, this one
+        // included.
+        session!!.publish(
+            SessionState(
+                playback = PlaybackState.PLAYING,
+                metadata = TrackMetadata(title = "Bus Stop", trackNumber = 7, trackId = "seven"),
+            ),
+        )
+        awaitPlayer { it.metadata.trackNumber != null }.metadata.trackNumber shouldBe 7
     }
 
     @Test
