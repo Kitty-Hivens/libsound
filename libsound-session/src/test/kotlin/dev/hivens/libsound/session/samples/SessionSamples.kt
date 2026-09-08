@@ -1,5 +1,6 @@
 package dev.hivens.libsound.session.samples
 
+import dev.hivens.libsound.LoopMode
 import dev.hivens.libsound.MediaSession
 import dev.hivens.libsound.PlaybackState
 import dev.hivens.libsound.SessionCommand
@@ -78,6 +79,31 @@ internal object SessionSamples {
         }
     }
 
+    fun repeatAndShuffle(
+        session: MediaSession,
+        setLoop: (LoopMode) -> Unit,
+        setShuffle: (Boolean) -> Unit,
+    ) {
+        // Null until there is a queue to repeat, because a widget draws a
+        // repeat button for a player that publishes LoopStatus and draws none
+        // for one that does not. Publishing NONE would put a button on a radio
+        // stream, and pressing it would change nothing.
+        session.publish(
+            SessionState(
+                playback = PlaybackState.PLAYING,
+                loop = LoopMode.PLAYLIST,
+                shuffle = false,
+            ),
+        )
+        session.onCommand { command ->
+            when (command) {
+                is SessionCommand.SetLoop -> setLoop(command.loop)
+                is SessionCommand.SetShuffle -> setShuffle(command.shuffle)
+                else -> Unit
+            }
+        }
+    }
+
     // -- driving everybody else ----------------------------------------------
 
     fun pauseEverythingElse(): Int {
@@ -90,6 +116,16 @@ internal object SessionSamples {
                 .filter { player -> player.canControl && player.playback == PlaybackState.PLAYING }
                 .count { player -> it.control(player.id, SessionCommand.Pause) }
         }
+    }
+
+    fun stopEveryoneRepeating(reader: SessionReader): List<String> {
+        return reader.players()
+            // A player that publishes no repeat mode has none, so there is
+            // nothing to turn off and no button to draw for it. Null is the
+            // usual answer: most players on a bus carry neither property.
+            .filter { it.canControl && it.loop != null }
+            .filter { reader.control(it.id, SessionCommand.SetLoop(LoopMode.NONE)) }
+            .map { it.id }
     }
 
     fun watchPlayers(reader: SessionReader, redraw: () -> Unit): () -> Unit =
