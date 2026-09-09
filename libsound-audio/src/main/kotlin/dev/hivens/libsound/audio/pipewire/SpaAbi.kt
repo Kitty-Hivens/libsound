@@ -41,6 +41,120 @@ internal object SpaAbi {
 
     const val POD_ALIGN = 8
 
+    // -- spa_dict, which is how properties cross without varargs -------------
+
+    /**
+     * `pw_properties_new` is variadic, and a Panama downcall to a variadic
+     * function needs a descriptor per call shape. A dict needs none, so the
+     * properties are built as one and handed to `pw_properties_new_dict`.
+     */
+    const val DICT_SIZE = 16L
+    const val DICT_FLAGS = 0L
+    const val DICT_N_ITEMS = 4L
+    const val DICT_ITEMS = 8L
+
+    const val DICT_ITEM_SIZE = 16L
+    const val DICT_ITEM_KEY = 0L
+    const val DICT_ITEM_VALUE = 8L
+
+    // -- pw_stream_events, a vtable by another name --------------------------
+
+    /**
+     * Handed over whole, and the library calls whatever is in it. So the size
+     * is as load bearing as the offsets: a struct shorter than this leaves the
+     * loop calling through whatever memory follows the allocation, and the
+     * offsets are deliberately not eight apart everywhere, which is what a
+     * hand-counted version of this table gets wrong.
+     */
+    const val STREAM_EVENTS_SIZE = 96L
+    const val STREAM_EVENTS_VERSION = 0L
+    const val STREAM_EVENTS_DESTROY = 8L
+    const val STREAM_EVENTS_STATE_CHANGED = 16L
+    const val STREAM_EVENTS_CONTROL_INFO = 24L
+    const val STREAM_EVENTS_IO_CHANGED = 32L
+    const val STREAM_EVENTS_PARAM_CHANGED = 40L
+    const val STREAM_EVENTS_ADD_BUFFER = 48L
+    const val STREAM_EVENTS_REMOVE_BUFFER = 56L
+    const val STREAM_EVENTS_PROCESS = 64L
+    const val STREAM_EVENTS_DRAINED = 72L
+    const val STREAM_EVENTS_COMMAND = 80L
+    const val STREAM_EVENTS_TRIGGER_DONE = 88L
+
+    /** The version the struct declares, which the library checks before calling anything. */
+    const val VERSION_STREAM_EVENTS = 2
+
+    // -- stream states and flags ---------------------------------------------
+
+    const val STREAM_STATE_ERROR = -1
+    const val STREAM_STATE_UNCONNECTED = 0
+    const val STREAM_STATE_CONNECTING = 1
+    const val STREAM_STATE_PAUSED = 2
+    const val STREAM_STATE_STREAMING = 3
+
+    const val STREAM_FLAG_AUTOCONNECT = 0x0000_0001
+    const val STREAM_FLAG_INACTIVE = 0x0000_0002
+    const val STREAM_FLAG_MAP_BUFFERS = 0x0000_0004
+    const val STREAM_FLAG_RT_PROCESS = 0x0000_0010
+
+    /** `PW_ID_ANY`, which is how a stream says it does not name a target. */
+    const val ID_ANY = -1
+
+    // -- buffers, which is where the audio actually is -----------------------
+
+    const val PW_BUFFER_BUFFER = 0L
+    const val PW_BUFFER_SIZE = 16L
+    const val PW_BUFFER_REQUESTED = 24L
+    const val PW_BUFFER_HEAD = 32L
+
+    const val SPA_BUFFER_N_DATAS = 4L
+    const val SPA_BUFFER_DATAS = 16L
+    const val SPA_BUFFER_HEAD = 24L
+
+    const val SPA_DATA_SIZE = 40L
+    const val SPA_DATA_MAXSIZE = 20L
+    const val SPA_DATA_DATA = 24L
+    const val SPA_DATA_CHUNK = 32L
+
+    const val SPA_CHUNK_SIZE = 16L
+    const val SPA_CHUNK_OFFSET = 0L
+    const val SPA_CHUNK_LENGTH = 4L
+    const val SPA_CHUNK_STRIDE = 8L
+
+    // -- pw_time, the playhead and the latency -------------------------------
+
+    const val TIME_SIZE = 64L
+    const val TIME_NOW = 0L
+    const val TIME_RATE_NUM = 8L
+    const val TIME_RATE_DENOM = 12L
+    const val TIME_TICKS = 16L
+
+    /** The graph's own share, in the units [TIME_RATE_NUM] and its denominator give. */
+    const val TIME_DELAY = 24L
+
+    /** Frames handed over and not yet played, which is this client's share. */
+    const val TIME_QUEUED = 32L
+    const val TIME_BUFFERED = 40L
+
+    // -- property keys -------------------------------------------------------
+
+    const val KEY_MEDIA_TYPE = "media.type"
+    const val KEY_MEDIA_CATEGORY = "media.category"
+    const val KEY_MEDIA_ROLE = "media.role"
+    const val KEY_APP_NAME = "application.name"
+    const val KEY_APP_ID = "application.id"
+    const val KEY_APP_ICON_NAME = "application.icon-name"
+    const val KEY_NODE_NAME = "node.name"
+    const val KEY_NODE_DESCRIPTION = "node.description"
+
+    /**
+     * The lever section 4.4 measured `pipewire-pulse` overwriting. A node sets
+     * it and keeps it; a pulse client sets it and has the shim recompute it
+     * from the buffer size that client asked for.
+     */
+    const val KEY_NODE_LATENCY = "node.latency"
+    const val KEY_NODE_RATE = "node.rate"
+    const val KEY_TARGET_OBJECT = "target.object"
+
     // -- POD types -----------------------------------------------------------
 
     const val TYPE_NONE = 1

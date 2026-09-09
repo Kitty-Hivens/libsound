@@ -1093,9 +1093,10 @@ and the answers are the specification for this section.
 | `node.latency` | Computed from the pulse request and overwritten, measured in 4.4 | A property the node sets |
 
 The eight positions the shim costs are the wide pair, the second low frequency
-channel, the top side pair and the bottom row. Between them they are the
-difference between carrying `9.1.6`, `7.2.3` and `hexadecagonal` and refusing
-them, which is what this library does today.
+channel, the top side pair and the bottom row. Between them they are four of
+the forty layouts FFmpeg names: `9.1.6`, `7.2.3`, `hexadecagonal` and `22.2`.
+The libpulse backend refuses all four and the native one takes every layout in
+the set, which `PipeWireBackendTest` asserts by opening each of them.
 
 That matters more than the count suggests, because of how those refusals read.
 `AudioSink.accepts` answers false and `open` throws, and the message says this
