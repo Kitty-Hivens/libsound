@@ -5,6 +5,7 @@ import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.PcmEncoding
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -30,6 +31,8 @@ public class FakeAudioSource(
         Capability.STREAM_IDENTITY,
         Capability.DEVICE_POSITION,
     ),
+    /** Everything by default, for the reason [FakeAudioSink] takes everything. */
+    override val acceptedEncodings: Set<PcmEncoding> = PcmEncoding.entries.toSet(),
 ) : AudioSource {
 
     private val lock = ReentrantLock()
@@ -103,6 +106,9 @@ public class FakeAudioSource(
     override fun open(format: AudioFormat) {
         lock.withLock {
             if (closed) throw AudioException("source is closed")
+            // The same refusal a real backend owes, so a suite driving this
+            // fake meets the shape it would meet against hardware.
+            if (!accepts(format)) throw AudioException("this fake takes $acceptedEncodings, not ${format.encoding}")
             openFormat = format
             buffered = ByteArray(0)
             capturedFrames = 0

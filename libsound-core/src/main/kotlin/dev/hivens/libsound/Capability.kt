@@ -39,6 +39,24 @@ public enum class Capability {
      */
     DEVICE_POSITION,
 
+    /**
+     * The sink tells the device what each channel is, so [AudioFormat.layout]
+     * is honoured rather than assumed.
+     *
+     * Absent means only a count goes across and the device applies whatever
+     * order it conventionally uses for that many channels. The two conventions
+     * are not the same: ALSA lays six channels out as front pair, rear pair,
+     * centre, LFE, and FFmpeg hands them over as front pair, centre, LFE, rear
+     * pair. A player that sends one to a device expecting the other puts a
+     * film's dialogue in the rears.
+     *
+     * Nothing to ask below three channels, where every platform agrees. Past
+     * that this is the question, and a consumer whose backend answers no either
+     * accepts the platform's ordering or downmixes to stereo, which is an
+     * addon's work rather than this library's.
+     */
+    CHANNEL_PLACEMENT,
+
     /** Every playback stream on the machine can be listed. */
     STREAM_ENUMERATION,
 

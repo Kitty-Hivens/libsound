@@ -1,7 +1,10 @@
 package dev.hivens.libsound.testing
 
+import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSource
+import dev.hivens.libsound.PcmEncoding
+import io.kotest.assertions.withClue
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -135,6 +138,37 @@ public abstract class AudioSourceContract {
         newSource().use { source ->
             source.open(cd)
             source.format shouldBe cd
+        }
+    }
+
+    @Test
+    public fun `S16LE is on offer, because every backend owes it`() {
+        newSource().use { source ->
+            (PcmEncoding.S16LE in source.acceptedEncodings) shouldBe true
+            source.accepts(AudioFormat.CD_STEREO) shouldBe true
+        }
+    }
+
+    @Test
+    public fun `what the source says it accepts is what open takes`() {
+        // The output side's rule, reversed: a recorder chooses its shape before
+        // it has anywhere to put the frames, and an answer that does not match
+        // the behaviour leaves it nothing further to ask.
+        newSource().use { source ->
+            for (encoding in PcmEncoding.entries) {
+                val shape = AudioFormat(format.sampleRate, format.channels, encoding)
+                val claimed = source.accepts(shape)
+                val opened = runCatching { source.open(shape) }
+                if (claimed) {
+                    withClue("accepts($encoding) was true, so open must not have thrown") {
+                        opened.exceptionOrNull() shouldBe null
+                    }
+                } else {
+                    withClue("accepts($encoding) was false, so open owes an AudioException") {
+                        (opened.exceptionOrNull() is AudioException) shouldBe true
+                    }
+                }
+            }
         }
     }
 

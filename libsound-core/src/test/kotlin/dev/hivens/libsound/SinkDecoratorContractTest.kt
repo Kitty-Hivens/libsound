@@ -33,6 +33,11 @@ private class BufferedPassThroughSink(
 
     override val capabilities: Capabilities get() = inner.capabilities
 
+    /** The device's, because a decorator changes samples and not what a device takes. */
+    override val acceptedEncodings: Set<PcmEncoding> get() = inner.acceptedEncodings
+
+    override fun accepts(format: AudioFormat): Boolean = inner.accepts(format)
+
     override val format: AudioFormat? get() = inner.format
 
     override val isOpen: Boolean get() = inner.isOpen

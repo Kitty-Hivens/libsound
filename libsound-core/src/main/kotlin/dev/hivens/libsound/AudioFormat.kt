@@ -11,10 +11,12 @@ package dev.hivens.libsound
  * the value in the top bits, and a library without it sends every FLAC, ALAC,
  * DTS-HD and TrueHD source down to F32LE or S16LE.
  *
- * A backend that cannot take one refuses it at [AudioSink.open], which is an
- * answer rather than a failure: a consumer walks its own ladder down from what
- * the media is towards the floor. A backend that accepted a format and played
- * something else would be indistinguishable from one that worked.
+ * Which of them a given sink takes is [AudioSink.acceptedEncodings], asked
+ * before an open rather than found out by one: a consumer walks its own ladder
+ * down from what the media is towards the floor, and it should be able to pick
+ * the rung before it has anything to hand over. [AudioSink.open] refuses the
+ * rest, because a backend that accepted a format and played something else
+ * would be indistinguishable from one that worked.
  *
  * How many of the bits carry signal is a separate question from how wide the
  * sample is, and [AudioFormat.significantBits] is where it is answered.
@@ -66,6 +68,10 @@ public data class AudioFormat(
      * own: six channels is `5.1` or `5.1(side)`, they differ in whether the
      * last pair is the rear or the sides, and laying one out as the other turns
      * a film's rear channels into its side ones.
+     *
+     * Whether a sink acts on this or only on [channels] is
+     * [Capability.CHANNEL_PLACEMENT], which is a question to ask past stereo
+     * and pointless below it.
      */
     public val layout: ChannelLayout = ChannelLayout.defaultFor(channels),
     /**
