@@ -7,6 +7,7 @@ import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -126,6 +127,38 @@ class PulseDeviceControlTest {
             if (card.activeProfile != null) {
                 card.profiles.any { it.name == card.activeProfile } shouldBe true
             }
+        }
+    }
+
+    @Test
+    fun `a card profile this process changed is put back`() {
+        // The obligation that was missing, and the one with the worst failure
+        // when it is: a card left on a profile nobody chose is a machine whose
+        // speakers have stopped working with nothing on screen to explain it.
+        // Measured once the expensive way, on a USB interface left on pro-audio
+        // by a test run.
+        //
+        // No CI row can satisfy this. Every Linux row's only device is a null
+        // sink, which belongs to no card, so a runner reports an empty card
+        // list. docs/TESTING.md carries it as a check for somebody with
+        // hardware, which is the same place the Windows gaps live.
+        val mixer = checkNotNull(mixer)
+        val card = mixer.cards().firstOrNull { card ->
+            card.activeProfile != null && card.profiles.count { it.available } > 1
+        }
+        Assumptions.assumeTrue(card != null, "no card here with a second profile to switch to")
+        checkNotNull(card)
+
+        val original = checkNotNull(card.activeProfile)
+        val other = checkNotNull(card.profiles.firstOrNull { it.available && it.name != original })
+        mixer.setCardProfile(card.id, other.name) shouldBe true
+        eventually("card ${card.id} on ${other.name}") {
+            mixer.cards().firstOrNull { it.id == card.id }?.activeProfile == other.name
+        }
+
+        mixer.restoreAll()
+        eventually("card ${card.id} back on $original") {
+            mixer.cards().firstOrNull { it.id == card.id }?.activeProfile == original
         }
     }
 
