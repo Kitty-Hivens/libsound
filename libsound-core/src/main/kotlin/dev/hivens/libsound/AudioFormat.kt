@@ -58,10 +58,42 @@ public data class AudioFormat(
     public val channels: Int = 2,
     /** How each sample is written. */
     public val encoding: PcmEncoding = PcmEncoding.S16LE,
+    /**
+     * What each channel is, and therefore the order they are interleaved in.
+     *
+     * Defaults to whatever FFmpeg means by this many channels, which is what a
+     * stream that declared no layout resolves to. Counting is not enough on its
+     * own: six channels is `5.1` or `5.1(side)`, they differ in whether the
+     * last pair is the rear or the sides, and laying one out as the other turns
+     * a film's rear channels into its side ones.
+     */
+    public val layout: ChannelLayout = ChannelLayout.defaultFor(channels),
+    /**
+     * How many of the bits in each sample carry signal.
+     *
+     * Defaults to all of them, and differs from all of them exactly where it
+     * matters: FFmpeg has no 24-bit sample format, so 24-bit content arrives as
+     * [PcmEncoding.S32LE] with 24 significant bits and the value in the top
+     * ones. A backend that packs into a narrower format needs to know which of
+     * the two it has, because packing 24 real bits into 24 is free and packing
+     * 32 into 24 is a quiet loss, and nothing inside an S32LE sample tells them
+     * apart.
+     *
+     * Aimed at the integer encodings. For a float format this is the width of
+     * the container, and how much of it carries signal is a property of the
+     * mantissa rather than of the stream.
+     */
+    public val significantBits: Int = encoding.bytesPerSample * 8,
 ) {
     init {
         require(sampleRate > 0) { "sampleRate must be positive, was $sampleRate" }
         require(channels > 0) { "channels must be positive, was $channels" }
+        require(layout.channels == channels) {
+            "layout $layout carries ${layout.channels} channels, format says $channels"
+        }
+        require(significantBits in 1..(encoding.bytesPerSample * 8)) {
+            "significantBits must fit in $encoding, was $significantBits"
+        }
     }
 
     /** Bytes in one sample frame -- one sample per channel. */
