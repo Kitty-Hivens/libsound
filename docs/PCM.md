@@ -85,29 +85,75 @@ server's share, plus the device's own. Do not add your own estimate of the
 server's part on top. A pacer that did would get it wrong differently on every
 machine, which is the reason this number is specified the way it is.
 
+**Zero means the backend cannot tell**, not that there is no latency. The
+contract allows it and it is information rather than an error. A consumer that
+meets a zero has no way to know how far ahead of the speaker it is, so the
+honest response is to pace from the playhead alone and to stop claiming an
+audio and video offset it cannot measure, rather than to substitute a guess the
+previous paragraph rules out.
+
+There is no capability that separates "zero because nothing counts" from "zero
+because there is nothing queued", the way [Capability.UNDERRUN_COUNT] does for
+underruns. That asymmetry is a gap in this contract rather than something to
+work around, and it is listed at the end of this page with the others.
+
 Where a video frame will be heard is therefore `framePosition` plus
 `latencyNanos`, converted through `AudioFormat`. That arithmetic being in every
 consumer is a known wart, and section 9.4 of the plan is the call that removes
 it.
+
+**Ask [Capability.DEVICE_POSITION] before driving a clock from any of this.**
+Present, the position comes from the device's own consumed-sample count.
+Absent, it is extrapolated and a consumer riding it should expect drift. This
+is not only a question about backends: a decorator that changes the frame count,
+a resampler or anything that stretches time, is required either to scale the
+position back into your frames or to withhold this capability, so a sink you
+were handed through a chain can answer differently from the one at the bottom of
+it.
+
+## The two calls the rest of the contract hangs off
+
+```kotlin
+sink.underrunCount()      // times the device ran dry since open
+sink.setVolume(0.5f)      // linear 0..1, clamped
+```
+
+`underrunCount` is how a latency target stops being a setting nobody can
+validate. It climbs when the device asked for audio and nobody had it ready,
+which at a short buffer is what being late sounds like, and a consumer watching
+it climb backs its [SinkConfig.latency] profile off. Zero where the backend does
+not count them, which is not the same as never having run dry, and
+[Capability.UNDERRUN_COUNT] is what tells the two apart.
+
+`setVolume` is best-effort and clamped, and where [Capability.STREAM_VOLUME] is
+present it is the stream's volume at the system level: the desktop's own mixer
+shows it, a user can move it, and it survives this process. That is what a
+player's volume control should reach. Scaling the samples yourself is a
+different thing with a different name, `GainSink`, and it is for what a system
+volume cannot express, a fade or a duck of one of your own streams against
+another.
 
 ## Seeking
 
 Order matters, and it is the one sequence that looks arbitrary and is not:
 
 ```kotlin
-sink.stop()      // freeze the device first
-sink.flush()     // then drop what it has not played
-val anchor = sink.framePosition()
+sink.stop()                          // freeze the device first
+val anchor = sink.framePosition()    // then read, while it is still meaningful
+sink.flush()                         // and only then drop what it has not played
 ```
 
-Reading the position before stopping samples a value the still-draining buffer
-is about to move past, and re-anchoring a clock backwards is the one transition
-a video pacer cannot absorb.
+Both halves of that order matter and they are separate rules.
 
-`framePosition` need not be monotonic across a flush. Some backends reconcile
-their counters around one. Carry the monotonic clamp above the sink rather than
-asking the sink to invent numbers, because a fabricated position is worse than a
-visibly jumpy one.
+Read after the stop, because reading before it samples a value the
+still-draining buffer is about to move past, and re-anchoring a clock backwards
+is the one transition a video pacer cannot absorb.
+
+Read before the flush, because `framePosition` need not be monotonic across
+one: some backends reconcile their counters around a flush, so a value taken
+after it is a value the flush may have moved. Carry the monotonic clamp above
+the sink rather than asking the sink to invent numbers, since a fabricated
+position is worse than a visibly jumpy one.
 
 ## Changing format mid-stream
 
@@ -161,3 +207,8 @@ adds the others, which is what a capture path at higher bit depth produces.
 
 **Presentation time is arithmetic you do yourself.** Section 9.4 makes it one
 call.
+
+**A zero latency cannot be told from an unknown one.** `underrunCount` has
+[Capability.UNDERRUN_COUNT] to separate "not counted" from "none happened", and
+`latencyNanos` has no equivalent, so a consumer meeting zero cannot tell a
+backend that does not measure from a device with nothing queued.
