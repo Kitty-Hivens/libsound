@@ -70,6 +70,15 @@ public abstract class ProcessingSink(
     /** The wrapped sink's, since a decorator changes what it can do rather than what it is. */
     override val capabilities: Capabilities get() = inner.capabilities
 
+    /**
+     * The wrapped sink's. A decorator changes the samples, not the shapes the
+     * device will take, and [decode] covers every encoding there is.
+     */
+    override val acceptedEncodings: Set<PcmEncoding> get() = inner.acceptedEncodings
+
+    /** The wrapped sink's, for the reason [acceptedEncodings] is. */
+    override fun accepts(format: AudioFormat): Boolean = inner.accepts(format)
+
     /** The wrapped sink's. */
     override val format: AudioFormat? get() = inner.format
 

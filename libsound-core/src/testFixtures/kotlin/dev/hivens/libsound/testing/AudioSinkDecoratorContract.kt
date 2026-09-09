@@ -3,6 +3,7 @@ package dev.hivens.libsound.testing
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.PcmEncoding
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -59,6 +60,20 @@ public abstract class AudioSinkDecoratorContract {
             sink.open(format)
             device.isOpen shouldBe true
             device.opens shouldBe 1
+        }
+    }
+
+    @Test
+    public fun `what it accepts is what the sink underneath accepts`() {
+        // A decorator changes the samples, not the shapes a device will take.
+        // One that answered for itself would either promise a format the device
+        // refuses, or hide one it would have played.
+        decorate(device).use { sink ->
+            sink.acceptedEncodings shouldBe device.acceptedEncodings
+            for (encoding in PcmEncoding.entries) {
+                val shape = AudioFormat(format.sampleRate, format.channels, encoding)
+                sink.accepts(shape) shouldBe device.accepts(shape)
+            }
         }
     }
 

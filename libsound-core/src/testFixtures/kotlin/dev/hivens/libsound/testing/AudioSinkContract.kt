@@ -1,7 +1,11 @@
 package dev.hivens.libsound.testing
 
+import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.ChannelLayout
+import dev.hivens.libsound.PcmEncoding
+import io.kotest.assertions.withClue
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -95,6 +99,60 @@ public abstract class AudioSinkContract {
             sink.format shouldBe cd
             val half = ByteArray(cd.sampleRate / 2 * cd.bytesPerFrame)
             sink.write(half, 0, half.size)
+        }
+    }
+
+    @Test
+    public fun `S16LE is on offer, because every backend owes it`() {
+        newSink().use { sink ->
+            (PcmEncoding.S16LE in sink.acceptedEncodings) shouldBe true
+            sink.accepts(AudioFormat.CD_STEREO) shouldBe true
+        }
+    }
+
+    @Test
+    public fun `what the sink says it accepts is what open takes`() {
+        // The pair this whole question rests on. A sink whose answer and whose
+        // behaviour disagree is worse than one that only fails: a consumer that
+        // asked first has no second question to ask, and it either meets an
+        // exception it was told would not come or walks past a shape that would
+        // have worked.
+        newSink().use { sink ->
+            for (encoding in PcmEncoding.entries) {
+                val shape = AudioFormat(format.sampleRate, format.channels, encoding)
+                val claimed = sink.accepts(shape)
+                val opened = runCatching { sink.open(shape) }
+                if (claimed) {
+                    withClue("accepts($encoding) was true, so open must not have thrown") {
+                        opened.exceptionOrNull() shouldBe null
+                    }
+                } else {
+                    // AudioException specifically. An argument check goes past
+                    // the catch a consumer walking its ladder has written, and
+                    // out of the player.
+                    withClue("accepts($encoding) was false, so open owes an AudioException") {
+                        (opened.exceptionOrNull() is AudioException) shouldBe true
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    public fun `a count with no layout is never refused for want of one`() {
+        // A stream that declared no channel layout is a legitimate stream: it
+        // is what FFmpeg answers for a count it has no default for, and there
+        // is nothing to place. A backend that refused it would be refusing the
+        // media rather than a shape it cannot carry.
+        newSink().use { sink ->
+            val bare = AudioFormat(
+                format.sampleRate,
+                format.channels,
+                format.encoding,
+                layout = ChannelLayout.unspecified(format.channels),
+            )
+            sink.accepts(bare) shouldBe true
+            sink.open(bare)
         }
     }
 
