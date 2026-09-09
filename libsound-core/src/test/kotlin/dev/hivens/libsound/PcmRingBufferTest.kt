@@ -114,6 +114,82 @@ class PcmRingBufferTest {
     }
 
     @Test
+    fun `readFully parks until the device has captured the frames`() {
+        // The capture direction's pacing, and the mirror of the test above. The
+        // device writes and cannot wait; the consumer reads and must, because
+        // the read returning is what tells a recorder that time has passed.
+        val ring = ring(8)
+        val started = CountDownLatch(1)
+        val done = AtomicBoolean(false)
+
+        val reader = Thread({
+            started.countDown()
+            ring.readFully(ByteArray(16), 0, 16)
+            done.set(true)
+        }, "ring-reader")
+        reader.isDaemon = true
+        reader.start()
+
+        started.await(2, TimeUnit.SECONDS) shouldBe true
+        Thread.sleep(150)
+        done.get() shouldBe false
+
+        // Half of what it asked for is still not enough, which is what
+        // separates a blocking read from one that returns a count.
+        ring.write(ByteArray(8), 0, 8)
+        Thread.sleep(100)
+        done.get() shouldBe false
+
+        ring.write(ByteArray(8), 0, 8)
+        reader.join(2_000)
+        done.get() shouldBe true
+    }
+
+    @Test
+    fun `readFully gives up at its deadline`() {
+        val ring = ring(8)
+        val start = System.nanoTime()
+        ring.readFully(ByteArray(16), 0, 16, timeoutNanos = 150_000_000L) shouldBe false
+        val elapsedMillis = (System.nanoTime() - start) / 1_000_000
+        (elapsedMillis >= 100) shouldBe true
+    }
+
+    @Test
+    fun `close releases a parked reader`() {
+        // The same rule the writer has, one direction along: a read parked
+        // against a device that has gone cannot free itself either.
+        val ring = ring(8)
+        val started = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val result = AtomicBoolean(true)
+
+        val reader = Thread({
+            started.countDown()
+            result.set(ring.readFully(ByteArray(64), 0, 64))
+            finished.countDown()
+        }, "ring-reader")
+        reader.isDaemon = true
+        reader.start()
+
+        started.await(2, TimeUnit.SECONDS) shouldBe true
+        Thread.sleep(150)
+        ring.close()
+
+        finished.await(2, TimeUnit.SECONDS) shouldBe true
+        result.get() shouldBe false
+    }
+
+    @Test
+    fun `readFully hands back what was written, in order`() {
+        val ring = ring(8)
+        val written = ByteArray(16) { (it + 1).toByte() }
+        ring.write(written, 0, 16) shouldBe 16
+        val read = ByteArray(16)
+        ring.readFully(read, 0, 16) shouldBe true
+        read.toList() shouldBe written.toList()
+    }
+
+    @Test
     fun `close releases a parked writer`() {
         // The rule that makes AudioSink.close able to unblock a write: the
         // parked thread cannot free itself, so something else has to.

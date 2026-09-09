@@ -3,19 +3,23 @@ package dev.hivens.libsound.audio
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.ChannelPosition
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.audio.pipewire.PipeWireBackend
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pulse.PulseAbi
 import dev.hivens.libsound.testing.AudioSinkContract
+import dev.hivens.libsound.testing.AudioSourceContract
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -74,6 +78,46 @@ class PipeWireSinkContractTest : AudioSinkContract() {
     fun gate() = PipeWireFixture.gate()
 
     override fun newSink(): AudioSink = checkNotNull(PipeWireFixture.backend).createSink(PipeWireFixture.config())
+}
+
+/**
+ * The capture contract, against the graph.
+ *
+ * Named separately in `LIBSOUND_REQUIRE` for the reason the JavaSound capture
+ * suite is: it records whatever the graph calls the default input, which on a
+ * developer's machine is a microphone in a room. On the isolated server and on
+ * CI that is a null sink's monitor and there is nothing to overhear.
+ */
+class PipeWireSourceContractTest : AudioSourceContract() {
+
+    companion object {
+        @JvmStatic
+        @BeforeAll
+        fun connect() = PipeWireFixture.connect()
+
+        @JvmStatic
+        @AfterAll
+        fun disconnect() = PipeWireFixture.disconnect()
+    }
+
+    @BeforeEach
+    fun gate() {
+        PipeWireFixture.gate()
+        // Named rather than run by default. The gate's own mechanism, so the
+        // parsing of LIBSOUND_REQUIRE lives in one place.
+        Assumptions.assumeTrue(
+            AudioTestGate.isRequired("pipewire-capture"),
+            "capture records the graph's default input; name pipewire-capture to run it",
+        )
+    }
+
+    override fun newSource(): AudioSource = checkNotNull(PipeWireFixture.backend).createSource(
+        SourceConfig(
+            applicationName = APP_NAME,
+            applicationId = "dev.hivens.libsound.test",
+            mediaRole = MediaRole.MUSIC,
+        ),
+    )
 }
 
 /**
@@ -194,15 +238,18 @@ class PipeWireBackendTest {
             Capability.TOTAL_LATENCY,
             Capability.LOW_LATENCY,
         ) shouldBe true
+        // A stream in each direction.
+        (Capability.CAPTURE in backend.capabilities) shouldBe true
         // And what it does not have, which is everything that needs the
-        // registry. A consumer that asks first draws no device menu here.
+        // registry. A consumer that asks first draws no device menu here and no
+        // slider on a mixer row.
         backend.capabilities.anyOf(
             Capability.DEVICE_ENUMERATION,
             Capability.DEVICE_SELECTION,
             Capability.DEVICE_EVENTS,
             Capability.STREAM_VOLUME,
-            Capability.CAPTURE,
         ) shouldBe false
         backend.devices().isEmpty() shouldBe true
+        backend.captureDevices().isEmpty() shouldBe true
     }
 }

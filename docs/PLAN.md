@@ -115,7 +115,8 @@ publishes and reads media sessions.
 | Device and card control | Done on Pulse: device volume and mute, the default, ports, card profiles, virtual and combined sinks, and a sample cache. |
 | Processing | Done. `libsound-dsp`, depending on `libsound-core` alone: a gain, a biquad, a limiter and a tap, each passing the decorator fixture, and the stack of them passing it too. |
 | What a format says | Done. Five encodings, a channel layout naming each channel, and significant bits. What a sink accepts is asked through `accepts` before an open rather than caught after one, and the pair is asserted against every backend. |
-| Channel placement | Done on Pulse and WASAPI, both from oracle tables. Absent on JavaSound, which has nothing to say it with, and on CoreAudio until the oracle prints the channel labels. |
+| Channel placement | Done on Pulse, WASAPI and PipeWire, all from oracle tables. Absent on JavaSound, which has nothing to say it with, and on CoreAudio until the oracle prints the channel labels. |
+| PipeWire, natively | A stream in each direction, passing both contract suites against a live graph. No device list, no mixer, no registry: section 13.8 says why. Not on the selection path until it passes what the libpulse backend passes, and reachable through `-Dlibsound.backend=pipewire` meanwhile. |
 | Publication | 0.1.0 on Maven Central, five artifacts under `dev.hivens`. |
 
 ---
@@ -1180,12 +1181,19 @@ the way `PulseSink` clamps to what was written.
 ### 13.5 The source
 
 The same object with `PW_DIRECTION_INPUT`, which is how `pw_stream` spells the
-mirror. Capture is where the shim costs least, so this follows the sink rather
-than arriving with it.
+mirror, and it passes `AudioSourceContract` against a live graph.
 
-One thing it does gain: `stream.capture.sink` is a property rather than a
-separate call, so recording one application is a node property here where it is
-`pa_stream_set_monitor_stream` on the other side.
+It cost one thing in `libsound-core`, and the gap was worth finding.
+`PcmRingBuffer` had a blocking write and no blocking read, because until now
+every consumer of it was a playback path: the device reads and cannot wait, the
+consumer writes and must. Capture puts the device on the other side, so the
+rule turns out not to be about reading or writing at all. It is about which
+side the device is on, and `readFully` is the half that was missing.
+
+`stream.capture.sink` is a property rather than a separate call, so recording
+one application would be a node property here where it is
+`pa_stream_set_monitor_stream` on the other side. Not wired yet: choosing which
+application needs the registry to name one.
 
 ### 13.6 Latency, said once and kept
 
