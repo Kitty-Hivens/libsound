@@ -3,6 +3,69 @@
 All notable changes to libsound will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- **Anything past stereo was played with its channels in the wrong places on
+  Linux.** A `pa_sample_spec` carries a channel count and no positions, and the
+  sink connected its stream with a null channel map, so the server applied its
+  own default. That default is not a reordering of what a decoder sends: six
+  channels resolve to front-left, front-left-of-center, front-center,
+  front-right, front-right-of-center, rear-center, with no low frequency channel
+  in it at all. A 5.1 stream handed over in FFmpeg's order played its right
+  channel out of a front-left-of-center speaker and its low frequency channel
+  out of the front right at full level. Wrong from three channels upward, and
+  reported by nothing. The map now travels with the format, and what the server
+  received is asserted through `pactl` rather than through this library's own
+  binding.
+- `VolumeMixer.restoreAll` puts back the card profile and the device port. Both
+  are set through public methods, both outlive the process, and neither was
+  recorded, while the mixer's documentation said every change was. They are also
+  the two a user cannot undo from a volume slider: a card left on a profile
+  nobody chose hands over raw channels with no routing and reads as the machine's
+  sound having stopped working.
+- `VolumeMixer.createVirtualSink` honours the channel count or refuses it. It
+  clamped into a table of two, so a caller asking for a six-channel bus was
+  handed a stereo one, with a successful return and a device id, and found out
+  by hearing four of its channels vanish.
+- `AudioSink.latencyNanos` means the same thing everywhere. Three backends of
+  four reported what the client had queued while the contract specified the whole
+  path, each with a comment explaining why the contract was wrong. WASAPI now
+  asks `GetStreamLatency`, which had been bound and never called, and
+  `Capability.TOTAL_LATENCY` says which kind of number a backend gives, so the
+  two that cannot report the device's share say so instead of redefining it.
+
+### Added
+- `AudioSink.accepts` and `AudioSink.acceptedEncodings`, with the mirror on
+  `AudioSource`. Backends accept different sets and there was no way to find out
+  which but to call `open` and catch. `accepts` is true exactly when `open`
+  would not throw for want of the shape, and the contract suites assert the pair
+  against every encoding on every backend.
+- `Capability.CHANNEL_PLACEMENT`, which says whether a sink tells the device
+  what each channel is or only how many there are. Present on the libpulse and
+  WASAPI backends.
+- `Capability.TOTAL_LATENCY`, which says whether `latencyNanos` covers the
+  device's own path or only what this client has queued.
+
+### Changed
+- The JavaSound fallback takes `U8` and `S32LE` as well as `S16LE`. It always
+  could: the accepted set is now read out of the JVM through
+  `AudioSystem.isLineSupported`, on the same walk the open makes, rather than
+  declared here.
+- The WASAPI sink writes a `WAVEFORMATEXTENSIBLE` rather than a plain
+  `WAVEFORMATEX`, so all five encodings go across, along with how many of a
+  sample's bits carry signal and what each channel is. The plain form can say
+  none of the three.
+- A layout naming a channel position the platform cannot express is refused at
+  `open` rather than carried with that channel missing from the map. Eighteen of
+  the thirty-six positions FFmpeg names have an equivalent on both libpulse and
+  Windows. The rest are the wide pair, the downmix and binaural pairs, a second
+  low frequency channel and the bottom row. `ChannelLayout.unspecified` is the
+  documented way to send the same audio and take the platform's own ordering.
+- A crash log committed into `libsound-session` is removed from the tree. It
+  carried the machine that produced it: the command line, the environment, every
+  loaded library and the memory map.
+
 ## [0.1.0] - 2026-09-09
 
 ### Changed

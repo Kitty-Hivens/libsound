@@ -22,16 +22,23 @@ of it. A named output stream with system-level volume and device selection, the
 mixer surface for everyone else's streams, and a media session the desktop can
 see and control. It does **not** decode: that is
 [`skinema`](https://github.com/Kitty-Hivens/skinema)'s job, and duplicating it
-would be a defect. It does not resample either, because nothing here needs to:
-every backend hands the consumer's format to the platform and the platform
-converts. Effects are a separate opt-in artifact that depends on the contracts
-alone, and the seam it hangs off is documented in `AudioSink` and asserted by a
-fixture.
+would be a defect.
 
-Three things it is for, in this order. **Low latency**, because audio arriving a
-fifth of a second late is audio that arrived wrong. **PipeWire asked properly**,
-rather than treated as a PulseAudio that happens to answer. And **MPRIS**, in
-both directions.
+It does not change samples either, and that is a boundary rather than a gap.
+This library describes audio and carries it. Converting it — resampling,
+downmixing, narrowing a bit depth, an equaliser — belongs on the other side of
+a seam, in something published separately that a consumer chooses to add. Put
+that inside and the library becomes a combine harvester, and our own mistakes
+about it become unremovable without forking. The seam is the public `AudioSink`,
+documented there and asserted by a fixture, and `libsound-dsp` is the first
+thing hanging off it.
+
+Four things it is for. **Low latency**, because audio arriving a fifth of a
+second late is audio that arrived wrong. **Native sound instead of JavaSound**,
+with the stream identity, device control and capture the fallback cannot reach.
+**MPRIS**, in both directions. And **a plugin seam deep enough to build on**, so
+the sound control a phone has can be brought to the JVM without this library
+having to grow it.
 
 | Platform | Tier |
 |---|---|
@@ -39,12 +46,21 @@ both directions.
 | Windows | Experimental. Ships, reports its capabilities honestly, never blocks a release. |
 | macOS | Output only. The CoreAudio sink stays and stays tested on every push, and nothing new is added there. |
 
-Buffers default to 40 ms and a caller can ask for less by name, the writing
-thread can be promoted to real-time priority through RealtimeKit, and what the
-server actually granted is reported rather than assumed. Capture is here on
-Linux, including recording one application's output on its own, and so is the
-device half of a mixer: volume and mute on the devices themselves, card
-profiles, ports, and devices that do not exist in hardware.
+Buffers default to 40 ms on Linux and a caller can ask for less by name, the
+writing thread can be promoted to real-time priority through RealtimeKit, and
+what the server actually granted is reported rather than assumed. The other
+three backends take a caller's exact number and otherwise hold 200 ms, and say
+so by withholding `LOW_LATENCY`. Capture is here on Linux, including recording
+one application's output on its own, and so is the device half of a mixer:
+volume and mute on the devices themselves, card profiles, ports, and devices
+that do not exist in hardware, with everything it changes put back when it
+closes.
+
+A format says what the media is rather than only how wide it is: five sample
+encodings, a channel layout naming each channel, and how many of a sample's bits
+carry signal. What a given sink will take is asked through `accepts` and
+`acceptedEncodings` before an open rather than discovered by one, and whether
+the layout is honoured or only counted is `CHANNEL_PLACEMENT`.
 MPRIS carries repeat, shuffle and fullscreen in both directions, each optional
 the way the specification means it: a player with no queue to repeat does not
 advertise the property, so a widget draws no button for it.

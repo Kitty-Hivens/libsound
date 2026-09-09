@@ -14,17 +14,34 @@ back.
 
 ## 1. Purpose
 
-Three things, in this order:
+Four things:
 
-1. **Low latency.** Audio that arrives when it should. A keypress heard in
+1. **Native sound instead of JavaSound.** The fallback plays audio and loses
+   everything around it: no stream identity, no device selection, no system
+   volume, no capture worth the name. Reaching the sound server directly is what
+   gets those back, and it is the reason the library exists at all.
+2. **Low latency.** Audio that arrives when it should. A keypress heard in
    single-digit milliseconds, not in a fifth of a second.
-2. **PipeWire, properly.** Not "it works through the compatibility layer", but
-   asking the graph for what a client actually needs and getting it.
 3. **MPRIS.** A player the desktop drives, and a reader that drives everyone
    else's.
+4. **A seam deep enough to build on.** The sound control an Android device has,
+   brought to the JVM, without this library growing it. That means an API that
+   describes audio precisely enough for somebody else's plugin to act on, and a
+   decorator boundary that plugin hangs off. Section 5.5 is the boundary and
+   section 10 is what stays outside it.
 
-Everything else in this document serves one of those three or follows from
-them.
+The fourth is the one that shapes the other three. A library that only solved
+the problem in front of us would be a library the next problem needs a fork of.
+
+### 1.0 What "PipeWire, properly" turned out to mean
+
+An earlier version of this list carried it as a purpose in its own right: not
+"it works through the compatibility layer", but speaking to the graph directly.
+That is still worth wanting and it is not where the work went, because section
+4.4 measured the compatibility layer honouring every lever this library needs.
+The claim and the implementation contradicted each other in this document for
+several sections, which is worse than either. It is an open question in section
+11 now, with what would have to be measured before it becomes work.
 
 ### 1.1 How far it has got
 
@@ -95,7 +112,9 @@ publishes and reads media sessions.
 | Capture | Done on Pulse and JavaSound, including recording one application on its own. Absent on Windows and macOS, for the reasons in 6.2 and 10. |
 | Device and card control | Done on Pulse: device volume and mute, the default, ports, card profiles, virtual and combined sinks, and a sample cache. |
 | Processing | Done. `libsound-dsp`, depending on `libsound-core` alone: a gain, a biquad, a limiter and a tap, each passing the decorator fixture, and the stack of them passing it too. |
-| Publication | Nothing on Maven Central. |
+| What a format says | Done. Five encodings, a channel layout naming each channel, and significant bits. What a sink accepts is asked through `accepts` before an open rather than caught after one, and the pair is asserted against every backend. |
+| Channel placement | Done on Pulse and WASAPI, both from oracle tables. Absent on JavaSound, which has nothing to say it with, and on CoreAudio until the oracle prints the channel labels. |
+| Publication | 0.1.0 on Maven Central, five artifacts under `dev.hivens`. |
 
 ---
 
@@ -446,8 +465,19 @@ gain.
 
 Processing is a sink that wraps a sink. That works today because `AudioSink` is
 a public interface, and it is a trap today because the contract says nothing
-about what a wrapper owes. Four rules, added to `AudioSink`'s documentation and
-asserted by a fixture any decorator can extend:
+about what a wrapper owes.
+
+**What the seam is for.** Not a demonstration that the shape holds, which is how
+this section used to read. It is the mechanism by which everything this library
+should not contain can be added by somebody else, and by which our own decisions
+about processing stay removable. A resampler, a downmixer, an equaliser, a
+channel remapper: each is a sink wrapping a sink, published on its own, and a
+consumer that disagrees with ours writes theirs instead of forking this. That is
+what section 10 means when it says a thing is out of scope, and it is only true
+while the seam is documented and asserted rather than merely possible.
+
+Four rules, added to `AudioSink`'s documentation and asserted by a fixture any
+decorator can extend:
 
 1. **`write` still blocks until the device took the audio.** A decorator may
    buffer internally, but it may not return before the frames it produced have
@@ -768,11 +798,12 @@ stream the caller owns and libpulse offers no route in from outside, so "pause
 everything else" is not available. The honest substitutes are mute or a media
 role. Stated here so it is not rediscovered.
 
-**PipeWire natively** is deliberately excluded from this plan. Speaking the
-protocol directly rather than through `pipewire-pulse` would expose the node
-graph, arbitrary port links and per-node latency, and it is a second complete
-binding for a benefit the properties in section 4.4 already deliver most of. It
-gets written when a feature needs it.
+**PipeWire natively** is not in this plan, and section 1.0 says why the earlier
+version of section 1 read as though it were. Speaking the protocol directly
+rather than through `pipewire-pulse` would expose the node graph, arbitrary port
+links and per-node latency, and it is a second complete binding for a benefit
+the properties in section 4.4 already deliver most of. Section 11 carries it as
+an open question with the two measurements that would turn it into work.
 
 ---
 
@@ -878,14 +909,41 @@ arithmetic it expects.
 
 ### 9.2 Channel maps
 
-`AudioFormat` counts channels and does not name them, so anything past stereo is
-a guess about ordering. A channel map beside the count, defaulting to the
-conventional order for the channel count, keeps every current caller working.
+**Done, and it was a live defect rather than a refinement.** `AudioFormat`
+counted channels and did not name them, and the PulseAudio sink connected its
+stream with a null channel map, which means the server applies its own default.
+The oracle prints what that default is, and it is not a reordering of what a
+decoder sends: six channels resolve to front-left, front-left-of-center,
+front-center, front-right, front-right-of-center, rear-center, with no LFE in it
+at all. A 5.1 stream in FFmpeg's order played its right channel out of a
+front-left-of-center speaker and its LFE out of the front right at full level,
+from three channels upward, silently.
+
+`ChannelLayout` names the positions, generated from `ffmpeg -layouts` and
+`tools/ffmpeg-layout-oracle.c`, and `AudioFormat.layout` carries one. libpulse
+gets a `pa_channel_map` and Windows a `dwChannelMask`, both from oracle-printed
+tables, and both say so through `Capability.CHANNEL_PLACEMENT`. JavaSound has
+nothing to express it with; CoreAudio waits on the oracle for
+`kAudioChannelLabel_*`.
+
+Eighteen of FFmpeg's thirty-six positions have an equivalent on both platforms.
+A layout naming one of the rest is refused rather than carried with a channel
+missing, and `ChannelLayout.unspecified` is the documented way to take the
+platform's own ordering instead.
 
 ### 9.3 Sample formats
 
-`PcmEncoding` carries `S16LE` and `F32LE`. `S24LE` and `S32LE` are accepted by
-every backend here and are what a capture path at higher bit depth produces.
+**Done.** `PcmEncoding` carries five: `U8`, `S16LE`, `S32LE`, `F32LE`, `F64LE`.
+There is no `S24LE`, and deliberately: FFmpeg has no 24-bit sample format, so
+24-bit content arrives as `S32LE` with the value in the top bits, and
+`AudioFormat.significantBits` is how a backend tells that apart from a stream
+that genuinely uses all 32.
+
+What "accepted by every backend" turned out to mean is that it is not, which is
+what `AudioSink.acceptedEncodings` and `AudioSink.accepts` are for: libpulse has
+no 64-bit float, the JavaSound fallback takes three of the five and the JVM is
+asked rather than assumed, and WASAPI takes all five now that it writes a
+`WAVEFORMATEXTENSIBLE` instead of a plain `WAVEFORMATEX`.
 
 ### 9.4 Presentation time
 
@@ -898,13 +956,25 @@ and removes the chance of each getting it differently wrong.
 
 ## 10. Non-goals
 
-**Decoding, resampling and effects in core.** skinema decodes. The sound server
-converts to whatever the device wants, which is measurable rather than assumed:
-the PulseAudio backend puts the consumer's rate in the sample spec and the
-server meets it, the WASAPI sink sets `AUTOCONVERTPCM` because the engine
-otherwise refuses any format but its own, and the CoreAudio output unit is told
-the rate in its stream description. So nothing in this stack resamples, and
-libsound takes frames that are already frames.
+**Decoding, resampling and effects in core.** skinema decodes. Everything that
+changes samples belongs on the far side of the seam in 5.5, in an addon a
+consumer opts into, and the reason is not that the platform does it better. It
+is that a library which converts audio as well as describing and carrying it is
+a library nobody can correct without forking: our choice of resampler, our
+downmix coefficients and our idea of what a device wants would all be load
+bearing and none of them would be removable. The line is description in the
+core, transformation in an addon. Encodings, channel layout, significant bits
+and telling a backend its channel map are description. Resampling, downmixing
+when a device refuses a layout, narrowing a bit depth and the ladder down to
+S16LE stereo are addons.
+
+Which addon nobody has written yet, so today the conversion falls to the sound
+server, and that much is measured rather than assumed: the PulseAudio backend
+puts the consumer's rate in the sample spec and the server meets it, the WASAPI
+sink sets `AUTOCONVERTPCM` because the engine otherwise refuses any format but
+its own, and the CoreAudio output unit is told the rate in its stream
+description. So nothing in this stack resamples, and libsound takes frames that
+are already frames.
 
 The processing module of section 5.5 is opt-in, published as its own artifact,
 and depends on `libsound-core` only. It is a fifth module in this repository
@@ -949,6 +1019,8 @@ seam is public so somebody else's project can go further.
 | Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | **Answered, in the negative.** `pa_stream_set_monitor_stream` narrows a monitor to one sink input because a monitor carries everything its sink plays. A real source has no equivalent call, so the only level available for a capture row is the device's own, shared by everything reading it. A row that moved because somebody else was talking would be worse than no meter, so the capability is absent. |
 | Where does the processing module live? | 5.5 | **Answered: a fifth module in this repository, depending on `libsound-core` only.** Not inside `libsound-audio`, which binds libpulse, because then everyone who wants to play a sound carries filters they never use, and the seam needs no privileged access: it is the public `AudioSink`. Not a repository of its own either, because "separately published" is about the artifact, and a second repository is a second version to keep in step and a second CI for a module whose whole surface is one interface. `libsound-dbus` was reasoned about the same way and stayed here. |
 | Does `streams()` returning both directions break a consumer badly enough to warrant a separate call? | 5.3 | **Answered: no.** It returns both, rows carry a direction, and stream ids now name the facility they came from, because a sink input and a source output can hold the same index at once. |
+| Is a native PipeWire binding worth a second complete implementation? | 7.7, 1.0 | **Open, and two measurements would settle it.** First, what a machine running PipeWire without `pipewire-pulse` installed actually gives us, which is currently nothing at all. Second, what a filter node placed in the graph saves against the round trip through a virtual sink that section 7.4 already offers. Until one of them says a number, section 4.4's measurement stands: the compatibility layer honours every lever this library asks for. |
+| Does `latencyNanos` returning zero mean unmeasurable or empty? | 4.7 | **Open, and narrowed.** `Capability.TOTAL_LATENCY` now says whether the number covers the device or only the client's queue, which was the larger half of the confusion. It does not separate a backend that cannot measure from a device with nothing queued, which `UNDERRUN_COUNT` does for its own number. |
 
 ---
 
@@ -986,7 +1058,11 @@ that the first real consumer would want none of them: a visualiser needs the
 samples rather than a change to them, so the module ships a tap beside the
 three, and it is the cheapest decorator there is.
 
-**6. The numbers.** Refinement, each item small and independent.
+**6. The numbers.** Partly done, and not the refinement this line called them.
+9.2 and 9.3 turned out to be a defect rather than a polish: a format that says
+only how many channels there are is a format a backend lays out by its own
+convention, and the conventions disagree from three channels upward. 9.1 and 9.4
+are still refinement.
 
 **7. Hardware.** Waits on a person with a Windows machine and gates none of the
 above. `docs/TESTING.md` is what that person reads.
