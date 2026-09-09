@@ -13,8 +13,15 @@ from an oracle rather than from memory. An example that no longer compiles reads
 exactly like one that does, and the person it misleads is the one who had no
 other way to check.
 
-Nothing is on Maven Central yet, so there are no coordinates to give. Build it
-from source until there are.
+Take what you use and nothing else. The contracts compile without any backend,
+which is what an adapter wants:
+
+```
+dev.hivens:libsound-core:0.1.0       the contracts, no dependencies at all
+dev.hivens:libsound-audio:0.1.0      playback, capture and the mixer
+dev.hivens:libsound-session:0.1.0    media sessions, both directions
+dev.hivens:libsound-dsp:0.1.0        gain, filter, limiter, tap
+```
 
 ## Playing something
 
