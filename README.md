@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache_2.0-86dbd7?style=for-the-badge&logoColor=D9E0EE&labelColor=1E202B)](LICENSE)
 [![JDK](https://img.shields.io/badge/JDK-22+-BB86FC?style=for-the-badge&logo=openjdk&logoColor=D9E0EE&labelColor=1E202B)](#)
-[![Status](https://img.shields.io/badge/pre--1.0-unpublished-86dbce?style=for-the-badge&logoColor=D9E0EE&labelColor=1E202B)](#status)
+[![Maven Central](https://img.shields.io/badge/maven--central-0.1.0-86dbce?style=for-the-badge&logoColor=D9E0EE&labelColor=1E202B)](https://central.sonatype.com/search?q=dev.hivens.libsound)
 
 </div>
 
@@ -188,8 +188,21 @@ is reading the system rather than returning a constant.
 <details id="status">
   <summary>Status</summary>
 
-**Pre-1.0 and unpublished.** Nothing is on Maven Central yet, so nothing can
-depend on this by accident. The API will still shift.
+**0.1.0, and deliberately a 0.** Published so something can depend on it and
+so the naming stops being free to change at the keyboard, which is what
+publication is for. What 0 means here is what semantic versioning says it
+means: the surface will shift, and a release that shifts it says so in this
+changelog rather than in a surprise at somebody's next build.
+
+```kotlin
+implementation("dev.hivens:libsound-core:0.1.0")     // contracts, no backend
+implementation("dev.hivens:libsound-audio:0.1.0")    // playback, capture, the mixer
+implementation("dev.hivens:libsound-session:0.1.0")  // media sessions
+implementation("dev.hivens:libsound-dsp:0.1.0")      // gain, filter, limiter, tap
+```
+
+`libsound-dbus` arrives on its own with the two that need it, and is not
+something to depend on directly.
 
 | Area | State |
 |---|---|

@@ -1,7 +1,7 @@
 name: Publish
 
-# A release is cut from a tag: tag vX.Y.Z, push it, and this signs the three
-# artifacts and uploads them to Maven Central. The version comes from the tag,
+# A release is cut from a tag: tag vX.Y.Z, push it, and this signs every
+# published artifact and uploads them to Maven Central. The version comes from the tag,
 # not from gradle.properties. The job runs in the maven-central environment, so
 # the credentials sit behind that environment's approval rather than firing on
 # any pushed tag.
@@ -59,9 +59,9 @@ jobs:
           echo "v=$v" >> "$GITHUB_OUTPUT"
 
       # Central versions are immutable, and a reused one is rejected only at the
-      # end of the upload -- after everything has been built and signed. All
-      # three artifacts share a version line, so checking core is checking all
-      # of them.
+      # end of the upload -- after everything has been built and signed. Every
+      # artifact shares one version line, so checking core is checking all of
+      # them.
       - name: Guard the version
         env:
           VERSION: ${{ steps.version.outputs.v }}
@@ -95,16 +95,21 @@ jobs:
       # The sound server was added here after the first cut shipped a release
       # built on a bare runner; the bus was not, so every D-Bus and MPRIS suite
       # went on skipping on the one row that decides what reaches Central. Half
-      # a fix reads exactly like a whole one.
-      - name: A session bus, and the two clients that read it
+      # a fix reads exactly like a whole one, and this row has now been half
+      # fixed twice: dbus-send arrived in the suites and in the CI row without
+      # arriving here, and a client that is missing does not skip a test, it
+      # fails one.
+      - name: A session bus, and the three clients that read it
         run: |
-          sudo apt-get install -y dbus-x11 libglib2.0-bin playerctl
+          sudo apt-get install -y dbus-x11 dbus-bin libglib2.0-bin playerctl
           eval "$(dbus-launch --sh-syntax)"
           echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
           gdbus call --session --dest org.freedesktop.DBus \
             --object-path /org/freedesktop/DBus \
             --method org.freedesktop.DBus.ListNames > /dev/null
           playerctl --version
+          dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+            /org/freedesktop/DBus org.freedesktop.DBus.ListNames > /dev/null
 
       # The tag is what ships, so it is tested here rather than on the trust
       # that main was green when it was cut.
