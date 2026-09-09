@@ -40,14 +40,24 @@ import kotlin.concurrent.withLock
  *
  * ## What it puts back
  *
- * A sound server remembers per-application volume, so this is the one surface in
- * the library that writes state outliving its process. Volume and mute are each
- * recorded against the value they replaced, separately, so that restoring a
- * volume this process lowered does not also undo a mute the user set meanwhile.
- * [close] restores whatever is still outstanding. That covers an orderly exit
- * and not a crash, which is why a consumer whose ducking is temporary should
- * prefer the media role where the desktop honours it: a role vanishes with the
- * stream that asked for it, and a volume does not.
+ * A sound server remembers what is set here, so this is the one surface in the
+ * library that writes state outliving its process. Five things are recorded
+ * against the value they replaced, each separately so that restoring one does
+ * not undo another the user set meanwhile: a stream's volume and mute, a
+ * device's volume and mute, the connector a device plays out of, and the
+ * profile a card is on. [close] restores whatever is still outstanding.
+ *
+ * The last two are the ones worth stating plainly, because they are the ones a
+ * user cannot undo from a volume slider. A card left on a profile nobody chose
+ * is a machine whose speakers have stopped working for reasons nothing on
+ * screen explains. [setDefaultDevice] is the single exception and is documented
+ * where it is declared: a default a user picked through a settings screen is a
+ * decision rather than a change made on their behalf.
+ *
+ * That covers an orderly exit and not a crash, which is why a consumer whose
+ * ducking is temporary should prefer the media role where the desktop honours
+ * it: a role vanishes with the stream that asked for it, and none of the five
+ * does.
  */
 internal class PulseMixer private constructor(
     private val pulse: PulseContext,
@@ -101,6 +111,22 @@ internal class PulseMixer private constructor(
     /** Device volume and mute as we first found them, kept apart for the same reason streams' are. */
     private val originalDeviceVolumes = ConcurrentHashMap<String, Float>()
     private val originalDeviceMutes = ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * The card profile and the device port as we first found them.
+     *
+     * The two changes in this interface that survive a reboot and that a user
+     * cannot undo from a volume slider. A card left on a profile nobody chose
+     * is a machine whose speakers have stopped working for reasons nothing on
+     * screen explains, and the profile most likely to be left behind is the one
+     * a person would never pick: pro-audio hands over raw channels with no
+     * routing at all.
+     *
+     * Recorded and put back like everything else here. It was not, and the
+     * class documentation promised it was.
+     */
+    private val originalCardProfiles = ConcurrentHashMap<String, String>()
+    private val originalDevicePorts = ConcurrentHashMap<String, String>()
 
     /** Which device each stream was last seen on, so a meter knows where to listen. */
     private val lastDeviceIndexes = ConcurrentHashMap<PulseStreamHandle, Int>()
@@ -348,6 +374,10 @@ internal class PulseMixer private constructor(
 
     override fun setCardProfile(card: CardId, profile: String): Boolean {
         if (closed.get()) return false
+        // What it was on, before it is not. Read from the card list rather than
+        // remembered from a previous call, because the user may have changed it
+        // themselves since this process last looked.
+        rememberCardProfile(card)
         return awaitControl { call ->
             lib.handle("pa_context_set_card_profile_by_name").invokeExact(
                 pulse.context, call.allocateUtf8(card.value), call.allocateUtf8(profile),
@@ -359,6 +389,7 @@ internal class PulseMixer private constructor(
     override fun setDevicePort(device: DeviceId, port: String): Boolean {
         if (closed.get()) return false
         val row = deviceRow(device) ?: return false
+        rememberDevicePort(device, row)
         val symbol = when (row.device.direction) {
             StreamDirection.PLAYBACK -> "pa_context_set_sink_port_by_name"
             StreamDirection.CAPTURE -> "pa_context_set_source_port_by_name"
@@ -404,9 +435,19 @@ internal class PulseMixer private constructor(
     }
 
     override fun restoreAll() {
-        // Modules first, and the order is load-bearing: a stream restored onto
-        // a device that is about to vanish ends up somewhere nobody chose.
+        // The order is load-bearing throughout, and it goes from what makes
+        // devices exist to what is set on them.
+        //
+        // Modules first: a stream restored onto a device that is about to
+        // vanish ends up somewhere nobody chose. Card profiles next, for a
+        // stronger version of the same reason, since a profile decides which
+        // devices a card offers at all and putting one back destroys and
+        // recreates every sink on it. Ports after that, because a port belongs
+        // to a device the profile has just decided on. Volumes last, on the
+        // devices and streams that are left standing.
         removeOwnedModules()
+        restoreCardProfiles()
+        restoreDevicePorts()
         restoreDevices()
         val volumes = originalVolumes.entries.map { it.key to it.value }
         volumes.forEach { originalVolumes.remove(it.first) }
@@ -525,6 +566,53 @@ internal class PulseMixer private constructor(
         roundTrip.withLock { pulse.close() }
     }
 
+    /**
+     * Put every card back on the profile it was found on.
+     *
+     * Not through [setCardProfile], which would record the value it is about to
+     * replace and leave the map holding a profile this process chose.
+     */
+    private fun restoreCardProfiles() {
+        val profiles = originalCardProfiles.entries.map { it.key to it.value }
+        profiles.forEach { originalCardProfiles.remove(it.first) }
+        if (profiles.isEmpty()) return
+        profiles.forEach { (card, profile) ->
+            runCatching {
+                awaitControl { call ->
+                    lib.handle("pa_context_set_card_profile_by_name").invokeExact(
+                        pulse.context, call.allocateUtf8(card), call.allocateUtf8(profile),
+                        successStub, MemorySegment.NULL,
+                    ) as MemorySegment
+                }
+            }.onFailure { log.warn("could not put card {} back on {}: {}", card, profile, it.message) }
+        }
+        // The devices a card offers changed with the profile, so the cached
+        // rows name sinks that no longer exist and the volume restore below
+        // would look every one of them up and find nothing.
+        primeDeviceNames()
+    }
+
+    /** The same, for the connector a device was playing out of. */
+    private fun restoreDevicePorts() {
+        val ports = originalDevicePorts.entries.map { it.key to it.value }
+        ports.forEach { originalDevicePorts.remove(it.first) }
+        ports.forEach { (name, port) ->
+            val row = deviceRows[name] ?: return@forEach
+            val symbol = when (row.device.direction) {
+                StreamDirection.PLAYBACK -> "pa_context_set_sink_port_by_name"
+                StreamDirection.CAPTURE -> "pa_context_set_source_port_by_name"
+            }
+            runCatching {
+                awaitControl { call ->
+                    lib.handle(symbol).invokeExact(
+                        pulse.context, call.allocateUtf8(name), call.allocateUtf8(port),
+                        successStub, MemorySegment.NULL,
+                    ) as MemorySegment
+                }
+            }.onFailure { log.warn("could not put device {} back on port {}: {}", name, port, it.message) }
+        }
+    }
+
     private fun restoreDevices() {
         val volumes = originalDeviceVolumes.entries.map { it.key to it.value }
         volumes.forEach { originalDeviceVolumes.remove(it.first) }
@@ -608,7 +696,8 @@ internal class PulseMixer private constructor(
 
     private fun restoreOnClose() {
         val outstanding = originalVolumes.size + originalMutes.size +
-            originalDeviceVolumes.size + originalDeviceMutes.size + ownedModules.size
+            originalDeviceVolumes.size + originalDeviceMutes.size + ownedModules.size +
+            originalCardProfiles.size + originalDevicePorts.size
         if (outstanding == 0) return
         log.info("restoring {} setting(s) this process changed", outstanding)
         restoreAll()
@@ -680,6 +769,24 @@ internal class PulseMixer private constructor(
     private fun rememberDeviceMute(device: DeviceId, row: DeviceRow) {
         if (originalDeviceMutes.containsKey(device.value)) return
         originalDeviceMutes.putIfAbsent(device.value, row.device.muted ?: return)
+    }
+
+    /**
+     * The profile a card is on, before this process replaces it.
+     *
+     * A round trip, unlike the device values, which the last walk already
+     * cached. Worth it: this runs once per card per process, and a profile
+     * recorded from a stale cache is the wrong one to put back.
+     */
+    private fun rememberCardProfile(card: CardId) {
+        if (originalCardProfiles.containsKey(card.value)) return
+        val active = cards().firstOrNull { it.id == card }?.activeProfile ?: return
+        originalCardProfiles.putIfAbsent(card.value, active)
+    }
+
+    private fun rememberDevicePort(device: DeviceId, row: DeviceRow) {
+        if (originalDevicePorts.containsKey(device.value)) return
+        originalDevicePorts.putIfAbsent(device.value, row.device.activePort ?: return)
     }
 
     // -- control, each waiting for the server's own answer ----------------------
