@@ -95,8 +95,11 @@ quantum is a floor: a client asking for less than `clock.quantum` gets the
 quantum, and the default of 1024 frames is 21 ms. Measured against
 pipewire-pulse on a 48 kHz graph, a 200 ms request came back as 150 ms, 40 ms
 as 30, and 10 ms as 16, which was that machine's quantum. The sink logs what it
-asked for and what it was granted at open, and `latencyNanos` reports the whole
-path at any time.
+asked for and what it was granted at open, and `latencyNanos` reports it at any
+time. Whether that number covers the device's own path or only what this client
+has queued is `Capability.TOTAL_LATENCY`: the libpulse and WASAPI backends
+report the whole path, and the other two have no way to ask the hardware and
+say so by withholding it.
 
 **`realtime` asks the system for a writing thread that wakes on time.** It is
 off by default because the grant is process-wide: RealtimeKit requires a limit
