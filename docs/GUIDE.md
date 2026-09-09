@@ -6,9 +6,9 @@ playing, finding out what any of that can actually do here, quieting everybody
 else while something of yours plays, and being a player the desktop knows
 about.
 
-Every example below is compiled. They live in `AudioSamples.kt` and
-`SessionSamples.kt` in the test sources, and `GuideSamplesTest` fails the build
-if this page and those files drift apart -- the same reason the ABI numbers come
+Every example below is compiled. They live in `AudioSamples.kt`,
+`SessionSamples.kt` and `DspSamples.kt` in the test sources, and
+`GuideSamplesTest` fails the build if this page and those files drift apart -- the same reason the ABI numbers come
 from an oracle rather than from memory. An example that no longer compiles reads
 exactly like one that does, and the person it misleads is the one who had no
 other way to check.
@@ -190,6 +190,57 @@ mixer.streams()
     .filter { it.applicationName == game }
     .forEach { mixer.moveTo(it.id, bus) }
 ```
+
+## Changing the audio on the way out
+
+Processing is a sink that wraps a sink, and it lives in `libsound-dsp`, which
+depends on the contracts alone. Nothing that only plays audio carries it.
+
+The one most consumers want first is not a filter at all. A level meter, a
+spectrum or a waveform needs the samples, and a consumer that plays audio
+already has them: a tap is the shortest way to see them without a second copy
+of the pipeline.
+
+```kotlin
+// Runs on whichever thread is writing, and holds that write up for as
+// long as it takes. So it measures and hands the number over, and the
+// drawing happens somewhere else.
+return TapSink(sink) { samples, frames, channels ->
+    var peak = 0f
+    for (index in 0 until frames * channels) {
+        val magnitude = kotlin.math.abs(samples[index])
+        if (magnitude > peak) peak = magnitude
+    }
+    redraw(peak)
+}
+```
+
+The rest stack, and the order is the signal path:
+
+```kotlin
+// Read outward: the limiter is nearest the device, so it sees what
+// everything above it produced and is the last thing that can stop a
+// peak reaching the speaker.
+return GainSink(
+    BiquadSink(
+        LimiterSink(sink, thresholdDb = -1.0),
+    ) { format -> Biquad.highPass(format.sampleRate, 80.0) },
+    gain = 1.5f,
+)
+```
+
+**A gain is not a volume.** `setVolume` goes to the system where the backend can
+put it there, so the desktop's mixer shows it and the user can move it. A gain
+is arithmetic on the buffer and invisible outside this process. Reach for the
+volume first, and for the gain when the volume cannot express what you mean.
+
+**None of these adds latency**, which is why they can be stacked without a
+consumer's audio drifting away from its video. They process a write in place and
+pass it on, so `latencyNanos` stays the device's. A decorator that does need to
+hold frames, a resampler or anything with lookahead, owes four rules that
+`AudioSink` documents and a fixture in the test artifact asserts, and the first
+one it will meet is that a filter hiding its depth makes every consumer's
+synchronisation wrong by exactly that much.
 
 ## Asking before you draw
 

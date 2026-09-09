@@ -94,7 +94,7 @@ publishes and reads media sessions.
 | Low latency | Done on Pulse, with a real-time writer thread behind an opt-in. Not honoured by the other three, which say so through `LOW_LATENCY`. |
 | Capture | Done on Pulse and JavaSound, including recording one application on its own. Absent on Windows and macOS, for the reasons in 6.2 and 10. |
 | Device and card control | Done on Pulse: device volume and mute, the default, ports, card profiles, virtual and combined sinks, and a sample cache. |
-| Processing | The decorator rules are written down and asserted by a fixture. The module itself is still unwritten. |
+| Processing | Done. `libsound-dsp`, depending on `libsound-core` alone: a gain, a biquad, a limiter and a tap, each passing the decorator fixture, and the stack of them passing it too. |
 | Publication | Nothing on Maven Central. |
 
 ---
@@ -980,8 +980,11 @@ nothing else was done, because `LoopStatus` and `Shuffle` are two properties
 standing between this player and every desktop widget that draws more than
 transport buttons. 8.2 and 8.4 came with them, for a handful of lines each.
 
-**5. The processing seam.** Cheap once capture has proved the shape twice. The
-contract rules are most of the work and the reference filters are the rest.
+**5. The processing seam.** Done. The contract rules were most of the work, as
+predicted, and the reference filters were the rest. What was not predicted is
+that the first real consumer would want none of them: a visualiser needs the
+samples rather than a change to them, so the module ships a tap beside the
+three, and it is the cheapest decorator there is.
 
 **6. The numbers.** Refinement, each item small and independent.
 

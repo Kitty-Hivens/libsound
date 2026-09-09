@@ -71,6 +71,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `tools/wasapi-oracle.c`. Half of an open question in section 6.2 of the plan,
   and the half that never needed a Windows machine.
 
+- `libsound-dsp`, the processing module the decorator rules were written for.
+  A gain, a biquad with the usual designers, a limiter and a tap, each a sink
+  that wraps a sink, each passing the decorator fixture, and a stack of them
+  passing it too. It depends on `libsound-core` alone and carries core's Java
+  floor rather than the backends', because it is arithmetic over a buffer and
+  needs neither Panama nor a platform library. Nothing that only plays audio
+  carries any of it.
+- `TapSink`, which is not a filter and is the one most consumers want first. A
+  level meter, a spectrum or a waveform needs the samples, and a consumer that
+  plays audio already has them: the tap is how they are seen without a second
+  copy of the pipeline. It changes nothing, holds nothing, and adds no latency.
+
 ### Fixed
 - A seek sent by a desktop is accepted rather than dropped as stale.
   `mpris:trackid` went out escaped into an object path and came back raw, and
