@@ -3,6 +3,7 @@ package dev.hivens.libsound.testing
 import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.Capability
 import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.PcmEncoding
 import io.kotest.assertions.withClue
@@ -228,10 +229,11 @@ public abstract class AudioSinkContract {
             sink.open(format)
             writeHalfSecond(sink)
             sink.stop()
-            // A baseline, so the zero below means "emptied" and not "was never
+            // A baseline, so the drop below means "emptied" and not "was never
             // filled": a sink that buffers nothing would pass the latency
             // assertion without a flush ever doing anything.
-            sink.latencyNanos() shouldBeGreaterThan 0L
+            val queued = sink.latencyNanos()
+            queued shouldBeGreaterThan 0L
             sink.flush()
             val afterFlush = sink.framePosition()
 
@@ -240,7 +242,17 @@ public abstract class AudioSinkContract {
             // afterwards, so it cancels out of any difference -- the same
             // reason skinema's clock is immune to the JavaSound flush jump.
             // What is buffered, on the other hand, is either gone or it is not.
-            sink.latencyNanos() shouldBe 0L
+            //
+            // Zero only where the number is the client's own queue. Where it is
+            // the whole path, the device's share does not go away when the
+            // queue is emptied, and asserting zero would be asserting that the
+            // suite is running against something with no hardware behind it,
+            // which is true of a null sink and of nothing else.
+            if (Capability.TOTAL_LATENCY in sink.capabilities) {
+                (sink.latencyNanos() < queued) shouldBe true
+            } else {
+                sink.latencyNanos() shouldBe 0L
+            }
 
             // And the device runs again afterwards, fed continuously, because
             // one backend's playhead only advances while writes are flowing.

@@ -209,13 +209,19 @@ public interface AudioSink : AutoCloseable {
      * Zero when the backend cannot tell -- which is itself information, so it is
      * not an error.
      *
-     * The whole path, and this is the number a consumer needs rather than the
-     * one that is easiest to produce: what is queued here, plus what the server
-     * holds, plus the device's own. A pacer that had to add its own estimate of
-     * the server's share would get it wrong differently on every machine. It is
-     * also how a consumer finds out what its [SinkConfig.latency] request was
-     * actually granted, since a profile is a request and the graph's quantum is
-     * a floor under it.
+     * The whole path where [Capability.TOTAL_LATENCY] is present: what is
+     * queued here, plus what the server holds, plus the device's own. That is
+     * the number a pacer needs rather than the one that is easiest to produce,
+     * and it is how a consumer finds out what its [SinkConfig.latency] request
+     * was actually granted, since a profile is a request and the graph's
+     * quantum is a floor under it.
+     *
+     * Where the capability is absent this is what the client has queued and
+     * nothing else, because that backend has no way to ask the hardware. It is
+     * short by a fixed amount, and a consumer must not make that amount up:
+     * adding an estimate of the missing share is what gets it wrong differently
+     * on every machine, which is the reason this number is specified rather
+     * than left to each caller.
      */
     public fun latencyNanos(): Long
 

@@ -201,6 +201,14 @@ internal class JavaSoundSink(
         return max(0L, raw - flushCredit)
     }
 
+    /**
+     * How full the line is, which is all a `SourceDataLine` can say.
+     *
+     * Short of the whole path by whatever the hardware behind it adds, and
+     * [Capability.TOTAL_LATENCY] is absent to say so. There is nothing in
+     * JavaSound to ask: the line reports its own fill and the API carries no
+     * notion of a device at all.
+     */
     override fun latencyNanos(): Long {
         val current = line ?: return 0L
         val format = openFormat ?: return 0L

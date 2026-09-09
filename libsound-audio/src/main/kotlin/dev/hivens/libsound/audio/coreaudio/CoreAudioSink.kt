@@ -329,14 +329,20 @@ internal class CoreAudioSink(
     override fun framePosition(): Long = framesRendered.get()
 
     /**
-     * What is still queued ahead of the speaker, and deliberately not the
-     * device's own propagation delay.
+     * What is still queued here, and not the device's own delay behind it.
      *
-     * `kAudioUnitProperty_Latency` would add a few more milliseconds and would
-     * be the wrong answer to the question the interface asks: how far ahead the
-     * write head is, which is a fill level. A fixed device delay does not move
-     * when a flush empties the queue, so including it would report a backlog
-     * that no longer exists.
+     * Which makes it short of what the contract asks for, and
+     * [Capability.TOTAL_LATENCY] is absent to say so rather than the number
+     * being quietly redefined. This used to carry an argument that a fill level
+     * is the right answer because a fixed device delay does not move when a
+     * flush empties the queue. That is true and beside the point: the question
+     * is when the frame about to be written will be heard, and the fixed part
+     * is part of the answer.
+     *
+     * Closing it needs `kAudioUnitProperty_Latency` and the device's own safety
+     * offset, whose property values are ABI numbers like every other here and
+     * have to come from `tools/coreaudio-oracle.c` on the macOS row before
+     * anything is written against them.
      */
     override fun latencyNanos(): Long {
         val format = openFormat ?: return 0L

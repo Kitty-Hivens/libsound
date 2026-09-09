@@ -327,17 +327,42 @@ internal class WasapiSink(
         }
     }
 
+    /**
+     * What is queued here plus what the engine adds behind it.
+     *
+     * It was the padding alone, with a comment arguing that the padding is the
+     * whole of what the contract asks. It is not: the contract asks when the
+     * frame about to be written will be heard, and the engine's own path sits
+     * between the shared buffer and the speaker. `GetStreamLatency` reports
+     * that path, has been bound at slot 5 since this backend was written, and
+     * was never called.
+     */
     override fun latencyNanos(): Long = synchronized(interfaceLock) {
         val audioClient = client
         val format = openFormat ?: return 0L
         if (audioClient.address() == 0L) return 0L
         return Arena.ofConfined().use { call ->
-            // What is queued, not what the engine adds: the contract asks how
-            // far ahead of the speaker the write head is, and the padding is
-            // exactly that.
             val padding = readPadding(call, audioClient)
-            format.nanosFor(padding.toLong())
+            format.nanosFor(padding.toLong()) + engineLatencyNanos(call, audioClient)
         }
+    }
+
+    /**
+     * The engine's own share, or zero where it would not say.
+     *
+     * A REFERENCE_TIME, so hundreds of nanoseconds rather than the microseconds
+     * it resembles. Zero on a refusal rather than a throw: a consumer asking
+     * how far ahead it is has nothing to do with a failure here, and the
+     * padding on its own is still the larger half of the answer.
+     */
+    private fun engineLatencyNanos(call: Arena, audioClient: MemorySegment): Long {
+        val out = call.allocate(ValueLayout.JAVA_LONG)
+        val result = com.method(
+            audioClient, WasapiAbi.CLIENT_GET_STREAM_LATENCY,
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+        ).invokeExact(audioClient, out) as Int
+        if (result != WasapiAbi.S_OK) return 0L
+        return out.get(ValueLayout.JAVA_LONG, 0) * WasapiAbi.NANOS_PER_REFTIME
     }
 
     /**
