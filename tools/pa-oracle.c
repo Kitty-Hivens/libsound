@@ -218,6 +218,55 @@ int main(void) {
     P(PA_SAMPLE_S24_32LE);
     P(PA_SAMPLE_INVALID);
 
+    /* What each channel is, which a sample spec does not carry. A stream opened
+     * with a null map gets PA_CHANNEL_MAP_DEFAULT, which is the ALSA order, and
+     * that is not FFmpeg's: ALSA lays six channels out as front pair, rear
+     * pair, centre, LFE, and a decoder hands them over as front pair, centre,
+     * LFE, rear pair. Sending one where the other is expected puts a film's
+     * dialogue in the rears, and nothing anywhere reports it.
+     *
+     * The default map for each count is printed beside the positions, because
+     * the failure above is a fact about that default rather than about any one
+     * constant. */
+    SECTION("pa_channel_map");
+    P(offsetof(pa_channel_map, channels));
+    P(offsetof(pa_channel_map, map));
+    P(sizeof(pa_channel_map));
+
+    SECTION("pa_channel_position_t");
+    P(PA_CHANNEL_POSITION_INVALID);
+    P(PA_CHANNEL_POSITION_MONO);
+    P(PA_CHANNEL_POSITION_FRONT_LEFT);
+    P(PA_CHANNEL_POSITION_FRONT_RIGHT);
+    P(PA_CHANNEL_POSITION_FRONT_CENTER);
+    P(PA_CHANNEL_POSITION_REAR_CENTER);
+    P(PA_CHANNEL_POSITION_REAR_LEFT);
+    P(PA_CHANNEL_POSITION_REAR_RIGHT);
+    P(PA_CHANNEL_POSITION_LFE);
+    P(PA_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER);
+    P(PA_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER);
+    P(PA_CHANNEL_POSITION_SIDE_LEFT);
+    P(PA_CHANNEL_POSITION_SIDE_RIGHT);
+    P(PA_CHANNEL_POSITION_TOP_CENTER);
+    P(PA_CHANNEL_POSITION_TOP_FRONT_LEFT);
+    P(PA_CHANNEL_POSITION_TOP_FRONT_RIGHT);
+    P(PA_CHANNEL_POSITION_TOP_FRONT_CENTER);
+    P(PA_CHANNEL_POSITION_TOP_REAR_LEFT);
+    P(PA_CHANNEL_POSITION_TOP_REAR_RIGHT);
+    P(PA_CHANNEL_POSITION_TOP_REAR_CENTER);
+    P(PA_CHANNEL_POSITION_MAX);
+
+    SECTION("what a null channel map means, per count");
+    for (unsigned n = 1; n <= 8; n++) {
+        pa_channel_map map;
+        pa_channel_map_init_extend(&map, n, PA_CHANNEL_MAP_DEFAULT);
+        printf("%2u channels ->", n);
+        for (unsigned i = 0; i < map.channels; i++) {
+            printf(" %s", pa_channel_position_to_string(map.map[i]));
+        }
+        printf("\n");
+    }
+
     SECTION("context state");
     P(PA_CONTEXT_UNCONNECTED);
     P(PA_CONTEXT_CONNECTING);
