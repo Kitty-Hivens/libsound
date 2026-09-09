@@ -579,10 +579,7 @@ internal class PulseBackend private constructor(
         }
     }
 
-    private fun encodingOf(format: AudioFormat): Int? = when (format.encoding) {
-        PcmEncoding.S16LE -> PulseAbi.SAMPLE_S16LE
-        PcmEncoding.F32LE -> PulseAbi.SAMPLE_FLOAT32LE
-    }
+    private fun encodingOf(format: AudioFormat): Int? = PulseAbi.sampleFormatOf(format.encoding)
 
     /**
      * Whether this server keeps a sample cache at all, asked rather than

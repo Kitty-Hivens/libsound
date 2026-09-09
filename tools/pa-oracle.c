@@ -209,6 +209,14 @@ int main(void) {
     P(PA_SAMPLE_S16LE);
     P(PA_SAMPLE_S16BE);
     P(PA_SAMPLE_FLOAT32LE);
+    /* The rest of what a decoder actually sends. There is no 64-bit float in
+     * this enum at all, which is the answer to whether the backend can take
+     * one: it cannot, and it has to refuse rather than substitute. */
+    P(PA_SAMPLE_U8);
+    P(PA_SAMPLE_S32LE);
+    P(PA_SAMPLE_S24LE);
+    P(PA_SAMPLE_S24_32LE);
+    P(PA_SAMPLE_INVALID);
 
     SECTION("context state");
     P(PA_CONTEXT_UNCONNECTED);

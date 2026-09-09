@@ -149,9 +149,13 @@ internal class CoreAudioSink(
 
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
-        require(format.encoding == PcmEncoding.S16LE || format.encoding == PcmEncoding.F32LE) {
-            "unsupported encoding ${format.encoding}"
-        }
+        // No list here on purpose. Every encoding is expressible as an ASBD,
+        // and whether this unit takes one is the unit's answer rather than
+        // ours: AudioUnitSetProperty refuses a format it cannot render, and
+        // checkStatus turns that into the AudioException a consumer walking a
+        // ladder is already catching. A pair written here would refuse formats
+        // the platform accepts and would go stale the next time the encodings
+        // grew, which is what it had just done.
         disposeUnit()
         // The old ring goes with the old unit. Nothing drains it any more, so a
         // producer parked on it would stay parked through a reopen that looked
@@ -440,12 +444,23 @@ internal class CoreAudioSink(
 
     // -- internals ------------------------------------------------------------
 
+    /**
+     * The shape, as an ASBD.
+     *
+     * Every encoding is expressible here, and expressible is not the same as
+     * accepted: the unit answers when the property is set, and a format it
+     * will not take fails the open, which is the answer a consumer walks its
+     * ladder down from.
+     */
     private fun writeStreamFormat(asbd: MemorySegment, format: AudioFormat) {
         val bitsPerChannel = format.encoding.bytesPerSample * 8
         val flags = CoreAudioAbi.FORMAT_FLAGS_NATIVE_ENDIAN or CoreAudioAbi.FORMAT_FLAG_IS_PACKED or
             when (format.encoding) {
-                PcmEncoding.F32LE -> CoreAudioAbi.FORMAT_FLAG_IS_FLOAT
-                PcmEncoding.S16LE -> CoreAudioAbi.FORMAT_FLAG_IS_SIGNED_INTEGER
+                PcmEncoding.F32LE, PcmEncoding.F64LE -> CoreAudioAbi.FORMAT_FLAG_IS_FLOAT
+                PcmEncoding.S16LE, PcmEncoding.S32LE -> CoreAudioAbi.FORMAT_FLAG_IS_SIGNED_INTEGER
+                // Unsigned integer is the absence of both flags rather than a
+                // flag of its own, which is what linear PCM means by U8.
+                PcmEncoding.U8 -> 0
             }
         asbd.set(ValueLayout.JAVA_DOUBLE, CoreAudioAbi.ASBD_SAMPLE_RATE, format.sampleRate.toDouble())
         asbd.set(ValueLayout.JAVA_INT, CoreAudioAbi.ASBD_FORMAT_ID, CoreAudioAbi.FORMAT_LINEAR_PCM)

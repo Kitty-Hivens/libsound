@@ -1,14 +1,17 @@
 package dev.hivens.libsound.audio
 
 import dev.hivens.libsound.AudioBackend
+import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.LatencyProfile
 import dev.hivens.libsound.MediaRole
+import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import dev.hivens.libsound.testing.AudioSinkContract
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterAll
@@ -90,6 +93,41 @@ class PulseBackendTest {
 
     @BeforeEach
     fun gate() = PulseFixture.gate()
+
+    @Test
+    fun `the encodings the server has a name for are the encodings it accepts`() {
+        PulseFixture.gate()
+        // The point of the wider set, and the reason it is asked of the ABI
+        // table rather than listed at the call site: a pair written here went
+        // stale the moment the encodings grew and refused formats libpulse
+        // takes. S32LE is the one that matters, because FFmpeg has no 24-bit
+        // sample format and every 24-bit source arrives in it.
+        listOf(PcmEncoding.U8, PcmEncoding.S16LE, PcmEncoding.S32LE, PcmEncoding.F32LE).forEach { encoding ->
+            val sink = PulseFixture.backend!!.createSink(PulseFixture.config())
+            sink.use {
+                it.open(AudioFormat(48_000, 2, encoding))
+                it.isOpen shouldBe true
+                it.format?.encoding shouldBe encoding
+                val frame = ByteArray(480 * AudioFormat(48_000, 2, encoding).bytesPerFrame)
+                it.write(frame, 0, frame.size)
+            }
+        }
+    }
+
+    @Test
+    fun `a shape the server cannot name is refused, and refused the way the contract promises`() {
+        PulseFixture.gate()
+        // pa_sample_format_t has no 64-bit float at all. A backend that took it
+        // and played something narrower would be indistinguishable from one
+        // that worked, and a consumer walking a ladder down from what the media
+        // is catches AudioException rather than whatever an argument check
+        // happens to throw.
+        val sink = PulseFixture.backend!!.createSink(PulseFixture.config())
+        sink.use {
+            shouldThrow<AudioException> { it.open(AudioFormat(48_000, 2, PcmEncoding.F64LE)) }
+            it.isOpen shouldBe false
+        }
+    }
 
     @Test
     fun `the server lists devices with names worth showing`() {
