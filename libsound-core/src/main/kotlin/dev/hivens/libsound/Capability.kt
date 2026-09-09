@@ -40,6 +40,25 @@ public enum class Capability {
     DEVICE_POSITION,
 
     /**
+     * [AudioSink.latencyNanos] is the whole path to the speaker, not only what
+     * this client has queued.
+     *
+     * The number a video pacer needs is when the frame it is about to write
+     * will be heard, which is what is queued here plus what the server holds
+     * plus the device's own delay. Some backends can report all of it and some
+     * can report only their own share: a `SourceDataLine` says how full it is
+     * and offers nothing about the hardware behind it.
+     *
+     * Absent means the answer is a fill level. It is still useful, and it is
+     * short by a fixed amount that does not go away when a flush empties the
+     * queue. A consumer that needs the whole path asks this before it decides
+     * whether to trust the number, rather than adding an estimate of the
+     * missing part, which is the one thing that gets it wrong differently on
+     * every machine.
+     */
+    TOTAL_LATENCY,
+
+    /**
      * The sink tells the device what each channel is, so [AudioFormat.layout]
      * is honoured rather than assumed.
      *

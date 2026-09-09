@@ -76,6 +76,7 @@ internal class PulseBackend private constructor(
                 add(Capability.PER_STREAM_CAPTURE)
                 add(Capability.DEVICE_VOLUME)
                 add(Capability.LOW_LATENCY)
+                add(Capability.TOTAL_LATENCY)
                 add(Capability.CHANNEL_PLACEMENT)
                 if (sampleCacheWorks) add(Capability.SAMPLE_CACHE)
                 add(Capability.UNDERRUN_COUNT)
@@ -833,6 +834,9 @@ internal class PulseBackend private constructor(
             Capability.STREAM_IDENTITY,
             Capability.DEVICE_POSITION,
             Capability.LOW_LATENCY,
+            // pa_stream_get_latency answers for the whole path, client buffer
+            // plus server plus device, which is what the contract asks for.
+            Capability.TOTAL_LATENCY,
             Capability.CHANNEL_PLACEMENT,
         )
 
@@ -845,6 +849,7 @@ internal class PulseBackend private constructor(
             // ran dry trying.
             Capability.LOW_LATENCY,
             Capability.UNDERRUN_COUNT,
+            Capability.TOTAL_LATENCY,
             // A pa_channel_map goes across with the sample spec, so the layout
             // a decoder interleaved to is the layout the server lays out.
             Capability.CHANNEL_PLACEMENT,
