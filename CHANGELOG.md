@@ -37,6 +37,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   two that cannot report the device's share say so instead of redefining it.
 
 ### Added
+- **A native PipeWire backend**, reaching the graph with no compatibility layer
+  in front of it. A stream in each direction, passing both contract suites
+  against a live graph, and it takes what the layer cannot carry: all five
+  encodings including the 64-bit float `pa_sample_format_t` has no name for, and
+  every one of the forty channel layouts FFmpeg names, four of which the
+  libpulse backend refuses. Deliberately narrow otherwise, and the capability
+  set says so rather than the documentation alone: no device list, no events, no
+  stream volume, because each of those needs the registry.
+
+  Not on the selection path. It goes first once it passes everything the
+  libpulse backend passes, and until then `-Dlibsound.backend=pipewire` reaches
+  it. A name that matches nothing fails rather than quietly selecting something
+  else, because a run that asked for one backend and measured another says
+  nothing about either.
+- `PcmRingBuffer.readFully`, the blocking read the capture direction needs. The
+  rule the class was written around turned out not to be about reading or
+  writing: it is about which side the device is on, and the side the consumer is
+  on can wait and must. Playback had the blocking write and capture had nothing.
 - `AudioSink.accepts` and `AudioSink.acceptedEncodings`, with the mirror on
   `AudioSource`. Backends accept different sets and there was no way to find out
   which but to call `open` and catch. `accepts` is true exactly when `open`

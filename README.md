@@ -61,6 +61,14 @@ encodings, a channel layout naming each channel, and how many of a sample's bits
 carry signal. What a given sink will take is asked through `accepts` and
 `acceptedEncodings` before an open rather than discovered by one, and whether
 the layout is honoured or only counted is `CHANNEL_PLACEMENT`.
+
+**PipeWire is spoken natively as well as through its PulseAudio server**, and
+the difference is what the compatibility layer can say rather than how fast it
+is. The layer carries eighteen of the thirty-six channel positions a decoder
+sends and has no 64-bit float at all, so four of the forty layouts FFmpeg names
+came back as the machine being unable to play the file. The native backend takes
+every one of them, passes the same contract suites, and is reached with
+`-Dlibsound.backend=pipewire` until it covers everything the libpulse one does.
 MPRIS carries repeat, shuffle and fullscreen in both directions, each optional
 the way the specification means it: a player with no queue to repeat does not
 advertise the property, so a widget draws no button for it.

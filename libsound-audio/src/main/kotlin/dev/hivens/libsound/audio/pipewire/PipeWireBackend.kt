@@ -26,12 +26,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * `VolumeMixer` for questions `VolumeMixer` already answers over the pulse
  * protocol.
  *
- * So this is a sink and nothing else, it reports exactly that, and a consumer
- * that wants a device list or a mixer asks the libpulse backend, which is still
- * the one the selection reaches first. What this one has instead is what the
- * shim cannot carry: twenty-six channel positions against eighteen, a 64-bit
- * float, and a latency the node asks for rather than one translated on its
- * behalf.
+ * So this is a stream in each direction and nothing else, it reports exactly
+ * that, and a consumer that wants a device list or a mixer asks the libpulse
+ * backend, which is still the one the selection reaches first. What this one
+ * has instead is what the shim cannot carry: twenty-six channel positions
+ * against eighteen, a 64-bit float, and a latency the node asks for rather than
+ * one translated on its behalf.
  */
 internal class PipeWireBackend private constructor(
     private val loop: PipeWireLoop,
@@ -46,6 +46,7 @@ internal class PipeWireBackend private constructor(
     private val closed = AtomicBoolean(false)
 
     private val sinks = CopyOnWriteArrayList<PipeWireSink>()
+    private val sources = CopyOnWriteArrayList<PipeWireSource>()
 
     override fun createSink(config: SinkConfig): AudioSink {
         if (closed.get()) throw AudioException("backend is closed")
@@ -68,13 +69,19 @@ internal class PipeWireBackend private constructor(
     override fun defaultDevice(): AudioDevice? = null
 
     /**
-     * The mirror of the sink is the same object with the direction reversed,
-     * and it follows rather than arrives with it: capture is where the
-     * compatibility layer costs least, so it is the half of section 13 with the
-     * weakest case for going first.
+     * The same stream with the direction reversed, which is how `pw_stream`
+     * spells the mirror.
+     *
+     * It carries the wider format and position sets the sink does, so a
+     * recorder here can ask for a 64-bit float and for a layout the
+     * compatibility layer has no words for.
      */
-    override fun createSource(config: SourceConfig): AudioSource =
-        throw AudioException("the PipeWire backend cannot capture yet")
+    override fun createSource(config: SourceConfig): AudioSource {
+        if (closed.get()) throw AudioException("backend is closed")
+        val source = PipeWireSource(loop, config, SOURCE_CAPABILITIES)
+        sources.add(source)
+        return source
+    }
 
     override fun captureDevices(): List<AudioDevice> = emptyList()
 
@@ -92,6 +99,8 @@ internal class PipeWireBackend private constructor(
         if (!closed.compareAndSet(false, true)) return
         sinks.forEach { runCatching { it.close() } }
         sinks.clear()
+        sources.forEach { runCatching { it.close() } }
+        sources.clear()
         // Every stream is destroyed before the loop is stopped, and the loop is
         // stopped before the arena holding the upcall stubs is freed.
         loop.close()
@@ -122,7 +131,15 @@ internal class PipeWireBackend private constructor(
             Capability.CHANNEL_PLACEMENT,
         )
 
-        private val BACKEND_CAPABILITIES = SINK_CAPABILITIES
+        /**
+         * A source's, which is a sink's plus the one entry a sink cannot
+         * carry, because a sink is not the thing that captures.
+         */
+        private val SOURCE_CAPABILITIES = Capabilities(
+            SINK_CAPABILITIES.supported + Capability.CAPTURE,
+        )
+
+        private val BACKEND_CAPABILITIES = SOURCE_CAPABILITIES
 
         /**
          * Start a loop and return the backend, or null where there is no graph.
