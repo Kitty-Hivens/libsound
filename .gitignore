@@ -35,3 +35,4 @@ tools/*.exe
 tools/pa-oracle
 tools/dbus-oracle
 tools/rt-oracle
+tools/ffmpeg-layout-oracle
