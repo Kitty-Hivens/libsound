@@ -3,6 +3,7 @@ package dev.hivens.libsound.audio
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.audio.coreaudio.CoreAudioBackend
 import dev.hivens.libsound.audio.javasound.JavaSoundBackend
+import dev.hivens.libsound.audio.pipewire.PipeWireBackend
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import dev.hivens.libsound.audio.wasapi.WasapiBackend
 import org.slf4j.LoggerFactory
@@ -40,6 +41,7 @@ public object AudioBackends {
      */
     public fun open(applicationName: String): AudioBackend? {
         val osName = System.getProperty("os.name", "").lowercase()
+        forced()?.let { return open(it, applicationName) }
         val backend = when {
             osName.contains("linux") || osName.contains("bsd") ->
                 PulseBackend.connectOrNull(applicationName) ?: fallback("no PulseAudio or PipeWire")
@@ -75,6 +77,49 @@ public object AudioBackends {
         "coreaudio is the whole of libsound on macOS: the platform has no per-application " +
             "volume in any public API, so no mixer exists here and none will, and a published " +
             "media session has never been confirmed to appear anywhere by a person."
+
+    /**
+     * Which backend a run named, or null for the ordinary selection above.
+     *
+     * `-Dlibsound.backend=pipewire` and its siblings. Two reasons it exists,
+     * and they are the same reason twice. The native PipeWire backend is not on
+     * the ordinary path yet, because it is narrower than the libpulse one and
+     * the rule in section 13.9 of the plan is that it goes first only once it
+     * passes everything the libpulse one passes; until then, reaching it needs
+     * asking. And the first person to hit a difference between two backends on
+     * one machine needs to be able to pin each of them without rebuilding.
+     *
+     * A name nothing matches is a mistake worth failing on rather than
+     * silently ignoring: a run that asked for a backend and got another one
+     * measures the wrong thing and says nothing about it.
+     */
+    private fun forced(): String? = System.getProperty(BACKEND_PROPERTY)?.lowercase()?.takeIf { it.isNotBlank() }
+
+    private fun open(named: String, applicationName: String): AudioBackend? {
+        val backend = when (named) {
+            "pipewire" -> PipeWireBackend.connectOrNull(applicationName)
+            "pulse" -> PulseBackend.connectOrNull(applicationName)
+            "wasapi" -> WasapiBackend.connectOrNull()
+            "coreaudio" -> CoreAudioBackend.connectOrNull()
+            "javasound" -> JavaSoundBackend.createOrNull()
+            else -> throw IllegalArgumentException(
+                "$BACKEND_PROPERTY=$named names no backend. One of: pipewire, pulse, wasapi, coreaudio, javasound.",
+            )
+        }
+        if (backend == null) {
+            // No fallback here, and deliberately. A run that named a backend
+            // and quietly got a different one is a run that measured something
+            // else and did not say so, which is the same shade of green a
+            // skipped hardware suite is.
+            log.warn("{}={} was asked for and is not available here", BACKEND_PROPERTY, named)
+        } else {
+            log.info("audio backend: {} {} (asked for by {})", backend.name, backend.capabilities, BACKEND_PROPERTY)
+        }
+        return backend
+    }
+
+    /** What a run names to pin one backend, for the reasons in [forced]. */
+    private const val BACKEND_PROPERTY = "libsound.backend"
 
     private fun fallback(reason: String): AudioBackend? {
         log.debug("falling back to JavaSound: {}", reason)

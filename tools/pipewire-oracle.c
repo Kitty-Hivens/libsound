@@ -135,12 +135,25 @@ int main(void) {
     SECTION("the events struct a stream hands us, which is a vtable by another name");
     P(PW_VERSION_STREAM_EVENTS);
     P(sizeof(struct pw_stream_events));
+    /* Every field, not only the ones this library implements. The struct is
+     * handed over whole and the library calls whatever is in it, so a slot left
+     * out of the table is a slot filled with whatever follows the allocation.
+     * The offsets are deliberately not contiguous in the printout below:
+     * reading four of them and assuming the rest are eight apart is how a
+     * synthesised struct ends up calling a callback through the wrong
+     * signature. */
     P(offsetof(struct pw_stream_events, version));
     P(offsetof(struct pw_stream_events, destroy));
     P(offsetof(struct pw_stream_events, state_changed));
+    P(offsetof(struct pw_stream_events, control_info));
+    P(offsetof(struct pw_stream_events, io_changed));
     P(offsetof(struct pw_stream_events, param_changed));
+    P(offsetof(struct pw_stream_events, add_buffer));
+    P(offsetof(struct pw_stream_events, remove_buffer));
     P(offsetof(struct pw_stream_events, process));
     P(offsetof(struct pw_stream_events, drained));
+    P(offsetof(struct pw_stream_events, command));
+    P(offsetof(struct pw_stream_events, trigger_done));
     P(sizeof(struct spa_hook));
 
     SECTION("buffers, which is where the audio actually is");
@@ -161,6 +174,23 @@ int main(void) {
     P(offsetof(struct spa_chunk, offset));
     P(offsetof(struct spa_chunk, size));
     P(offsetof(struct spa_chunk, stride));
+
+    /* Where the playhead and the latency come from. queued is what this client
+     * has handed over and not yet had played, delay is the graph's own share,
+     * and the two together are what the contract calls the whole path. */
+    SECTION("pw_time, which is the playhead and the latency");
+    P(sizeof(struct pw_time));
+    P(offsetof(struct pw_time, now));
+    P(offsetof(struct pw_time, rate));
+    P(offsetof(struct pw_time, ticks));
+    P(offsetof(struct pw_time, delay));
+    P(offsetof(struct pw_time, queued));
+    P(offsetof(struct pw_time, buffered));
+    P(offsetof(struct pw_time, queued_buffers));
+    P(offsetof(struct pw_time, avail_buffers));
+    P(sizeof(struct spa_fraction));
+    P(offsetof(struct spa_fraction, num));
+    P(offsetof(struct spa_fraction, denom));
 
     SECTION("POD layout, which a Panama binding has to emit by hand");
     P(sizeof(struct spa_pod));
@@ -252,6 +282,18 @@ int main(void) {
         const struct spa_pod *pod = spa_latency_build(&builder, SPA_PARAM_Latency, &latency);
         dump("ParamLatency", pod, SPA_POD_SIZE(pod));
     }
+
+    /* Properties are built from a dict rather than from pw_properties_new,
+     * which is variadic: a Panama downcall to a variadic function needs a
+     * descriptor per call shape, and a dict needs none. */
+    SECTION("spa_dict, which is how properties are handed over without varargs");
+    P(sizeof(struct spa_dict));
+    P(offsetof(struct spa_dict, flags));
+    P(offsetof(struct spa_dict, n_items));
+    P(offsetof(struct spa_dict, items));
+    P(sizeof(struct spa_dict_item));
+    P(offsetof(struct spa_dict_item, key));
+    P(offsetof(struct spa_dict_item, value));
 
     SECTION("the property keys a node is named and placed by");
     printf("  %-30s = %s\n", "PW_KEY_MEDIA_TYPE", PW_KEY_MEDIA_TYPE);
