@@ -898,9 +898,17 @@ and removes the chance of each getting it differently wrong.
 
 ## 10. Non-goals
 
-**Decoding, resampling and effects in core.** skinema decodes and converts.
-libsound takes frames that are already frames. The processing module of section
-5.5 is opt-in, separately published, and depends on `libsound-core` only.
+**Decoding, resampling and effects in core.** skinema decodes. The sound server
+converts to whatever the device wants, which is measurable rather than assumed:
+the PulseAudio backend puts the consumer's rate in the sample spec and the
+server meets it, the WASAPI sink sets `AUTOCONVERTPCM` because the engine
+otherwise refuses any format but its own, and the CoreAudio output unit is told
+the rate in its stream description. So nothing in this stack resamples, and
+libsound takes frames that are already frames.
+
+The processing module of section 5.5 is opt-in, published as its own artifact,
+and depends on `libsound-core` only. It is a fifth module in this repository
+rather than a separate one, for the reasons in section 11.
 
 **Mixing sample streams.** `VolumeMixer` moves sliders and never sums audio.
 That is why it stopped being called `AudioMixer`.
@@ -939,7 +947,7 @@ seam is public so somebody else's project can go further.
 | What is the lowest profile that survives on an ordinary desktop? | 4.2 | **Still open, and now answerable by a consumer rather than by this plan.** `underrunCount` is what a soak would read, and the granted number is logged at open. |
 | Does `IAudioSessionManager2` enumerate capture sessions? | 6.2 | **Still open, and now askable.** `tools/wasapi-capture-probe.c` puts the question to a real machine, printing the render endpoint beside the capture one so a quiet machine is not mistaken for an endpoint that does not enumerate. `IAudioCaptureClient`'s slots are no longer part of this: the oracle prints them and wine answers correctly. |
 | Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | **Answered, in the negative.** `pa_stream_set_monitor_stream` narrows a monitor to one sink input because a monitor carries everything its sink plays. A real source has no equivalent call, so the only level available for a capture row is the device's own, shared by everything reading it. A row that moved because somebody else was talking would be worse than no meter, so the capability is absent. |
-| Where does the processing module live? | 5.5 | **Still open.** The rules and the fixture are in `libsound-core`, so either answer stays available. |
+| Where does the processing module live? | 5.5 | **Answered: a fifth module in this repository, depending on `libsound-core` only.** Not inside `libsound-audio`, which binds libpulse, because then everyone who wants to play a sound carries filters they never use, and the seam needs no privileged access: it is the public `AudioSink`. Not a repository of its own either, because "separately published" is about the artifact, and a second repository is a second version to keep in step and a second CI for a module whose whole surface is one interface. `libsound-dbus` was reasoned about the same way and stayed here. |
 | Does `streams()` returning both directions break a consumer badly enough to warrant a separate call? | 5.3 | **Answered: no.** It returns both, rows carry a direction, and stream ids now name the facility they came from, because a sink input and a source output can hold the same index at once. |
 
 ---
