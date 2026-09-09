@@ -243,6 +243,29 @@ class PulseDeviceControlTest {
     }
 
     @Test
+    fun `a channel count is honoured or refused, never narrowed`() {
+        val mixer = checkNotNull(mixer)
+        // Six channels used to clamp to a table of two and hand back a stereo
+        // device with a true return, so a caller found out by hearing four of
+        // its channels vanish.
+        val surround = checkNotNull(mixer.createVirtualSink("${name}_51", channels = 6)) {
+            "a six-channel null sink is something this server can make"
+        }
+        eventually("a six-channel device") {
+            checkNotNull(backend).devices().any { it.id == surround }
+        }
+        val listing = ProcessBuilder("pactl", "list", "sinks").redirectErrorStream(true).start()
+            .inputStream.readAllBytes().decodeToString()
+        Assumptions.assumeTrue(listing.contains(surround.value), "pactl did not list the device")
+        listing.split("Sink #").first { it.contains(surround.value) }
+            .contains("front-left,front-right,front-center,lfe,rear-left,rear-right") shouldBe true
+
+        // And a count the server has no layout for is null rather than
+        // something narrower wearing the name that was asked for.
+        mixer.createVirtualSink("${name}_wide", channels = 9) shouldBe null
+    }
+
+    @Test
     fun `a name that would be read as more arguments is refused`() {
         val mixer = checkNotNull(mixer)
         // A module argument is a flat string of key=value pairs, so a space or a

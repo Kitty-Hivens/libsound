@@ -365,6 +365,51 @@ internal object PulseAbi {
     }
 
     /**
+     * What libpulse spells a position, printed by `pa_channel_position_to_string`.
+     *
+     * Needed as text as well as as a number, because a module argument carries
+     * a channel map as a comma-separated list of these. A name written from
+     * memory is refused at load time with a message nobody reads, and the
+     * device then simply does not exist.
+     */
+    fun channelNameOf(position: ChannelPosition): String? = when (channelPositionOf(position)) {
+        CHANNEL_POSITION_FRONT_LEFT -> "front-left"
+        CHANNEL_POSITION_FRONT_RIGHT -> "front-right"
+        CHANNEL_POSITION_FRONT_CENTER -> "front-center"
+        CHANNEL_POSITION_REAR_CENTER -> "rear-center"
+        CHANNEL_POSITION_REAR_LEFT -> "rear-left"
+        CHANNEL_POSITION_REAR_RIGHT -> "rear-right"
+        CHANNEL_POSITION_LFE -> "lfe"
+        CHANNEL_POSITION_FRONT_LEFT_OF_CENTER -> "front-left-of-center"
+        CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER -> "front-right-of-center"
+        CHANNEL_POSITION_SIDE_LEFT -> "side-left"
+        CHANNEL_POSITION_SIDE_RIGHT -> "side-right"
+        CHANNEL_POSITION_TOP_CENTER -> "top-center"
+        CHANNEL_POSITION_TOP_FRONT_LEFT -> "top-front-left"
+        CHANNEL_POSITION_TOP_FRONT_RIGHT -> "top-front-right"
+        CHANNEL_POSITION_TOP_FRONT_CENTER -> "top-front-center"
+        CHANNEL_POSITION_TOP_REAR_LEFT -> "top-rear-left"
+        CHANNEL_POSITION_TOP_REAR_RIGHT -> "top-rear-right"
+        CHANNEL_POSITION_TOP_REAR_CENTER -> "top-rear-center"
+        else -> null
+    }
+
+    /**
+     * A whole layout as the text a module argument takes, or null where a
+     * position has no name here.
+     *
+     * One channel is `mono` rather than `front-center`, the same translation
+     * [PulseChannelMap] makes for the same reason: libpulse keeps the two apart
+     * so a mono stream is spread and a centre one is pinned.
+     */
+    fun channelMapTextOf(layout: ChannelLayout): String? {
+        if (!layout.isSpecified) return null
+        if (layout.channels == 1) return "mono"
+        val names = layout.positions.map { channelNameOf(it) ?: return null }
+        return names.joinToString(",")
+    }
+
+    /**
      * The first position this server cannot name, or null when it can name them
      * all.
      *
