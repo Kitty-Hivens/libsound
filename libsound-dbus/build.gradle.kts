@@ -31,6 +31,18 @@ kotlin {
     // boundary, and InternalDBusApi is what says so.
 }
 
+// Every other module reports its undocumented symbols and has none. This one
+// opts out, and the reason is the one InternalDBusApi already gives: nothing
+// here is offered to anybody. A reader who reaches these types has opted in to
+// a surface that carries no compatibility promise, and what they need is the
+// module's own documentation rather than a line on each of seventy handles
+// wrapping a libdbus call of the same name.
+dokka {
+    dokkaSourceSets.configureEach {
+        reportUndocumented.set(false)
+    }
+}
+
 dependencies {
     api(libs.slf4j.api)
 

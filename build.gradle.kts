@@ -57,6 +57,25 @@ subprojects {
         compilerOptions.allWarningsAsErrors.set(true)
     }
 
+    // A public symbol with no documentation is a gap a reader finds instead of
+    // an answer, and the javadoc jar is where they go looking. Dokka can say
+    // which ones they are, so it does, on every module that publishes.
+    plugins.withId("org.jetbrains.dokka") {
+        extensions.configure<org.jetbrains.dokka.gradle.DokkaExtension> {
+            dokkaSourceSets.configureEach {
+                reportUndocumented.set(true)
+            }
+            // And a warning is a failure, for the reason every Kotlin warning
+            // here is one: a warning that does not fail piles up unseen behind
+            // the build cache, which replays a cached run without re-emitting
+            // it. The javadoc jar is where a reader goes for an answer, and a
+            // symbol with nothing on it sends them to the source instead.
+            dokkaPublications.configureEach {
+                failOnWarning.set(true)
+            }
+        }
+    }
+
     tasks.withType<Jar>().configureEach {
         manifest {
             attributes(

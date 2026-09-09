@@ -34,7 +34,9 @@ import kotlin.concurrent.withLock
  * handed half a frame plays the channels swapped from that point on.
  */
 public class PcmRingBuffer(
+    /** How much it holds. A whole number of frames, checked on construction. */
     public val capacityBytes: Int,
+    /** One frame's width, which every read and write is rounded to. */
     public val frameBytes: Int,
 ) {
     init {
@@ -75,6 +77,7 @@ public class PcmRingBuffer(
     /** Bytes that can be written right now without blocking. */
     public fun free(): Int = lock.withLock { capacityBytes - count }
 
+    /** True once [close] has been called. A closed buffer accepts nothing more. */
     public fun isClosed(): Boolean = lock.withLock { closed }
 
     /**

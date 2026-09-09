@@ -5,11 +5,15 @@ package dev.hivens.libsound
  * [DeviceId] is one.
  */
 @JvmInline
-public value class CardId(public val value: String) {
+public value class CardId(
+    /** The server's own name for the card, opaque and not to be parsed. */
+    public val value: String,
+) {
     init {
         require(value.isNotBlank()) { "CardId must not be blank" }
     }
 
+    /** The name itself, so a log line reads as the card rather than as a wrapper. */
     override fun toString(): String = value
 }
 
@@ -52,9 +56,11 @@ public data class CardProfile(
  * reports an empty list rather than an exception, like every other query here.
  */
 public data class AudioCard(
+    /** What [VolumeMixer.setCardProfile] takes to name this card. */
     public val id: CardId,
     /** Human-readable label, already localised where the system localises. */
     public val name: String,
+    /** Every configuration this card can be put into, available or not. */
     public val profiles: List<CardProfile> = emptyList(),
     /** Which of [profiles] is in use, by name, or null when the backend cannot tell. */
     public val activeProfile: String? = null,

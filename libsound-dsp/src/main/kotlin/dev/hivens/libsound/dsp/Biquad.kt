@@ -19,12 +19,18 @@ import kotlin.math.sqrt
  * multiplies and adds and never divides.
  */
 public data class Biquad(
+    /** Weight of the current input sample. */
     public val b0: Float,
+    /** Weight of the input one sample ago. */
     public val b1: Float,
+    /** Weight of the input two samples ago. */
     public val b2: Float,
+    /** Weight of the output one sample ago, subtracted. */
     public val a1: Float,
+    /** Weight of the output two samples ago, subtracted. */
     public val a2: Float,
 ) {
+    /** The cookbook designers, which is how anybody should be getting these. */
     public companion object {
         /** Passes what is below [cutoffHz] and rolls off above it, at 12 dB per octave. */
         public fun lowPass(sampleRate: Int, cutoffHz: Double, q: Double = SQRT_HALF): Biquad {

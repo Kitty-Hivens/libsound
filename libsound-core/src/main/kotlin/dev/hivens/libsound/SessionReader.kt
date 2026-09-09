@@ -9,10 +9,21 @@ package dev.hivens.libsound
  * nothing else; two Firefox windows share it.
  */
 public data class ForeignPlayer(
+    /** What [SessionReader.control] takes to name this player. */
     public val id: String,
+    /** What the player calls itself, for display and nothing else. */
     public val identity: String,
+    /** Playing, paused or stopped, as the player last said. */
     public val playback: PlaybackState = PlaybackState.STOPPED,
+    /** What it is playing, as far as it has told anybody. */
     public val metadata: TrackMetadata = TrackMetadata.EMPTY,
+    /**
+     * Where it was when this was read, which is not where it is now.
+     *
+     * The protocols leave position out of ordinary change notifications
+     * because it moves continuously, so a consumer that draws a scrubber
+     * extrapolates from here and re-anchors when a seek is announced.
+     */
     public val positionMicros: Long = 0,
     /**
      * Whether this player accepts being driven from outside.
@@ -22,7 +33,9 @@ public data class ForeignPlayer(
      * the only thing that knows.
      */
     public val canControl: Boolean = false,
+    /** Whether it says it has a next track. */
     public val canGoNext: Boolean = false,
+    /** Whether it says it has a previous one. */
     public val canGoPrevious: Boolean = false,
     /**
      * What the player does at the end of the track, or null where it publishes
@@ -60,8 +73,10 @@ public data class ForeignPlayer(
  */
 public interface SessionReader : AutoCloseable {
 
+    /** What this reader can do. Constant for its lifetime. */
     public val capabilities: Capabilities
 
+    /** True between a successful open and [close]. */
     public val isOpen: Boolean
 
     /**
@@ -107,12 +122,32 @@ public interface SessionReader : AutoCloseable {
      */
     public fun onChange(handler: (PlayerEvent) -> Unit): () -> Unit
 
+    /** Stop reading and release the connection. Idempotent, never throws. */
     override fun close()
 }
 
 /** A change in the set of foreign players, or in one of them. */
 public sealed interface PlayerEvent {
-    public data class Appeared(public val player: ForeignPlayer) : PlayerEvent
-    public data class Changed(public val player: ForeignPlayer) : PlayerEvent
-    public data class Gone(public val id: String) : PlayerEvent
+    /** A player that was not on the desktop before. */
+    public data class Appeared(
+        /** Everything known about it, so a consumer draws it without asking again. */
+        public val player: ForeignPlayer,
+    ) : PlayerEvent
+
+    /** A player whose state moved. */
+    public data class Changed(
+        /** The player as it now is, not the difference. */
+        public val player: ForeignPlayer,
+    ) : PlayerEvent
+
+    /**
+     * A player that has gone.
+     *
+     * Only the id, because by the time this arrives there is nothing left to
+     * read.
+     */
+    public data class Gone(
+        /** Which player to forget. */
+        public val id: String,
+    ) : PlayerEvent
 }

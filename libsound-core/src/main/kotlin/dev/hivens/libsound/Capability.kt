@@ -199,24 +199,34 @@ public enum class Capability {
  */
 public class Capabilities(supported: Set<Capability>) {
 
+    /** Everything this backend can do, copied so the set cannot change underneath. */
     public val supported: Set<Capability> = supported.toSet()
 
+    /** Whether [capability] is one of them. The question a settings screen asks. */
     public operator fun contains(capability: Capability): Boolean = capability in supported
 
+    /** Whether at least one of [capabilities] is present. */
     public fun anyOf(vararg capabilities: Capability): Boolean = capabilities.any { it in supported }
 
+    /** Whether every one of [capabilities] is present. */
     public fun allOf(vararg capabilities: Capability): Boolean = capabilities.all { it in supported }
 
+    /** Two sets are equal when they hold the same capabilities. */
     override fun equals(other: Any?): Boolean = other is Capabilities && other.supported == supported
 
+    /** The set's, so equal capability sets hash alike. */
     override fun hashCode(): Int = supported.hashCode()
 
+    /** Sorted and named, so a log line says what a backend can do rather than how many things. */
     override fun toString(): String =
         supported.sortedBy { it.name }.joinToString(prefix = "Capabilities[", postfix = "]") { it.name }
 
+    /** Ways to build a set, for a backend declaring what it is. */
     public companion object {
+        /** A backend that can do none of it, which is a legitimate answer. */
         public val NONE: Capabilities = Capabilities(emptySet())
 
+        /** The set holding exactly [capabilities]. */
         public fun of(vararg capabilities: Capability): Capabilities = Capabilities(capabilities.toSet())
     }
 }
