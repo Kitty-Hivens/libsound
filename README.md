@@ -20,9 +20,13 @@ The audio-control layer between an application and the OS: what this process
 plays, what every other process is playing, and what the desktop does about any
 of it. A named output stream with system-level volume and device selection, the
 mixer surface for everyone else's streams, and a media session the desktop can
-see and control. It does **not** decode, resample, or run effects -- that is
+see and control. It does **not** decode: that is
 [`skinema`](https://github.com/Kitty-Hivens/skinema)'s job, and duplicating it
-would be a defect.
+would be a defect. It does not resample either, because nothing here needs to:
+every backend hands the consumer's format to the platform and the platform
+converts. Effects are a separate opt-in artifact that depends on the contracts
+alone, and the seam it hangs off is documented in `AudioSink` and asserted by a
+fixture.
 
 Three things it is for, in this order. **Low latency**, because audio arriving a
 fifth of a second late is audio that arrived wrong. **PipeWire asked properly**,
