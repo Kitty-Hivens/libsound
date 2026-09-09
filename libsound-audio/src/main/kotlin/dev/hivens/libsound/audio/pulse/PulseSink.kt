@@ -181,14 +181,26 @@ internal class PulseSink(
 
     override val isOpen: Boolean get() = stream.address() != 0L && !closed.get()
 
+    /** What this server has a sample format for, asked of the ABI table. */
+    override val acceptedEncodings: Set<PcmEncoding> get() = PulseAbi.ACCEPTED_ENCODINGS
+
+    /**
+     * The encoding, the channel count, and whether every named position has an
+     * equivalent on this server.
+     *
+     * The third is the half that only exists because the map goes across:
+     * claiming [Capability.CHANNEL_PLACEMENT] and then silently dropping a
+     * layout the server cannot express would be the same lie the map was added
+     * to remove.
+     */
+    override fun accepts(format: AudioFormat): Boolean =
+        format.encoding in PulseAbi.ACCEPTED_ENCODINGS &&
+            format.channels in 1..PulseAbi.CHANNELS_MAX &&
+            PulseChannelMap.placeable(format)
+
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
-        // What the server has a name for, asked of the table rather than
-        // listed here: a pair written at the call site went stale the moment
-        // the encodings grew, and refused formats libpulse takes.
-        if (PulseAbi.sampleFormatOf(format.encoding) == null) {
-            throw AudioException("this server has no sample format for ${format.encoding}")
-        }
+        refuseUnacceptable(format)
         disconnectStream()
         abort = false
         lastKnownFrames = 0
@@ -212,6 +224,11 @@ internal class PulseSink(
             spec.set(ValueLayout.JAVA_INT, PulseAbi.SAMPLE_SPEC_RATE, format.sampleRate)
             spec.set(ValueLayout.JAVA_BYTE, PulseAbi.SAMPLE_SPEC_CHANNELS, format.channels.toByte())
 
+            // The sample spec carries a count and no positions, and a stream
+            // connected without a map is laid out by the server's own
+            // convention, which is not the one a decoder interleaved to.
+            val channelMap = PulseChannelMap.writeOrNull(setup, format) ?: MemorySegment.NULL
+
             val attr = setup.allocate(PulseAbi.BUFFER_ATTR_SIZE, 4)
             // Left to the server, not tlength * 2: with ADJUST_LATENCY the
             // server sizes the shared buffer itself to meet the target, and a
@@ -234,7 +251,7 @@ internal class PulseSink(
             pulse.lock()
             try {
                 val fresh = lib.handle("pa_stream_new_with_proplist")
-                    .invokeExact(pulse.context, streamName, spec, MemorySegment.NULL, proplist) as MemorySegment
+                    .invokeExact(pulse.context, streamName, spec, channelMap, proplist) as MemorySegment
                 lib.handle("pa_proplist_free").invokeExact(proplist) as Unit
                 if (fresh.address() == 0L) {
                     throw AudioException("pa_stream_new_with_proplist: ${pulse.lastError()}")
@@ -596,6 +613,28 @@ internal class PulseSink(
     private fun propSet(arena: Arena, proplist: MemorySegment, key: String, value: String) {
         lib.handle("pa_proplist_sets")
             .invokeExact(proplist, arena.allocateUtf8(key), arena.allocateUtf8(value)) as Int
+    }
+
+    /**
+     * The refusal [accepts] promised, worded so a consumer knows what to change.
+     *
+     * Every branch names the one thing that was wrong, because a ladder down
+     * from a 24-bit 5.1 track has several rungs and "unsupported format" says
+     * nothing about which one to take.
+     */
+    private fun refuseUnacceptable(format: AudioFormat) {
+        if (format.encoding !in PulseAbi.ACCEPTED_ENCODINGS) {
+            throw AudioException("this server has no sample format for ${format.encoding}")
+        }
+        if (format.channels !in 1..PulseAbi.CHANNELS_MAX) {
+            throw AudioException("this server takes up to ${PulseAbi.CHANNELS_MAX} channels, not ${format.channels}")
+        }
+        PulseAbi.unplaceable(format.layout)?.takeIf { !PulseChannelMap.placeable(format) }?.let { position ->
+            throw AudioException(
+                "this server has no channel position for $position in ${format.layout}; " +
+                    "send the same audio with an unspecified layout to take the server's own ordering",
+            )
+        }
     }
 
     /** Refused rather than narrowed: the server has no name for every shape a decoder sends. */

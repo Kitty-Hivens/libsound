@@ -13,7 +13,6 @@ import javax.sound.sampled.LineUnavailableException
 import javax.sound.sampled.TargetDataLine
 import kotlin.math.log10
 import kotlin.math.max
-import javax.sound.sampled.AudioFormat as JavaAudioFormat
 
 /**
  * The capture counterpart of [JavaSoundSink]: a `TargetDataLine`, present on
@@ -57,15 +56,23 @@ internal class JavaSoundSource(
 
     override val isOpen: Boolean get() = line != null && !closed
 
+    /** Asked of the JVM, for the reason [JavaSoundSink.acceptedEncodings] is. */
+    override val acceptedEncodings: Set<PcmEncoding> by lazy {
+        JavaSoundFormats.acceptedFor(TargetDataLine::class.java, JavaSoundFormats.PROBE)
+    }
+
+    /** The same walk [open] makes, so the answer and the behaviour cannot drift. */
+    override fun accepts(format: AudioFormat): Boolean = JavaSoundFormats.supportedForCapture(format)
+
     override fun open(format: AudioFormat) {
         if (closed) throw AudioException("source is closed")
         // AudioException rather than the argument check this used to be. A
         // consumer walks a ladder down from what the media is and catches what
         // the contract promises; an IllegalArgumentException goes straight past
         // it and out of the player.
-        if (format.encoding != PcmEncoding.S16LE) {
-            throw AudioException("JavaSound takes S16LE only, was ${format.encoding}")
-        }
+        val javaFormat = JavaSoundFormats.javaFormatOf(format)
+            ?: throw AudioException("JavaSound has no encoding for ${format.encoding}")
+        if (!accepts(format)) throw AudioException("no JavaSound capture line takes $format")
         line?.let { old ->
             runCatching { old.stop() }
             runCatching { old.flush() }
@@ -75,13 +82,6 @@ internal class JavaSoundSource(
         // not leave isOpen answering true against a closed line.
         line = null
         openFormat = null
-        val javaFormat = JavaAudioFormat(
-            format.sampleRate.toFloat(),
-            format.encoding.bytesPerSample * 8,
-            format.channels,
-            true,
-            false,
-        )
         val bufferBytes = (format.bytesFor(format.framesFor(bufferNanos))).toInt()
             .coerceAtLeast(format.bytesPerFrame)
         val fresh = try {

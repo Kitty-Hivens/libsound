@@ -1,5 +1,8 @@
 package dev.hivens.libsound.audio.wasapi
 
+import dev.hivens.libsound.ChannelLayout
+import dev.hivens.libsound.ChannelPosition
+
 /**
  * Vtable slots, GUIDs and constants for the WASAPI subset this backend binds.
  *
@@ -185,6 +188,113 @@ internal object WasapiAbi {
 
     const val WAVE_FORMAT_PCM = 1
     const val WAVE_FORMAT_EXTENSIBLE = 0xFFFE
+
+    /**
+     * What `wFormatTag` cannot say, and why the extensible form is used for
+     * everything.
+     *
+     * A plain `WAVEFORMATEX` can say PCM and cannot say float, cannot say how
+     * many of a sample's bits carry signal, and cannot say what each channel
+     * is. A client that writes only that one is a client that sends S16 and
+     * nothing else, which is what this backend did.
+     */
+    const val KSDATAFORMAT_SUBTYPE_PCM = "00000001-0000-0010-8000-00AA00389B71"
+    const val KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = "00000003-0000-0010-8000-00AA00389B71"
+
+    // -- SPEAKER_*, one bit per channel position -----------------------------
+
+    const val SPEAKER_FRONT_LEFT = 0x00000001
+    const val SPEAKER_FRONT_RIGHT = 0x00000002
+    const val SPEAKER_FRONT_CENTER = 0x00000004
+    const val SPEAKER_LOW_FREQUENCY = 0x00000008
+    const val SPEAKER_BACK_LEFT = 0x00000010
+    const val SPEAKER_BACK_RIGHT = 0x00000020
+    const val SPEAKER_FRONT_LEFT_OF_CENTER = 0x00000040
+    const val SPEAKER_FRONT_RIGHT_OF_CENTER = 0x00000080
+    const val SPEAKER_BACK_CENTER = 0x00000100
+    const val SPEAKER_SIDE_LEFT = 0x00000200
+    const val SPEAKER_SIDE_RIGHT = 0x00000400
+    const val SPEAKER_TOP_CENTER = 0x00000800
+    const val SPEAKER_TOP_FRONT_LEFT = 0x00001000
+    const val SPEAKER_TOP_FRONT_CENTER = 0x00002000
+    const val SPEAKER_TOP_FRONT_RIGHT = 0x00004000
+    const val SPEAKER_TOP_BACK_LEFT = 0x00008000
+    const val SPEAKER_TOP_BACK_CENTER = 0x00010000
+    const val SPEAKER_TOP_BACK_RIGHT = 0x00020000
+
+    /**
+     * The named layouts, printed beside the bits so an assembled mask can be
+     * checked against one rather than believed.
+     *
+     * The reason they are here at all: a mask carries no order of its own, and
+     * `WAVEFORMATEXTENSIBLE` interleaves by ascending bit. That happens to be
+     * the order FFmpeg hands its layouts over in, which is convenient and is
+     * not evidence. `WasapiChannelMaskTest` asserts the assembled mask against
+     * each of these instead.
+     */
+    const val KSAUDIO_SPEAKER_MONO = 0x00000004
+    const val KSAUDIO_SPEAKER_STEREO = 0x00000003
+    const val KSAUDIO_SPEAKER_QUAD = 0x00000033
+    const val KSAUDIO_SPEAKER_SURROUND = 0x00000107
+    const val KSAUDIO_SPEAKER_5POINT1 = 0x0000003F
+    const val KSAUDIO_SPEAKER_5POINT1_SURROUND = 0x0000060F
+    const val KSAUDIO_SPEAKER_7POINT1 = 0x000000FF
+    const val KSAUDIO_SPEAKER_7POINT1_SURROUND = 0x0000063F
+
+    /**
+     * The bit for one position, or null where Windows has none.
+     *
+     * The same eighteen libpulse can name, which is not a coincidence worth
+     * relying on and is worth noticing: the positions two unrelated systems
+     * both name are the ones a consumer can count on carrying anywhere.
+     */
+    fun speakerBitOf(position: ChannelPosition): Int? = when (position) {
+        ChannelPosition.FL -> SPEAKER_FRONT_LEFT
+        ChannelPosition.FR -> SPEAKER_FRONT_RIGHT
+        ChannelPosition.FC -> SPEAKER_FRONT_CENTER
+        ChannelPosition.LFE -> SPEAKER_LOW_FREQUENCY
+        ChannelPosition.BL -> SPEAKER_BACK_LEFT
+        ChannelPosition.BR -> SPEAKER_BACK_RIGHT
+        ChannelPosition.FLC -> SPEAKER_FRONT_LEFT_OF_CENTER
+        ChannelPosition.FRC -> SPEAKER_FRONT_RIGHT_OF_CENTER
+        ChannelPosition.BC -> SPEAKER_BACK_CENTER
+        ChannelPosition.SL -> SPEAKER_SIDE_LEFT
+        ChannelPosition.SR -> SPEAKER_SIDE_RIGHT
+        ChannelPosition.TC -> SPEAKER_TOP_CENTER
+        ChannelPosition.TFL -> SPEAKER_TOP_FRONT_LEFT
+        ChannelPosition.TFC -> SPEAKER_TOP_FRONT_CENTER
+        ChannelPosition.TFR -> SPEAKER_TOP_FRONT_RIGHT
+        ChannelPosition.TBL -> SPEAKER_TOP_BACK_LEFT
+        ChannelPosition.TBC -> SPEAKER_TOP_BACK_CENTER
+        ChannelPosition.TBR -> SPEAKER_TOP_BACK_RIGHT
+        ChannelPosition.DL, ChannelPosition.DR,
+        ChannelPosition.WL, ChannelPosition.WR,
+        ChannelPosition.SDL, ChannelPosition.SDR,
+        ChannelPosition.LFE2,
+        ChannelPosition.TSL, ChannelPosition.TSR,
+        ChannelPosition.BFC, ChannelPosition.BFL, ChannelPosition.BFR,
+        ChannelPosition.SSL, ChannelPosition.SSR,
+        ChannelPosition.TTL, ChannelPosition.TTR,
+        ChannelPosition.BIL, ChannelPosition.BIR,
+        -> null
+    }
+
+    /**
+     * The mask for a layout, or null where a position has no bit.
+     *
+     * Null is a refusal rather than a zero: a mask of zero is legal and means
+     * the mapping is unspecified, which is the right thing to send for a layout
+     * that names nothing and the wrong thing to send for one that names a
+     * channel this cannot place.
+     */
+    fun channelMaskOf(layout: ChannelLayout): Int? {
+        var mask = 0
+        for (position in layout.positions) {
+            val bit = speakerBitOf(position) ?: return null
+            mask = mask or bit
+        }
+        return mask
+    }
 
     // -- PROPVARIANT ---------------------------------------------------------
 

@@ -147,15 +147,36 @@ internal class CoreAudioSink(
 
     override val isOpen: Boolean get() = unit.address() != 0L && !closed.get()
 
+    /**
+     * All five, because an ASBD expresses all five and the unit converts
+     * between linear PCM formats on its input scope.
+     *
+     * Not a list written here to be believed: the macOS row of CI runs the
+     * contract suite against a real output unit, and the suite asserts this set
+     * against what [open] actually takes. A platform that refuses one of them
+     * is a red build there rather than a surprise for somebody with a Mac.
+     */
+    override val acceptedEncodings: Set<PcmEncoding> get() = PcmEncoding.entries.toSet()
+
+    /**
+     * The encoding, and nothing else.
+     *
+     * The layout is not consulted and [Capability.CHANNEL_PLACEMENT] is absent:
+     * placing channels here needs `kAudioUnitProperty_AudioChannelLayout` and
+     * the `kAudioChannelLabel_*` values behind it, and those are ABI numbers
+     * that have to come from `tools/coreaudio-oracle.c` before anything is
+     * written against them. The oracle prints them and runs on the macOS row;
+     * until a run has, this backend takes a count and says so.
+     */
+    override fun accepts(format: AudioFormat): Boolean = true
+
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
-        // No list here on purpose. Every encoding is expressible as an ASBD,
+        // No refusal here on purpose. Every encoding is expressible as an ASBD,
         // and whether this unit takes one is the unit's answer rather than
         // ours: AudioUnitSetProperty refuses a format it cannot render, and
         // checkStatus turns that into the AudioException a consumer walking a
-        // ladder is already catching. A pair written here would refuse formats
-        // the platform accepts and would go stale the next time the encodings
-        // grew, which is what it had just done.
+        // ladder is already catching.
         disposeUnit()
         // The old ring goes with the old unit. Nothing drains it any more, so a
         // producer parked on it would stay parked through a reopen that looked
