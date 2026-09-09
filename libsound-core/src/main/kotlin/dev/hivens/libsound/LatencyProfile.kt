@@ -26,7 +26,14 @@ package dev.hivens.libsound
  *
  * At 48 kHz these are, in frames: 9600, 1920, 480 and 240.
  */
-public enum class LatencyProfile(public val targetNanos: Long) {
+public enum class LatencyProfile(
+    /**
+     * The buffer this profile asks for. A request and a ceiling rather than a
+     * promise: the graph's own quantum is a floor under it, and what was
+     * granted is what [AudioSink.latencyNanos] reports once the stream is open.
+     */
+    public val targetNanos: Long,
+) {
 
     /** 200 ms. Never underruns. For a file player nobody is interacting with. */
     RELAXED(200_000_000L),

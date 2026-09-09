@@ -8,11 +8,15 @@ package dev.hivens.libsound
  * same reason [DeviceId] is a name.
  */
 @JvmInline
-public value class StreamId(public val value: String) {
+public value class StreamId(
+    /** The server's own handle, opaque and not to be parsed. */
+    public val value: String,
+) {
     init {
         require(value.isNotBlank()) { "StreamId must not be blank" }
     }
 
+    /** The name itself, so a log line reads as the stream rather than as a wrapper. */
     override fun toString(): String = value
 }
 
@@ -24,11 +28,13 @@ public value class StreamId(public val value: String) {
  * as an anonymous row, and a mixer has to draw that row anyway.
  */
 public data class AudioStream(
+    /** What every other call on [VolumeMixer] takes to name this stream. */
     public val id: StreamId,
     /** What the application called itself, or null when it never said. */
     public val applicationName: String?,
     /** Reverse-DNS id, where one was given -- what matches a `.desktop` entry. */
     public val applicationId: String? = null,
+    /** Icon name from the desktop's theme, where the stream named one. */
     public val iconName: String? = null,
     /**
      * What the stream is playing, where it says: a track title, or a generic
@@ -42,6 +48,7 @@ public data class AudioStream(
     public val device: DeviceId? = null,
     /** Linear 0..1, as the desktop's mixer would show it. */
     public val volume: Float = 1f,
+    /** Muted separately from the volume, and restored separately for the same reason. */
     public val muted: Boolean = false,
     /**
      * False when the stream is attached but not rendering -- a paused player
@@ -63,9 +70,28 @@ public data class AudioStream(
 
 /** A change in the set of streams, or in one of them. */
 public sealed interface StreamEvent {
-    public data class Appeared(public val stream: AudioStream) : StreamEvent
-    public data class Changed(public val stream: AudioStream) : StreamEvent
-    public data class Gone(public val id: StreamId) : StreamEvent
+    /** A stream that was not there before. */
+    public data class Appeared(
+        /** The whole row, so a consumer draws it without asking again. */
+        public val stream: AudioStream,
+    ) : StreamEvent
+
+    /** A stream whose volume, mute, device or activity moved. */
+    public data class Changed(
+        /** The row as it now is, not the difference. */
+        public val stream: AudioStream,
+    ) : StreamEvent
+
+    /**
+     * A stream that has closed.
+     *
+     * Only the id, because by the time this arrives there is nothing left on
+     * the server to read.
+     */
+    public data class Gone(
+        /** Which row to remove. */
+        public val id: StreamId,
+    ) : StreamEvent
 }
 
 /**
@@ -96,8 +122,13 @@ public sealed interface StreamEvent {
  */
 public interface VolumeMixer : AutoCloseable {
 
+    /**
+     * What this mixer can do. Constant for its lifetime, so a settings screen
+     * may read it once at startup and build itself from the answer.
+     */
     public val capabilities: Capabilities
 
+    /** True between a successful open and [close]. */
     public val isOpen: Boolean
 
     /**
@@ -260,5 +291,9 @@ public interface VolumeMixer : AutoCloseable {
      */
     public fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit
 
+    /**
+     * Put back what this process changed, then release the connection.
+     * Idempotent, never throws, and calls [restoreAll] on the way.
+     */
     override fun close()
 }

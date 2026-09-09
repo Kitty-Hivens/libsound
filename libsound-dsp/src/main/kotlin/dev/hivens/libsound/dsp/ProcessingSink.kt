@@ -57,17 +57,27 @@ public abstract class ProcessingSink(
      */
     protected open fun reset() {}
 
+    /** The wrapped sink's, since a decorator changes what it can do rather than what it is. */
     override val capabilities: Capabilities get() = inner.capabilities
 
+    /** The wrapped sink's. */
     override val format: AudioFormat? get() = inner.format
 
+    /** The wrapped sink's. */
     override val isOpen: Boolean get() = inner.isOpen
 
+    /** Drops whatever was carried over, then opens the sink underneath. */
     override fun open(format: AudioFormat) {
         reset()
         inner.open(format)
     }
 
+    /**
+     * Converts, calls [process], converts back, and hands the result on.
+     *
+     * Blocks for exactly as long as the wrapped sink blocks, because there is
+     * nothing between the two.
+     */
     override fun write(data: ByteArray, offset: Int, length: Int) {
         val open = inner.format
         if (open == null || length <= 0) {
@@ -124,14 +134,17 @@ public abstract class ProcessingSink(
         }
     }
 
+    /** Delegated. */
     override fun start() {
         inner.start()
     }
 
+    /** Delegated. */
     override fun stop() {
         inner.stop()
     }
 
+    /** Drops this decorator's own state, then flushes the sink underneath. */
     override fun flush() {
         // Ours first: the tail of what was playing is in the filter state, and
         // it is exactly what a seek must not carry across.
@@ -145,14 +158,21 @@ public abstract class ProcessingSink(
     /** The wrapped sink's, because nothing here is queued on top of it. */
     override fun latencyNanos(): Long = inner.latencyNanos()
 
+    /** The device's own count. */
     override fun underrunCount(): Long = inner.underrunCount()
 
+    /**
+     * Delegated, and not the same thing as a gain: a volume goes to the system
+     * where the backend can put it there, and [GainSink] is arithmetic here.
+     */
     override fun setVolume(volume: Float) {
         inner.setVolume(volume)
     }
 
+    /** The wrapped sink's. */
     override fun volume(): Float = inner.volume()
 
+    /** Closes the sink underneath. Idempotent, never throws. */
     override fun close() {
         if (closed) return
         closed = true

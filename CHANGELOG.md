@@ -83,6 +83,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   plays audio already has them: the tap is how they are seen without a second
   copy of the pipeline. It changes nothing, holds nothing, and adds no latency.
 
+- Documentation on every public symbol of every published module, and a build
+  that fails without it. Dokka reports what is undocumented and its warnings
+  are errors, for the same reason the Kotlin ones are: a warning that does not
+  fail piles up unseen behind the build cache. It caught a broken cross
+  reference on its first run, which would have rendered as a dead link in the
+  javadoc jar. `libsound-dbus` opts out and says why: nothing there is offered
+  to anybody, and a reader who reached those types needs the module's own
+  documentation rather than a line on each of seventy handles wrapping a
+  libdbus call of the same name.
+
 ### Fixed
 - A seek sent by a desktop is accepted rather than dropped as stale.
   `mpris:trackid` went out escaped into an object path and came back raw, and
