@@ -23,6 +23,10 @@ dev.hivens:libsound-session:0.1.0    media sessions, both directions
 dev.hivens:libsound-dsp:0.1.0        gain, filter, limiter, tap
 ```
 
+Feeding this from a decoder is a narrower question with its own page:
+[docs/PCM.md](PCM.md) covers what to hand over, how the write paces a decode
+loop, and how a clock reads back out of it.
+
 ## Playing something
 
 ```kotlin
