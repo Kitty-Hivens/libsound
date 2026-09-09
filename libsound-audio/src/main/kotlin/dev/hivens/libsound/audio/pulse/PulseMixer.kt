@@ -6,6 +6,7 @@ import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.AudioDevice
 import dev.hivens.libsound.CardId
+import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.StreamDirection
@@ -405,7 +406,16 @@ internal class PulseMixer private constructor(
     override fun createVirtualSink(name: String, channels: Int): DeviceId? {
         if (closed.get()) return null
         val safe = sanitise(name) ?: return null
-        val map = CHANNEL_MAPS[channels.coerceIn(1, CHANNEL_MAPS.size)] ?: return null
+        // The map is built from what the count means rather than looked up in a
+        // table of two. The table clamped: a caller asking for a six-channel bus
+        // was handed a stereo one, with a true return and a device id, and found
+        // out by hearing four of its channels vanish. Null is the answer for a
+        // count this server cannot lay out, which is the same answer every other
+        // refusal here gives.
+        val map = PulseAbi.channelMapTextOf(ChannelLayout.defaultFor(channels)) ?: run {
+            log.info("no channel map for a {}-channel device; refusing rather than making a narrower one", channels)
+            return null
+        }
         return loadModule(
             safe,
             "module-null-sink",
@@ -1258,16 +1268,6 @@ internal class PulseMixer private constructor(
 
         /** Long enough for a description, short enough not to be an argument list. */
         private const val MAX_DEVICE_NAME = 64
-
-        /**
-         * The channel maps a virtual sink can be asked for. Named rather than
-         * generated: a map is a list of channel positions the server knows, and
-         * an invented one is refused at load time with a message nobody reads.
-         */
-        private val CHANNEL_MAPS = mapOf(
-            1 to "mono",
-            2 to "front-left,front-right",
-        )
 
         /** `PA_INVALID_INDEX`, which a sink input carries when it is not routed. */
         private const val INVALID_INDEX = -1

@@ -256,6 +256,15 @@ int main(void) {
     P(PA_CHANNEL_POSITION_TOP_REAR_CENTER);
     P(PA_CHANNEL_POSITION_MAX);
 
+    /* The names, because a module argument takes a channel map as text. A
+     * position written from memory is refused at load time with a message
+     * nobody reads, and the sink then does not exist. */
+    SECTION("pa_channel_position_to_string");
+    for (int position = PA_CHANNEL_POSITION_MONO; position < PA_CHANNEL_POSITION_MAX; position++) {
+        const char *name = pa_channel_position_to_string((pa_channel_position_t) position);
+        if (name) printf("%2d = %s\n", position, name);
+    }
+
     SECTION("what a null channel map means, per count");
     for (unsigned n = 1; n <= 8; n++) {
         pa_channel_map map;

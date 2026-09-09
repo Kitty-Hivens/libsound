@@ -245,6 +245,11 @@ public interface VolumeMixer : AutoCloseable {
      * inside that window can be replaced by a value nobody here chose, which
      * the server reports as a successful request all the same. A consumer that
      * needs the setting to hold asks again once the device has settled.
+     *
+     * [channels] is honoured or refused, never narrowed. A backend that cannot
+     * lay out that many channels answers null rather than handing back a
+     * device with fewer, because a caller that asked for a six-channel bus and
+     * received a stereo one finds out by hearing four of its channels vanish.
      */
     public fun createVirtualSink(name: String, channels: Int = 2): DeviceId?
 
