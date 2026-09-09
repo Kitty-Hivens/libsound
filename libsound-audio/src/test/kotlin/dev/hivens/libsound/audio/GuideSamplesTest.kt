@@ -99,6 +99,7 @@ class GuideSamplesTest {
         val SAMPLE_FILES = listOf(
             "libsound-audio/src/test/kotlin/dev/hivens/libsound/audio/samples/AudioSamples.kt",
             "libsound-session/src/test/kotlin/dev/hivens/libsound/session/samples/SessionSamples.kt",
+            "libsound-dsp/src/test/kotlin/dev/hivens/libsound/dsp/samples/DspSamples.kt",
         )
     }
 }

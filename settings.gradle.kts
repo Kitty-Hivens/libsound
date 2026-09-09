@@ -21,6 +21,11 @@ include(":libsound-core")
 include(":libsound-audio")
 include(":libsound-session")
 
+// Processing, for the same reason: a consumer that plays a sound should not
+// carry a filter bank it never calls. It hangs off the public AudioSink and
+// depends on the contracts alone, so it needs neither a backend nor a bus.
+include(":libsound-dsp")
+
 // The exception to that rule, and it is a mechanical one. Both the audio module
 // (RealtimeKit, for a thread that wakes on time) and the session module (MPRIS)
 // talk to a bus, a Kotlin `internal` cannot cross a module boundary, and a

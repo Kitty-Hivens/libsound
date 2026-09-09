@@ -73,6 +73,7 @@ the build fails if the page and the code drift apart.
 | `libsound-core` | Types and contracts. Zero dependencies, Java 17 floor, no Panama. Compile against this without pulling any backend. |
 | `libsound-audio` | The sound server: our own output channel and everyone else's streams. PulseAudio, CoreAudio and JavaSound exercised; WASAPI output and mixer written and awaiting hardware. |
 | `libsound-session` | The media session: publish our own, read and drive everyone else's. MPRIS, SMTC and MPNowPlayingInfoCenter. |
+| `libsound-dsp` | Processing: gain, biquad, limiter and a tap, as sinks that wrap a sink. Depends on the contracts alone, so nothing that only plays audio carries it. |
 | `libsound-dbus` | Internal plumbing, not an API. Both modules above talk to a bus, a Kotlin `internal` cannot cross a module boundary, and a consumer's classpath has to hold what they call. Every type in it is fenced behind an opt-in marker that says so. |
 
 Split so a consumer pays only for what it uses -- MPRIS without libpulse, an
