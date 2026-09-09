@@ -16,10 +16,22 @@ back.
 
 Four things:
 
-1. **Native sound instead of JavaSound.** The fallback plays audio and loses
-   everything around it: no stream identity, no device selection, no system
-   volume, no capture worth the name. Reaching the sound server directly is what
-   gets those back, and it is the reason the library exists at all.
+1. **A clean path to the sound server.** Two layers away from it today, and each
+   one costs something nameable. JavaSound plays audio and loses everything
+   around it: no stream identity, no device selection, no system volume, no
+   capture worth the name, which is why the libpulse backend exists at all.
+   `pipewire-pulse` gives all of those back and costs the rest, because it can
+   only carry what the PulseAudio protocol can say. Measured, in section 13:
+   eighteen of the thirty-six channel positions a decoder sends, no 64-bit
+   float, and a `node.latency` the shim recomputes and overwrites. Speaking
+   PipeWire natively is what removes the second layer.
+
+   What clean is for, concretely: a consumer hands frames to libsound and
+   libsound is a node in the graph. Whatever the person at that machine wants
+   between the node and their speakers, EasyEffects or any other filter, is a
+   link they make. This library's job is to be an ordinary node they can route,
+   not to be told about it.
+
 2. **Low latency.** Audio that arrives when it should. A keypress heard in
    single-digit milliseconds, not in a fifth of a second.
 3. **MPRIS.** A player the desktop drives, and a reader that drives everyone
@@ -32,16 +44,6 @@ Four things:
 
 The fourth is the one that shapes the other three. A library that only solved
 the problem in front of us would be a library the next problem needs a fork of.
-
-### 1.0 What "PipeWire, properly" turned out to mean
-
-An earlier version of this list carried it as a purpose in its own right: not
-"it works through the compatibility layer", but speaking to the graph directly.
-That is still worth wanting and it is not where the work went, because section
-4.4 measured the compatibility layer honouring every lever this library needs.
-The claim and the implementation contradicted each other in this document for
-several sections, which is worse than either. It is an open question in section
-11 now, with what would have to be measured before it becomes work.
 
 ### 1.1 How far it has got
 
@@ -798,12 +800,11 @@ stream the caller owns and libpulse offers no route in from outside, so "pause
 everything else" is not available. The honest substitutes are mute or a media
 role. Stated here so it is not rediscovered.
 
-**PipeWire natively** is not in this plan, and section 1.0 says why the earlier
-version of section 1 read as though it were. Speaking the protocol directly
-rather than through `pipewire-pulse` would expose the node graph, arbitrary port
-links and per-node latency, and it is a second complete binding for a benefit
-the properties in section 4.4 already deliver most of. Section 11 carries it as
-an open question with the two measurements that would turn it into work.
+**PipeWire natively** has its own section now. An earlier draft of this
+paragraph excluded it as a second complete binding for a benefit section 4.4
+already delivered most of. That was true of latency and false of everything
+else, which section 13.1 measures: the compatibility layer decides what this
+library can say about a stream, and it says less than the graph can hear.
 
 ---
 
@@ -1019,7 +1020,7 @@ seam is public so somebody else's project can go further.
 | Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | **Answered, in the negative.** `pa_stream_set_monitor_stream` narrows a monitor to one sink input because a monitor carries everything its sink plays. A real source has no equivalent call, so the only level available for a capture row is the device's own, shared by everything reading it. A row that moved because somebody else was talking would be worse than no meter, so the capability is absent. |
 | Where does the processing module live? | 5.5 | **Answered: a fifth module in this repository, depending on `libsound-core` only.** Not inside `libsound-audio`, which binds libpulse, because then everyone who wants to play a sound carries filters they never use, and the seam needs no privileged access: it is the public `AudioSink`. Not a repository of its own either, because "separately published" is about the artifact, and a second repository is a second version to keep in step and a second CI for a module whose whole surface is one interface. `libsound-dbus` was reasoned about the same way and stayed here. |
 | Does `streams()` returning both directions break a consumer badly enough to warrant a separate call? | 5.3 | **Answered: no.** It returns both, rows carry a direction, and stream ids now name the facility they came from, because a sink input and a source output can hold the same index at once. |
-| Is a native PipeWire binding worth a second complete implementation? | 7.7, 1.0 | **Open, and two measurements would settle it.** First, what a machine running PipeWire without `pipewire-pulse` installed actually gives us, which is currently nothing at all. Second, what a filter node placed in the graph saves against the round trip through a virtual sink that section 7.4 already offers. Until one of them says a number, section 4.4's measurement stands: the compatibility layer honours every lever this library asks for. |
+| Is a native PipeWire binding worth a second complete implementation? | 7.7, 13 | **Answered: yes, and it is a purpose rather than an option.** `tools/pipewire-oracle.c` measured what the shim costs: eight channel positions, the 64-bit and packed 24-bit formats, and the latency the node asked for. Those are refusals this library currently reports as its own. Section 13 specifies the backend. |
 | Does `latencyNanos` returning zero mean unmeasurable or empty? | 4.7 | **Open, and narrowed.** `Capability.TOTAL_LATENCY` now says whether the number covers the device or only the client's queue, which was the larger half of the confusion. It does not separate a backend that cannot measure from a device with nothing queued, which `UNDERRUN_COUNT` does for its own number. |
 
 ---
@@ -1066,3 +1067,204 @@ are still refinement.
 
 **7. Hardware.** Waits on a person with a Windows machine and gates none of the
 above. `docs/TESTING.md` is what that person reads.
+
+**8. Native PipeWire.** Section 13. It is a purpose rather than a refinement,
+and it comes after the numbers because the numbers are what told it apart from
+a preference: the refusals section 9.2 and 9.3 made this library report are the
+compatibility layer's, and a native path is what stops them being ours.
+
+---
+
+## 13. PipeWire, natively
+
+The second layer this library is away from the sound server, and the one
+section 1 puts first.
+
+### 13.1 What the compatibility layer costs
+
+Not an argument from architecture. `tools/pipewire-oracle.c` asks the headers,
+and the answers are the specification for this section.
+
+| | Through `pipewire-pulse` | Natively |
+|---|---|---|
+| Channel positions, of the 36 FFmpeg names | 18 | 26 |
+| 64-bit float | Not in `pa_sample_format_t` at all | `SPA_AUDIO_FORMAT_F64_LE` |
+| Packed 24-bit | `PA_SAMPLE_S24LE` exists and no `PcmEncoding` reaches it | `SPA_AUDIO_FORMAT_S24_LE` |
+| `node.latency` | Computed from the pulse request and overwritten, measured in 4.4 | A property the node sets |
+
+The eight positions the shim costs are the wide pair, the second low frequency
+channel, the top side pair and the bottom row. Between them they are the
+difference between carrying `9.1.6`, `7.2.3` and `hexadecagonal` and refusing
+them, which is what this library does today.
+
+That matters more than the count suggests, because of how those refusals read.
+`AudioSink.accepts` answers false and `open` throws, and the message says this
+server has no channel position for it. A consumer reasonably concludes the
+machine cannot play the file. The machine can: PipeWire has the position and
+the shim does not, and libsound is reporting the shim's ceiling as the
+platform's.
+
+Latency is the one section 4.4 already measured and the one this section is
+least about. The shim honours a request and shortens it, which is most of what
+a client wants. What it does not do is let a node say what it is, which is the
+difference between asking for a quantum and being given one.
+
+### 13.2 What it binds, and at which level
+
+`libpipewire-0.3.so.0`, by soname, through `java.lang.foreign`, like every
+other binding here. Specifically `pw_thread_loop` and `pw_stream`.
+
+**Not the wire protocol.** Speaking it directly would be a second complete
+implementation of something that changes, for no gain over the library that
+already speaks it and ships on every machine that has the graph at all.
+
+**`pw_stream` rather than `pw_filter` or a raw `pw_node`.** A stream is a node
+with the buffer handling done, which is the same trade `pa_stream` is, and the
+shape this library already knows: `PulseContext` is a threaded mainloop with a
+lock and a condition, and `pw_thread_loop` is the same object with different
+spelling. The parts that transfer without redesign are the ones that were
+expensive to get right, and they include the arena lifetime rule that says the
+loop is stopped before the arena holding its upcall stubs is freed.
+
+**The data path is a pull.** `PW_STREAM_FLAG_MAP_BUFFERS` hands the `process`
+callback an mmap'd buffer, which is CoreAudio's shape rather than libpulse's.
+So `PcmRingBuffer` sits between the consumer's blocking write and the callback,
+exactly as `CoreAudioSink` already does, and the pacing rule holds for the same
+reason it holds there.
+
+### 13.3 The POD, which is what makes this hard
+
+PipeWire negotiates formats with serialised objects, and the API for building
+them is inline C macros over a `spa_pod_builder`. Panama cannot call a macro.
+A binding has to emit the bytes.
+
+This is the one genuinely new risk in the section, and it is the same class of
+risk the oracles exist for, so it gets the same answer plus one more. The
+oracle prints the layout: `spa_pod` is a size and a type, `spa_pod_object` adds
+an object type and an id, `spa_pod_prop` is a key, flags and a value, and
+everything is padded to `SPA_POD_ALIGN`. It prints the type and key constants,
+which are not small integers: `SPA_TYPE_OBJECT_Format` is 262147 and
+`SPA_FORMAT_AUDIO_position` is 65541, and both are exactly the kind of number
+nobody notices being wrong.
+
+And then it does what no other oracle here does, because no other one can. It
+builds two real PODs with the library's own builder, the format a 5.1 stream
+asks for and a latency request, and dumps them as bytes. A Kotlin builder is
+correct when it emits the same 184 bytes. That is a unit test with no server in
+it, it runs on every row rather than only where a graph is, and it turns a
+class of defect that would otherwise surface as a stream that silently
+negotiates the wrong thing into a byte comparison.
+
+### 13.4 The sink
+
+`PipeWireSink`, an `AudioSink` like the other four, holding no new rules. The
+contract suite it has to pass is the one that already exists, and that is the
+whole point of the contract suite.
+
+```
+pw_thread_loop_new / _start / _lock / _unlock / _wait / _signal / _stop / _destroy
+pw_context_new / _connect / _destroy
+pw_stream_new_simple / _connect / _disconnect / _destroy
+pw_stream_set_active / _flush / _get_time_n / _get_state / _update_params
+pw_stream_dequeue_buffer / _queue_buffer
+pw_properties_new / _set / _setf
+```
+
+The playhead is `pw_stream_get_time_n`, whose `spa_io_position` carries frames
+the graph has actually consumed. The same trap as everywhere else applies and
+has the same answer: a graph clock keeps advancing through an underrun, so what
+this reports is the count of frames the callback took out of the ring, clamped
+the way `PulseSink` clamps to what was written.
+
+### 13.5 The source
+
+The same object with `PW_DIRECTION_INPUT`, which is how `pw_stream` spells the
+mirror. Capture is where the shim costs least, so this follows the sink rather
+than arriving with it.
+
+One thing it does gain: `stream.capture.sink` is a property rather than a
+separate call, so recording one application is a node property here where it is
+`pa_stream_set_monitor_stream` on the other side.
+
+### 13.6 Latency, said once and kept
+
+`node.latency` as `<quantum>/<rate>` in the properties at connect, and
+`SPA_PARAM_Latency` through `pw_stream_update_params` afterwards. The oracle
+dumps that POD too.
+
+What this changes against 4.3 is not the number a client gets, which the shim
+already shortens correctly. It is that the number is the node's own. A consumer
+reading `latencyNanos` gets the graph's answer for this node rather than the
+shim's translation of a request it made on the client's behalf, and
+`Capability.TOTAL_LATENCY` stays present because the graph reports the whole
+path.
+
+### 13.7 What stops being refused
+
+`PcmEncoding.F64LE` opens. `AudioFormat.layout` carries the eight positions
+listed in 13.1 and `accepts` stops answering false for them. Nothing in
+`libsound-core` changes to allow it, which is the test of whether the contracts
+were drawn in the right place: a backend that can do more says so through
+`acceptedEncodings` and `CHANNEL_PLACEMENT`, and a consumer that asked before
+opening gets a different answer on a different backend without knowing why.
+
+`PA_SAMPLE_S24LE` is the one row of 13.1's table that is not simply a gain. A
+packed 24-bit encoding has no `PcmEncoding` today, deliberately, because FFmpeg
+has no 24-bit sample format to produce one from. It stays out until something
+produces it.
+
+### 13.8 The graph, and who does the placing
+
+This is what section 1 means by clean, and it is smaller than it sounds.
+
+A `pw_stream` with `PW_STREAM_FLAG_AUTOCONNECT` is an ordinary node, and the
+session manager places it the way it places every other. A person who wants
+EasyEffects between that node and their speakers routes it there, in their own
+tools, exactly as they would route anything else. The library's job is to be
+routable, not to know.
+
+Where a consumer has already chosen, `SinkConfig.device` becomes
+`PW_KEY_TARGET_OBJECT` rather than a device name in a connect call. Same
+meaning, one property.
+
+**Enumerating the graph and making links is deliberately not in this section.**
+A node list with ports and arbitrary links is a second interface the size of
+`VolumeMixer`, and `VolumeMixer` already covers the level a mixer needs:
+what is playing, how loud, on which device, and moving it. If a consumer turns
+up that needs port-level links, it gets its own section rather than being
+smuggled into this one.
+
+**Creating devices is not in this section either.** `createVirtualSink` and
+`combineSinks` load server modules through the pulse protocol today, and they
+keep doing that until something says otherwise. A null sink is a system-wide
+object with a restore obligation attached, and it is a different subject from a
+stream this process plays through.
+
+### 13.9 Selection, and what happens on a machine without a graph
+
+`AudioBackends.open` gains a rung above the existing one:
+
+```
+PipeWire native -> libpulse -> JavaSound
+```
+
+The middle rung stays and stays supported, for two machines. One runs real
+PulseAudio, where the native path has nothing to connect to. The other runs
+PipeWire without `pipewire-pulse` installed, which is the case that gets
+nothing from this library today.
+
+Two rules about the promotion, and they are the same rule twice. The native
+backend goes first only once it passes every suite the libpulse one passes, on
+the same CI rows, and `AudioBackend.name` says which won so a bug report starts
+with the answer. A property forces either, because the first person to hit a
+difference between them needs to be able to tell which side it is on without
+rebuilding.
+
+### 13.10 Open questions
+
+| Question | Answer |
+|---|---|
+| Does a Kotlin POD builder emit the same bytes as `spa_pod_builder`? | Unknown, and the reference dumps in the oracle are how it gets answered rather than argued. This is the first thing to write and the thing that decides whether the rest is cheap or awful. |
+| What does `pw_stream_get_time_n` report through an underrun? | Unmeasured. Every other backend's clock had this trap and each one needed a different correction, so assume it has one until a stream fed half a second and left alone says otherwise. |
+| Is `PW_STREAM_FLAG_RT_PROCESS` worth taking? | It promises the callback runs on the graph's real-time thread, which is what section 4.5 asks RealtimeKit for on the writing thread. Whether a JVM callback belongs there at all is a different question from whether a JVM write loop does, and the answer involves what a garbage collection pause does to the graph rather than to one stream. |
+| How much of `PulseBackend` survives? | The device list, the mixer and the sample cache are the pulse protocol's, not the graph's, and this section replaces neither. A machine on the native backend still opens a libpulse connection for `VolumeMixer`, which is two connections where there was one, and whether that is acceptable or whether the mixer needs a native half is unanswered. |

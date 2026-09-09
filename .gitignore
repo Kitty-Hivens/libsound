@@ -36,6 +36,7 @@ tools/pa-oracle
 tools/dbus-oracle
 tools/rt-oracle
 tools/ffmpeg-layout-oracle
+tools/pipewire-oracle
 
 # JVM crash dumps. They carry the machine that produced them: command line,
 # environment, every loaded library and the memory map.
