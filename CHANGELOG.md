@@ -21,9 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `VolumeMixer.restoreAll` puts back the card profile and the device port. Both
   are set through public methods, both outlive the process, and neither was
   recorded, while the mixer's documentation said every change was. They are also
-  the two a user cannot undo from a volume slider: a card left on a profile
-  nobody chose hands over raw channels with no routing and reads as the machine's
-  sound having stopped working.
+  the two a user cannot undo from a volume slider: a card carries a profile
+  because somebody chose it, often for a reason that is not visible from the
+  outside, and a process that replaces one and exits has taken a decision away
+  without leaving anything on screen that connects the two.
 - `VolumeMixer.createVirtualSink` honours the channel count or refuses it. It
   clamped into a table of two, so a caller asking for a six-channel bus was
   handed a stereo one, with a successful return and a device id, and found out
