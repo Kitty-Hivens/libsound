@@ -134,9 +134,9 @@ class PulseDeviceControlTest {
     fun `a card profile this process changed is put back`() {
         // The obligation that was missing, and the one with the worst failure
         // when it is: a card left on a profile nobody chose is a machine whose
-        // speakers have stopped working with nothing on screen to explain it.
-        // Measured once the expensive way, on a USB interface left on pro-audio
-        // by a test run.
+        // speakers have stopped working with nothing on screen to explain it,
+        // and a profile is not something a person can put back from a volume
+        // slider the way they can put back a volume.
         //
         // No CI row can satisfy this. Every Linux row's only device is a null
         // sink, which belongs to no card, so a runner reports an empty card

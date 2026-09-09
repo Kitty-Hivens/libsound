@@ -131,11 +131,18 @@ kernel's own answer read back out of `/proc` rather than the daemon's reply.
 ## Do not run the suite against a machine you are using
 
 Run it against a sound server of its own, not the one your desktop is on. The
-suite creates and removes devices, moves streams between them, and asks for
-channel layouts a real card may not carry, and a session manager reacts to all
-three. A full run against a live desktop graph has left a USB interface on the
-pro-audio profile, which hands over raw channels with no routing and reads as
-the sound having stopped working.
+suite creates and removes devices a dozen times over, moves streams between
+them, and asks for channel layouts a real card may not carry. A session manager
+reacts to all three, and what it does about them is not this library's to
+predict.
+
+A full run against a live desktop graph has broken the audio on that desktop.
+What exactly it broke was never established, which is the point rather than a
+missing detail: nothing in the suite writes to a card, so there was no single
+call to find, and the search went through a card profile that turned out to
+have been the owner's deliberate choice all along. A tool that disturbs a
+running system in ways nobody can attribute afterwards is a tool to keep off
+running systems.
 
 On Linux that means a second server with no device monitor in it, so it cannot
 see a card at all:
