@@ -126,8 +126,10 @@ internal class WasapiSink(
 
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
-        require(format.encoding == PcmEncoding.S16LE) {
-            "WASAPI backend takes S16LE only, was ${format.encoding}"
+        // AudioException rather than an argument check, because a consumer
+        // walking a ladder catches what the contract promises.
+        if (format.encoding != PcmEncoding.S16LE) {
+            throw AudioException("this backend takes S16LE only, was ${format.encoding}")
         }
         com.ensureComOnThisThread()
         releaseInterfaces()

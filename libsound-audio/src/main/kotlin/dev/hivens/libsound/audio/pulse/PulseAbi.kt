@@ -1,5 +1,7 @@
 package dev.hivens.libsound.audio.pulse
 
+import dev.hivens.libsound.PcmEncoding
+
 /**
  * Constants and struct layouts for the libpulse subset this backend binds.
  *
@@ -246,8 +248,40 @@ internal object PulseAbi {
 
     // -- sample formats ------------------------------------------------------
 
+    const val SAMPLE_U8 = 0
     const val SAMPLE_S16LE = 3
     const val SAMPLE_FLOAT32LE = 5
+    const val SAMPLE_S32LE = 7
+
+    /**
+     * The packed 24-bit formats, for a device that asks for one.
+     *
+     * Not reachable from [PcmEncoding] and deliberately: FFmpeg has no 24-bit
+     * sample format, so 24-bit content arrives as S32LE with the value in the
+     * top bits, and packing it belongs next to a device that wants it packed
+     * rather than in the shape a consumer hands over.
+     */
+    const val SAMPLE_S24LE = 9
+    const val SAMPLE_S24_32LE = 11
+
+    const val SAMPLE_INVALID = -1
+
+    /**
+     * What libpulse calls the shape a consumer handed us, or null where the
+     * server has no name for it.
+     *
+     * Null is an answer rather than a gap: `pa_sample_format_t` has no 64-bit
+     * float at all, so a consumer that sends one has to be refused instead of
+     * quietly given something narrower. A sink that accepted a format and
+     * played another would be indistinguishable from one that worked.
+     */
+    fun sampleFormatOf(encoding: PcmEncoding): Int? = when (encoding) {
+        PcmEncoding.U8 -> SAMPLE_U8
+        PcmEncoding.S16LE -> SAMPLE_S16LE
+        PcmEncoding.S32LE -> SAMPLE_S32LE
+        PcmEncoding.F32LE -> SAMPLE_FLOAT32LE
+        PcmEncoding.F64LE -> null
+    }
 
     // -- context state -------------------------------------------------------
 

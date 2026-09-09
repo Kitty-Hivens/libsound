@@ -3,18 +3,43 @@ package dev.hivens.libsound
 /**
  * Sample encoding of the PCM a sink accepts. Interleaved, little-endian.
  *
- * S16LE is what every current consumer pushes and what every backend must
- * accept. F32LE exists because PipeWire and CoreAudio are float-native and a
- * backend may pass it through without a conversion; a backend that cannot is
- * free to reject it, which the capability query reports rather than a failure
- * at the first write.
+ * The set a decoder actually produces rather than the set that is convenient
+ * here. S16LE is the floor every backend must accept and what most consumers
+ * push. The others exist because refusing them costs a conversion somebody
+ * else then has to do, and one of them costs more than a conversion: FFmpeg
+ * has no 24-bit sample format at all, so 24-bit content arrives as S32LE with
+ * the value in the top bits, and a library without it sends every FLAC, ALAC,
+ * DTS-HD and TrueHD source down to F32LE or S16LE.
+ *
+ * A backend that cannot take one refuses it at [AudioSink.open], which is an
+ * answer rather than a failure: a consumer walks its own ladder down from what
+ * the media is towards the floor. A backend that accepted a format and played
+ * something else would be indistinguishable from one that worked.
+ *
+ * How many of the bits carry signal is a separate question from how wide the
+ * sample is, and [AudioFormat.significantBits] is where it is answered.
  */
 public enum class PcmEncoding(
     /** Width of one sample of one channel. */
     public val bytesPerSample: Int,
 ) {
+    /** Unsigned, offset by 128. Old WAV and what derives from it. */
+    U8(1),
+
+    /** Signed, and the one format every backend has to accept. */
     S16LE(2),
+
+    /**
+     * Signed. Also where 24-bit content arrives, in the top 24 bits, because
+     * FFmpeg has no 24-bit sample format to send it in.
+     */
+    S32LE(4),
+
+    /** Float, and native on PipeWire and CoreAudio, which may pass it through untouched. */
     F32LE(4),
+
+    /** Double. Rare sources and some filter outputs. */
+    F64LE(8),
 }
 
 /**

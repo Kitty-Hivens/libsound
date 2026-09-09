@@ -59,8 +59,12 @@ internal class JavaSoundSource(
 
     override fun open(format: AudioFormat) {
         if (closed) throw AudioException("source is closed")
-        require(format.encoding == PcmEncoding.S16LE) {
-            "JavaSound backend takes S16LE only, was ${format.encoding}"
+        // AudioException rather than the argument check this used to be. A
+        // consumer walks a ladder down from what the media is and catches what
+        // the contract promises; an IllegalArgumentException goes straight past
+        // it and out of the player.
+        if (format.encoding != PcmEncoding.S16LE) {
+            throw AudioException("JavaSound takes S16LE only, was ${format.encoding}")
         }
         line?.let { old ->
             runCatching { old.stop() }

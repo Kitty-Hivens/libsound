@@ -136,8 +136,11 @@ internal class PulseSource(
 
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("source is closed")
-        require(format.encoding == PcmEncoding.S16LE || format.encoding == PcmEncoding.F32LE) {
-            "unsupported encoding ${format.encoding}"
+        // What the server has a name for, asked of the table rather than
+        // listed here: a pair written at the call site went stale the moment
+        // the encodings grew, and refused formats libpulse takes.
+        if (PulseAbi.sampleFormatOf(format.encoding) == null) {
+            throw AudioException("this server has no sample format for ${format.encoding}")
         }
         disconnectStream()
         abort = false
@@ -550,10 +553,10 @@ internal class PulseSource(
             .invokeExact(proplist, arena.allocateUtf8(key), arena.allocateUtf8(value)) as Int
     }
 
-    private fun encodingOf(format: AudioFormat): Int = when (format.encoding) {
-        PcmEncoding.S16LE -> PulseAbi.SAMPLE_S16LE
-        PcmEncoding.F32LE -> PulseAbi.SAMPLE_FLOAT32LE
-    }
+    /** Refused rather than narrowed: the server has no name for every shape a decoder sends. */
+    private fun encodingOf(format: AudioFormat): Int =
+        PulseAbi.sampleFormatOf(format.encoding)
+            ?: throw AudioException("this server has no sample format for ${format.encoding}")
 
     private companion object {
         const val TIMING_TIMEOUT_NANOS = 1_000_000_000L
