@@ -134,14 +134,18 @@ internal class PulseSource(
 
     override val isOpen: Boolean get() = stream.address() != 0L && !closed.get()
 
+    /** What this server has a sample format for, asked of the ABI table. */
+    override val acceptedEncodings: Set<PcmEncoding> get() = PulseAbi.ACCEPTED_ENCODINGS
+
+    /** The output side's question, reversed: see [PulseSink.accepts]. */
+    override fun accepts(format: AudioFormat): Boolean =
+        format.encoding in PulseAbi.ACCEPTED_ENCODINGS &&
+            format.channels in 1..PulseAbi.CHANNELS_MAX &&
+            PulseChannelMap.placeable(format)
+
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("source is closed")
-        // What the server has a name for, asked of the table rather than
-        // listed here: a pair written at the call site went stale the moment
-        // the encodings grew, and refused formats libpulse takes.
-        if (PulseAbi.sampleFormatOf(format.encoding) == null) {
-            throw AudioException("this server has no sample format for ${format.encoding}")
-        }
+        refuseUnacceptable(format)
         disconnectStream()
         abort = false
         lastKnownFrames = 0
@@ -160,6 +164,11 @@ internal class PulseSource(
             spec.set(ValueLayout.JAVA_INT, PulseAbi.SAMPLE_SPEC_FORMAT, encodingOf(format))
             spec.set(ValueLayout.JAVA_INT, PulseAbi.SAMPLE_SPEC_RATE, format.sampleRate)
             spec.set(ValueLayout.JAVA_BYTE, PulseAbi.SAMPLE_SPEC_CHANNELS, format.channels.toByte())
+
+            // What each captured channel is, for the reason the playback side
+            // sends one: a count alone is laid out by the server's convention,
+            // and a recorder writing a file wants the channels it asked for.
+            val channelMap = PulseChannelMap.writeOrNull(setup, format) ?: MemorySegment.NULL
 
             val attr = setup.allocate(PulseAbi.BUFFER_ATTR_SIZE, 4)
             // Left to the server, like the playback side: with ADJUST_LATENCY it
@@ -186,7 +195,7 @@ internal class PulseSource(
             pulse.lock()
             try {
                 val fresh = lib.handle("pa_stream_new_with_proplist")
-                    .invokeExact(pulse.context, streamName, spec, MemorySegment.NULL, proplist) as MemorySegment
+                    .invokeExact(pulse.context, streamName, spec, channelMap, proplist) as MemorySegment
                 lib.handle("pa_proplist_free").invokeExact(proplist) as Unit
                 if (fresh.address() == 0L) {
                     throw AudioException("pa_stream_new_with_proplist: ${pulse.lastError()}")
@@ -551,6 +560,22 @@ internal class PulseSource(
     private fun propSet(arena: Arena, proplist: MemorySegment, key: String, value: String) {
         lib.handle("pa_proplist_sets")
             .invokeExact(proplist, arena.allocateUtf8(key), arena.allocateUtf8(value)) as Int
+    }
+
+    /** The refusal [accepts] promised, naming the one thing that was wrong. */
+    private fun refuseUnacceptable(format: AudioFormat) {
+        if (format.encoding !in PulseAbi.ACCEPTED_ENCODINGS) {
+            throw AudioException("this server has no sample format for ${format.encoding}")
+        }
+        if (format.channels !in 1..PulseAbi.CHANNELS_MAX) {
+            throw AudioException("this server takes up to ${PulseAbi.CHANNELS_MAX} channels, not ${format.channels}")
+        }
+        PulseAbi.unplaceable(format.layout)?.takeIf { !PulseChannelMap.placeable(format) }?.let { position ->
+            throw AudioException(
+                "this server has no channel position for $position in ${format.layout}; " +
+                    "send the same audio with an unspecified layout to take the server's own ordering",
+            )
+        }
     }
 
     /** Refused rather than narrowed: the server has no name for every shape a decoder sends. */

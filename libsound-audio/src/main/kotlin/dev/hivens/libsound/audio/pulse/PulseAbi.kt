@@ -1,5 +1,7 @@
 package dev.hivens.libsound.audio.pulse
 
+import dev.hivens.libsound.ChannelLayout
+import dev.hivens.libsound.ChannelPosition
 import dev.hivens.libsound.PcmEncoding
 
 /**
@@ -282,6 +284,96 @@ internal object PulseAbi {
         PcmEncoding.F32LE -> SAMPLE_FLOAT32LE
         PcmEncoding.F64LE -> null
     }
+
+    /** The same table read the other way, for a consumer that asks before it opens. */
+    val ACCEPTED_ENCODINGS: Set<PcmEncoding> =
+        PcmEncoding.entries.filterTo(LinkedHashSet()) { sampleFormatOf(it) != null }
+
+    // -- pa_channel_map ------------------------------------------------------
+
+    /** `channels` is a byte at 0, then three of padding, then 32 ints. */
+    const val CHANNEL_MAP_CHANNELS = 0L
+    const val CHANNEL_MAP_MAP = 4L
+    const val CHANNEL_MAP_SIZE = 132L
+
+    /**
+     * `pa_channel_position_t`, printed by the oracle and not contiguous: the
+     * eleven ordinary positions run from 1 to 11 and the height ones resume at
+     * 44, with the auxiliary channels in between.
+     */
+    /** Not the same as front-centre: a mono stream is spread, a centre one is pinned. */
+    const val CHANNEL_POSITION_MONO = 0
+    const val CHANNEL_POSITION_FRONT_LEFT = 1
+    const val CHANNEL_POSITION_FRONT_RIGHT = 2
+    const val CHANNEL_POSITION_FRONT_CENTER = 3
+    const val CHANNEL_POSITION_REAR_CENTER = 4
+    const val CHANNEL_POSITION_REAR_LEFT = 5
+    const val CHANNEL_POSITION_REAR_RIGHT = 6
+    const val CHANNEL_POSITION_LFE = 7
+    const val CHANNEL_POSITION_FRONT_LEFT_OF_CENTER = 8
+    const val CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER = 9
+    const val CHANNEL_POSITION_SIDE_LEFT = 10
+    const val CHANNEL_POSITION_SIDE_RIGHT = 11
+    const val CHANNEL_POSITION_TOP_CENTER = 44
+    const val CHANNEL_POSITION_TOP_FRONT_LEFT = 45
+    const val CHANNEL_POSITION_TOP_FRONT_RIGHT = 46
+    const val CHANNEL_POSITION_TOP_FRONT_CENTER = 47
+    const val CHANNEL_POSITION_TOP_REAR_LEFT = 48
+    const val CHANNEL_POSITION_TOP_REAR_RIGHT = 49
+    const val CHANNEL_POSITION_TOP_REAR_CENTER = 50
+
+    /**
+     * What libpulse calls a position, or null where it has no name for it.
+     *
+     * Eighteen of the thirty-six positions FFmpeg names have an equivalent here.
+     * The rest are wide, downmix, binaural, a second LFE and the bottom row, and
+     * a null is what makes them a refusal rather than a channel placed
+     * somewhere nobody chose.
+     *
+     * The names differ where the concepts agree: what FFmpeg calls back is what
+     * libpulse calls rear, and the two mean the same speaker.
+     */
+    fun channelPositionOf(position: ChannelPosition): Int? = when (position) {
+        ChannelPosition.FL -> CHANNEL_POSITION_FRONT_LEFT
+        ChannelPosition.FR -> CHANNEL_POSITION_FRONT_RIGHT
+        ChannelPosition.FC -> CHANNEL_POSITION_FRONT_CENTER
+        ChannelPosition.LFE -> CHANNEL_POSITION_LFE
+        ChannelPosition.BL -> CHANNEL_POSITION_REAR_LEFT
+        ChannelPosition.BR -> CHANNEL_POSITION_REAR_RIGHT
+        ChannelPosition.BC -> CHANNEL_POSITION_REAR_CENTER
+        ChannelPosition.FLC -> CHANNEL_POSITION_FRONT_LEFT_OF_CENTER
+        ChannelPosition.FRC -> CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER
+        ChannelPosition.SL -> CHANNEL_POSITION_SIDE_LEFT
+        ChannelPosition.SR -> CHANNEL_POSITION_SIDE_RIGHT
+        ChannelPosition.TC -> CHANNEL_POSITION_TOP_CENTER
+        ChannelPosition.TFL -> CHANNEL_POSITION_TOP_FRONT_LEFT
+        ChannelPosition.TFC -> CHANNEL_POSITION_TOP_FRONT_CENTER
+        ChannelPosition.TFR -> CHANNEL_POSITION_TOP_FRONT_RIGHT
+        ChannelPosition.TBL -> CHANNEL_POSITION_TOP_REAR_LEFT
+        ChannelPosition.TBC -> CHANNEL_POSITION_TOP_REAR_CENTER
+        ChannelPosition.TBR -> CHANNEL_POSITION_TOP_REAR_RIGHT
+        ChannelPosition.DL, ChannelPosition.DR,
+        ChannelPosition.WL, ChannelPosition.WR,
+        ChannelPosition.SDL, ChannelPosition.SDR,
+        ChannelPosition.LFE2,
+        ChannelPosition.TSL, ChannelPosition.TSR,
+        ChannelPosition.BFC, ChannelPosition.BFL, ChannelPosition.BFR,
+        ChannelPosition.SSL, ChannelPosition.SSR,
+        ChannelPosition.TTL, ChannelPosition.TTR,
+        ChannelPosition.BIL, ChannelPosition.BIR,
+        -> null
+    }
+
+    /**
+     * The first position this server cannot name, or null when it can name them
+     * all.
+     *
+     * What a refusal is built from: a consumer told which channel could not be
+     * placed can send the layout as a bare count and take the server's own
+     * ordering, or drop to something the server does understand.
+     */
+    fun unplaceable(layout: ChannelLayout): ChannelPosition? =
+        layout.positions.firstOrNull { channelPositionOf(it) == null }
 
     // -- context state -------------------------------------------------------
 
