@@ -202,6 +202,21 @@ int main(void) {
     P(SPA_MEDIA_TYPE_audio);
     P(SPA_MEDIA_SUBTYPE_raw);
 
+    /* The latency object's own keys. Readable out of the reference dump below
+     * by counting, which is exactly the kind of reading that is right until it
+     * is not: a key is a small integer and a wrong one is a property the server
+     * ignores rather than an error anybody sees. */
+    SECTION("SPA_PARAM_LATENCY keys");
+    P(SPA_PARAM_LATENCY_direction);
+    P(SPA_PARAM_LATENCY_minQuantum);
+    P(SPA_PARAM_LATENCY_maxQuantum);
+    P(SPA_PARAM_LATENCY_minRate);
+    P(SPA_PARAM_LATENCY_maxRate);
+    P(SPA_PARAM_LATENCY_minNs);
+    P(SPA_PARAM_LATENCY_maxNs);
+    P(SPA_DIRECTION_INPUT);
+    P(SPA_DIRECTION_OUTPUT);
+
     /* The artifact a Kotlin builder is checked against. Built by the library's
      * own builder from the shape the sink will ask for, then dumped: a binding
      * that emits the same bytes has got the encoding right, and one that does
