@@ -44,6 +44,7 @@ public class LimiterSink(
         require(releaseMs > 0.0) { "releaseMs must be positive, was $releaseMs" }
     }
 
+    /** Works the release out for this rate, then opens the sink underneath. */
     override fun open(format: AudioFormat) {
         // One time constant per sample, so the release means the same length of
         // time whatever rate the stream turns out to be.

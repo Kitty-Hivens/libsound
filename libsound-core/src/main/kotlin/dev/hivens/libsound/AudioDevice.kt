@@ -9,11 +9,15 @@ package dev.hivens.libsound
  * somebody else's device after a reboot.
  */
 @JvmInline
-public value class DeviceId(public val value: String) {
+public value class DeviceId(
+    /** The server's own name for the device, opaque and not to be parsed. */
+    public val value: String,
+) {
     init {
         require(value.isNotBlank()) { "DeviceId must not be blank" }
     }
 
+    /** The name itself, so a log line reads as the device rather than as a wrapper. */
     override fun toString(): String = value
 }
 
@@ -73,9 +77,11 @@ public data class DevicePort(
  * on an invented value moves nothing.
  */
 public data class AudioDevice(
+    /** What every call taking a device takes to name this one. */
     public val id: DeviceId,
     /** Human-readable label, already localised by the system where it localises. */
     public val name: String,
+    /** Whether this is the one an application gets when it asks for none in particular. */
     public val isDefault: Boolean = false,
     /** Which list this device came from. */
     public val direction: StreamDirection = StreamDirection.PLAYBACK,

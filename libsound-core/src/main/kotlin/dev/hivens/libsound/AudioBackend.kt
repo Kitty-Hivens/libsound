@@ -5,7 +5,10 @@ package dev.hivens.libsound
  * `media.role`, and onto the nearest equivalent elsewhere; a backend that has
  * no equivalent drops it rather than approximating.
  */
-public enum class MediaRole(public val wireName: String) {
+public enum class MediaRole(
+    /** What the role is called on the wire, which is not always what it is called here. */
+    public val wireName: String,
+) {
     MUSIC("music"),
     VIDEO("video"),
     GAME("game"),
@@ -22,11 +25,22 @@ public enum class MediaRole(public val wireName: String) {
  * row labelled with the JVM's process name.
  */
 public data class SinkConfig(
+    /**
+     * What the desktop's mixer shows this stream as. Not decoration: a stream
+     * with a name is a row a user recognises and a target an effects rule can
+     * address, and one without is an anonymous client labelled with the JVM's
+     * process name.
+     */
     public val applicationName: String,
     /** Reverse-DNS id, matched against a `.desktop` entry where the platform has one. */
     public val applicationId: String? = null,
     /** Freedesktop icon name. Backends that want raw bytes resolve it themselves. */
     public val iconName: String? = null,
+    /**
+     * What the stream is for, which a session manager may act on: a video role
+     * is how everything else gets quietened without touching anybody's volume.
+     * [Capability.DUCKS_OTHERS] says whether this desktop acts on it at all.
+     */
     public val mediaRole: MediaRole = MediaRole.MUSIC,
     /** Null follows the system default, including when the default moves. */
     public val device: DeviceId? = null,
@@ -77,11 +91,22 @@ public data class SinkConfig(
  * act on.
  */
 public data class SourceConfig(
+    /**
+     * What the desktop's mixer shows this stream as. Not decoration: a stream
+     * with a name is a row a user recognises and a target an effects rule can
+     * address, and one without is an anonymous client labelled with the JVM's
+     * process name.
+     */
     public val applicationName: String,
     /** Reverse-DNS id, matched against a `.desktop` entry where the platform has one. */
     public val applicationId: String? = null,
     /** Freedesktop icon name. Backends that want raw bytes resolve it themselves. */
     public val iconName: String? = null,
+    /**
+     * What the stream is for, which a session manager may act on: a video role
+     * is how everything else gets quietened without touching anybody's volume.
+     * [Capability.DUCKS_OTHERS] says whether this desktop acts on it at all.
+     */
     public val mediaRole: MediaRole = MediaRole.MUSIC,
     /** Null follows the system default input, including when the default moves. */
     public val device: DeviceId? = null,
@@ -100,6 +125,7 @@ public data class SourceConfig(
      * reads another application's audio, and that application is not told.
      */
     public val captureStream: StreamId? = null,
+    /** How short a path to ask for, the same request [SinkConfig.latency] makes. */
     public val latency: LatencyProfile = LatencyProfile.BALANCED,
     /** Overrides [latency], for a caller that knows the number it wants. */
     public val bufferNanos: Long? = null,
@@ -122,11 +148,15 @@ public data class SourceConfig(
  * not one: a server recycles them.
  */
 @JvmInline
-public value class SampleId(public val value: String) {
+public value class SampleId(
+    /** The name the server filed the sound under, opaque and not to be parsed. */
+    public val value: String,
+) {
     init {
         require(value.isNotBlank()) { "SampleId must not be blank" }
     }
 
+    /** The name itself, so a log line reads as the sound rather than as a wrapper. */
     override fun toString(): String = value
 }
 

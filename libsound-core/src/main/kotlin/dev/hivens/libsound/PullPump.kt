@@ -117,6 +117,7 @@ public class PullPump(
         }
     }
 
+    /** The defaults, and the reasoning behind the one number that matters. */
     public companion object {
         /**
          * 20 ms. Short enough that a pause reaches the device within a frame or

@@ -24,6 +24,16 @@ public object VolumeMixers {
 
     private val log = LoggerFactory.getLogger("libsound.Mixer")
 
+    /**
+     * Open the mixer this platform has, or null where it has none.
+     *
+     * Null on macOS for good: the platform exposes no per-application volume
+     * in any public API, so a consumer asks here and hides the feature rather
+     * than drawing a panel that can never fill.
+     *
+     * [applicationName] names this process's own connection to the server, so
+     * a user looking at what is attached sees something they recognise.
+     */
     public fun open(applicationName: String): VolumeMixer? {
         val osName = System.getProperty("os.name", "").lowercase()
         val mixer = when {

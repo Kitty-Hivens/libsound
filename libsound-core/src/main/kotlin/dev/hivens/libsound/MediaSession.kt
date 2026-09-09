@@ -2,8 +2,13 @@ package dev.hivens.libsound
 
 /** What a player is doing, in the three states every desktop protocol agrees on. */
 public enum class PlaybackState {
+    /** Audio is coming out and the position is moving. */
     PLAYING,
+
+    /** Stopped where it stands. A resume continues from here. */
     PAUSED,
+
+    /** Not playing and not holding a position to resume from. */
     STOPPED,
 }
 
@@ -35,11 +40,23 @@ public enum class LoopMode {
  * to publish until it knows the album art is a session nobody sees.
  */
 public data class TrackMetadata(
+    /** What a widget shows first, and usually all it has room for. */
     public val title: String? = null,
+    /** Every performer, in the order the release credits them. */
     public val artists: List<String> = emptyList(),
+    /** The release this track belongs to. */
     public val album: String? = null,
+    /**
+     * Who the album is credited to, which is not always who the track is.
+     * A compilation has one album artist and a different artist per track.
+     */
     public val albumArtists: List<String> = emptyList(),
+    /**
+     * How long the track is. Null where nothing knows yet, which is the
+     * ordinary state of a stream that has not been read to the end.
+     */
     public val durationMicros: Long? = null,
+    /** Position within the album, counting from one. */
     public val trackNumber: Int? = null,
     /**
      * Where the cover lives. `file://` is used as given; `http(s)://` is fetched
@@ -52,7 +69,9 @@ public data class TrackMetadata(
      */
     public val trackId: String? = null,
 ) {
+    /** The empty metadata, which is what a session with nothing loaded publishes. */
     public companion object {
+        /** Nothing known yet, which is a legitimate thing to publish. */
         public val EMPTY: TrackMetadata = TrackMetadata()
     }
 }
@@ -70,16 +89,39 @@ public data class TrackMetadata(
  * Build each state from the one before it rather than from scratch.
  */
 public data class SessionState(
+    /** Playing, paused or stopped, which is what a widget draws its button from. */
     public val playback: PlaybackState = PlaybackState.STOPPED,
+    /** What is playing. [TrackMetadata.EMPTY] where nothing is. */
     public val metadata: TrackMetadata = TrackMetadata.EMPTY,
+    /**
+     * How far into the track the player is.
+     *
+     * Published with everything else, and a desktop extrapolates between
+     * publishes rather than being told every tick: a position emitted as fast
+     * as it moves floods the bus and redraws every widget on it. A jump that
+     * extrapolation cannot follow is announced through [MediaSession.seeked].
+     */
     public val positionMicros: Long = 0,
+    /**
+     * Whether a play button should be drawn, and whether pressing it will do
+     * anything. The player's own answer, not the desktop's guess.
+     */
     public val canPlay: Boolean = false,
+    /** Whether a pause button should be drawn. */
     public val canPause: Boolean = false,
+    /** Whether there is a next track to skip to. */
     public val canGoNext: Boolean = false,
+    /** Whether there is a previous track to go back to. */
     public val canGoPrevious: Boolean = false,
+    /** Whether the position can be moved, which is what a scrubber asks before it draws. */
     public val canSeek: Boolean = false,
     /** 1.0 is normal speed. Reported, never requested -- rate control is not in scope. */
     public val rate: Double = 1.0,
+    /**
+     * The player's own volume in 0..1, which is not the stream's volume in the
+     * system mixer. A desktop that draws a slider on the player widget reads
+     * this one, and setting it arrives as [SessionCommand.SetVolume].
+     */
     public val volume: Double = 1.0,
     /**
      * What happens at the end of the track, or null for a player that has no
@@ -113,11 +155,26 @@ public data class SessionState(
  * widget, a `playerctl` invocation.
  */
 public sealed interface SessionCommand {
+    /** Start, or resume from where a pause left it. */
     public data object Play : SessionCommand
+
+    /** Stop where it stands, keeping the position to resume from. */
     public data object Pause : SessionCommand
+
+    /**
+     * Whichever of the two applies. The media key on a keyboard is this one,
+     * and a player that treats it as play loses the ability to pause from the
+     * keyboard at all.
+     */
     public data object PlayPause : SessionCommand
+
+    /** Stop and give up the position. */
     public data object Stop : SessionCommand
+
+    /** Skip forward, where [SessionState.canGoNext] said there is somewhere to go. */
     public data object Next : SessionCommand
+
+    /** Skip back, where [SessionState.canGoPrevious] said there is. */
     public data object Previous : SessionCommand
 
     /**
@@ -134,7 +191,10 @@ public sealed interface SessionCommand {
     public data object Quit : SessionCommand
 
     /** Move by [offsetMicros] from the current position; negative seeks back. */
-    public data class Seek(public val offsetMicros: Long) : SessionCommand
+    public data class Seek(
+        /** How far to move, relative to wherever the player is now. */
+        public val offsetMicros: Long,
+    ) : SessionCommand
 
     /**
      * Jump to an absolute position. [trackId] names the track the sender
@@ -142,11 +202,17 @@ public sealed interface SessionCommand {
      * command is stale and must be dropped, which is why it is carried at all.
      */
     public data class SetPosition(
+        /** The track the sender believed was playing. A mismatch means drop this. */
         public val trackId: String?,
+        /** Where to go, measured from the start of that track. */
         public val positionMicros: Long,
     ) : SessionCommand
 
-    public data class SetVolume(public val volume: Double) : SessionCommand
+    /** The player's own volume, moved by a slider on a desktop widget. */
+    public data class SetVolume(
+        /** The player's own volume, 0 to 1, not the stream's in the system mixer. */
+        public val volume: Double,
+    ) : SessionCommand
 
     /**
      * Repeat what is playing, or the queue, or nothing.
@@ -155,10 +221,16 @@ public sealed interface SessionCommand {
      * player answers by publishing the new mode: the desktop set a property and
      * waits to be told what it now holds.
      */
-    public data class SetLoop(public val loop: LoopMode) : SessionCommand
+    public data class SetLoop(
+        /** What the desktop is asking for at the end of the track. */
+        public val loop: LoopMode,
+    ) : SessionCommand
 
     /** Play the queue in a random order. Arrives only where [SessionState.shuffle] was published. */
-    public data class SetShuffle(public val shuffle: Boolean) : SessionCommand
+    public data class SetShuffle(
+        /** True to shuffle, false to go back to the order the queue is in. */
+        public val shuffle: Boolean,
+    ) : SessionCommand
 
     /**
      * Occupy the whole screen, or stop doing so.
@@ -168,7 +240,10 @@ public sealed interface SessionCommand {
      * for there to be a property to change. A session that claims the first and
      * publishes neither has no fullscreen on its interface and never sees this.
      */
-    public data class SetFullscreen(public val fullscreen: Boolean) : SessionCommand
+    public data class SetFullscreen(
+        /** True to fill the screen, false to come back out of it. */
+        public val fullscreen: Boolean,
+    ) : SessionCommand
 }
 
 /**
@@ -180,8 +255,22 @@ public sealed interface SessionCommand {
  * beside an otherwise complete session.
  */
 public data class SessionConfig(
+    /**
+     * What the session is named on the bus, and the only field with a rule: it
+     * is cleaned into something the protocol will accept rather than rejected,
+     * so "My Player 2" becomes a legal name instead of a failed request.
+     */
     public val applicationName: String,
+    /** The human name a widget shows. Defaults to [applicationName]. */
     public val identity: String = applicationName,
+    /**
+     * The basename of the `.desktop` file, without its suffix.
+     *
+     * How a desktop finds the application's icon. Null where there is none,
+     * and null rather than blank: a desktop appends `.desktop` to whatever it
+     * finds here, so an empty string sends it looking for a file called
+     * `.desktop` and the miss looks like a deliberate answer.
+     */
     public val desktopEntry: String? = null,
     /** Whether the desktop may ask the application to quit. */
     public val canQuit: Boolean = false,
@@ -233,6 +322,13 @@ public data class SessionConfig(
  */
 public interface MediaSession : AutoCloseable {
 
+    /**
+     * What this session can carry. Constant for its lifetime.
+     *
+     * [SessionState] is shared by every platform and only some of it survives
+     * on each, so a consumer that publishes a repeat mode where
+     * [Capability.SESSION_LOOP_SHUFFLE] is absent is publishing into nothing.
+     */
     public val capabilities: Capabilities
 
     /** True between construction and [close]. */
@@ -273,5 +369,11 @@ public interface MediaSession : AutoCloseable {
      */
     public fun onCommand(handler: (SessionCommand) -> Unit): () -> Unit
 
+    /**
+     * Take the session off the desktop. Idempotent, never throws.
+     *
+     * What a player left published after it stopped answering is worse than no
+     * player, so this is not optional at shutdown.
+     */
     override fun close()
 }

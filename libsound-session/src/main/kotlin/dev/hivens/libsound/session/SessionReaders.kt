@@ -26,6 +26,13 @@ public object SessionReaders {
 
     private val log = LoggerFactory.getLogger("libsound.Session")
 
+    /**
+     * Read the players other applications publish, or null where this platform
+     * has no way to.
+     *
+     * Present on Linux through MPRIS. Null everywhere else for now, and on
+     * macOS for good, where the only route is a private framework.
+     */
     public fun open(): SessionReader? {
         val osName = System.getProperty("os.name", "").lowercase()
         val reader = when {
