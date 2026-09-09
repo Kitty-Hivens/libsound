@@ -319,6 +319,50 @@ public abstract class AudioSinkContract {
     }
 
     @Test
+    public fun `the playhead answers while a write is parked`() {
+        // A consumer's clock reads the position from a thread that is not the
+        // one writing, and it reads it often. A backend that held a lock across
+        // the whole of write would make every one of those reads wait for the
+        // device to drain, which against a stopped device is forever, and the
+        // consumer's only remaining option would be to poll from the writing
+        // thread, which is the one thread that cannot.
+        val sink = newSink()
+        sink.open(format)
+        sink.stop()
+
+        val entered = CountDownLatch(1)
+        val writer = Thread({
+            entered.countDown()
+            // Far more than any plausible device buffer, against a device that
+            // is not draining: this parks and stays parked until the close.
+            runCatching {
+                val huge = frames(format.sampleRate * 10)
+                sink.write(huge, 0, huge.size)
+            }
+        }, "contract-parked-writer")
+        writer.isDaemon = true
+        writer.start()
+        entered.await(2, TimeUnit.SECONDS) shouldBe true
+        Thread.sleep(500)   // let it fill the buffer and reach the park
+
+        // Twenty of each, because one could be answered in a window between
+        // transfers by luck. A backend that blocks here does not answer late,
+        // it does not answer at all, and the class timeout is what ends it.
+        val started = System.nanoTime()
+        repeat(READS_WHILE_PARKED) {
+            sink.framePosition()
+            sink.latencyNanos()
+        }
+        val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+        withClue("$READS_WHILE_PARKED position reads took $elapsedMillis ms against a parked write") {
+            (elapsedMillis < PARKED_READ_BUDGET_MILLIS) shouldBe true
+        }
+
+        sink.close()
+        writer.join(2_000)
+    }
+
+    @Test
     public fun `close is idempotent and does not throw`() {
         val sink = newSink()
         sink.open(format)
@@ -394,5 +438,18 @@ public abstract class AudioSinkContract {
     private companion object {
         /** Slack over the nominal duration, so a loaded runner still drains. */
         const val REAL_TIME_SLACK_MILLIS = 150L
+
+        /** Enough that one lucky window between transfers cannot carry the test. */
+        const val READS_WHILE_PARKED = 20
+
+        /**
+         * Generous by two orders of magnitude, and deliberately.
+         *
+         * What is under test is the difference between waiting for one transfer
+         * and waiting for the whole write, and against a stopped device the
+         * second is unbounded. A tight budget would turn a loaded runner into a
+         * failure without telling anyone anything the class timeout would not.
+         */
+        const val PARKED_READ_BUDGET_MILLIS = 2_000L
     }
 }

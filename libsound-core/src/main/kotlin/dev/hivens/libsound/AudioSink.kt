@@ -50,6 +50,24 @@ package dev.hivens.libsound
  *
  * Safe to call while stopped, which is where a seek calls it.
  *
+ * ### framePosition() answers while a write is in flight
+ *
+ * A consumer's clock reads the playhead from a thread that is not the one
+ * writing, and it reads it often. So a read must not wait for the write in
+ * flight to finish. What it may wait for is one transfer to the device, which
+ * is a buffer round trip at worst; what it may never wait for is the length of
+ * the write, which at [LatencyProfile.RELAXED] is a fifth of a second and
+ * against a stopped device is forever.
+ *
+ * The same goes for [latencyNanos]. Every backend here satisfies this by
+ * construction rather than by care, because each one's long wait releases
+ * whatever it holds: `pa_threaded_mainloop_wait` gives up the mainloop lock,
+ * the WASAPI sink sleeps outside its interface lock, the CoreAudio ring parks
+ * on a condition, and JavaSound blocks inside the JDK holding nothing of ours.
+ * It is written down because a fifth backend would not get it for free, and
+ * because a consumer that could not rely on it would have to poll the playhead
+ * from the writing thread, which is the one thread that cannot.
+ *
  * ### framePosition() need not be monotonic across a flush
  *
  * Some backends reconcile their counters around a flush or a restart. The
