@@ -28,6 +28,15 @@ public object MediaSessions {
 
     private val log = LoggerFactory.getLogger("libsound.Session")
 
+    /**
+     * Publish a session on whatever this platform offers, or null where there
+     * is nothing to publish to.
+     *
+     * Null is ordinary rather than a failure: no session bus, no backend on
+     * this platform, or another process already owning the name. Audio plays
+     * without it, which is why this degrades quietly where
+     * [dev.hivens.libsound.AudioSink] does not.
+     */
     public fun open(config: SessionConfig): MediaSession? {
         val osName = System.getProperty("os.name", "").lowercase()
         val session = when {

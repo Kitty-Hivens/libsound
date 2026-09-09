@@ -35,6 +35,7 @@ public class BiquadSink(
     /** The filter currently running, or null before the first [open]. */
     public val filter: Biquad? get() = coefficients
 
+    /** Designs the filter for this format, then opens the sink underneath. */
     override fun open(format: AudioFormat) {
         coefficients = design(format)
         x1 = FloatArray(format.channels)

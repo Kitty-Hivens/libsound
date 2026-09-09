@@ -9,7 +9,10 @@ package dev.hivens.libsound
  * free to reject it, which the capability query reports rather than a failure
  * at the first write.
  */
-public enum class PcmEncoding(public val bytesPerSample: Int) {
+public enum class PcmEncoding(
+    /** Width of one sample of one channel. */
+    public val bytesPerSample: Int,
+) {
     S16LE(2),
     F32LE(4),
 }
@@ -24,8 +27,11 @@ public enum class PcmEncoding(public val bytesPerSample: Int) {
  * to a few centuries, the same correction skinema's pts math already carries.
  */
 public data class AudioFormat(
+    /** Frames per second. 48000 is what most graphs run at. */
     public val sampleRate: Int,
+    /** How many samples one frame carries, interleaved. */
     public val channels: Int = 2,
+    /** How each sample is written. */
     public val encoding: PcmEncoding = PcmEncoding.S16LE,
 ) {
     init {
@@ -56,7 +62,9 @@ public data class AudioFormat(
         return whole * sampleRate + remainder * sampleRate / NANOS_PER_SECOND
     }
 
+    /** The constants the frame arithmetic above is written against. */
     public companion object {
+        /** The unit every duration in this library is measured in. */
         public const val NANOS_PER_SECOND: Long = 1_000_000_000L
 
         /** The shape skinema pushes and every backend must accept. */
