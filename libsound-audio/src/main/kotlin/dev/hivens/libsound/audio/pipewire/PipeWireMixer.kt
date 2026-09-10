@@ -45,15 +45,25 @@ import kotlin.concurrent.withLock
  * subscription reporting every object on the machine has no business on the
  * socket carrying audio timing.
  *
- * ## What it does not cover, and why that is not a gap to fill later
+ * ## What it does not cover, and why that is scope rather than reach
  *
- * Cards, profiles and ports are the `Device` interface with its own parameter
- * vocabulary, which is a second object type rather than more of this one.
- * Virtual and combined sinks load server modules, and section 13.8 of the plan
- * keeps those on the pulse protocol on purpose: a null sink is a system-wide
- * object with a restore obligation attached, which is a different subject from a
- * stream somebody is playing. Each is absent from [capabilities] rather than
- * present and answering false, so a settings screen asks before it draws.
+ * Cards, profiles and ports are the `Device` interface with `SPA_PARAM_Profile`
+ * and `SPA_PARAM_Route`, reached by the same bind, the same subscription and the
+ * same setter this already uses on a node. Virtual and combined sinks are
+ * `create_object` on the core, whose offset the oracle has printed since the
+ * first day. None of it is out of reach and saying otherwise would be citing a
+ * decision as though it were a property of the graph.
+ *
+ * What is true is that none of it is built, and that one of them would not be a
+ * translation of what the libpulse mixer does. A sink created through
+ * `create_object` belongs to the connection that asked for it and goes when that
+ * connection goes, where a server module outlives its client. For the obligation
+ * `createVirtualSink` is written under, that is the better of the two rather
+ * than a shortfall, and it is a difference worth deciding on rather than
+ * inheriting.
+ *
+ * Each is absent from [capabilities] rather than present and answering false, so
+ * a settings screen asks before it draws.
  */
 internal class PipeWireMixer private constructor(
     private val registry: PipeWireRegistry,
@@ -160,14 +170,28 @@ internal class PipeWireMixer private constructor(
         return wrote
     }
 
-    /** Empty, and [Capability.DEVICE_PROFILES] is absent to say so rather than this being a gap. */
+    /**
+     * Empty, and [Capability.DEVICE_PROFILES] is absent to say so.
+     *
+     * Not because the graph withholds them: a card is a `Device` global with
+     * profile and route parameters on it, reachable by the machinery a node
+     * already uses. It is not built.
+     */
     override fun cards(): List<AudioCard> = emptyList()
 
     override fun setCardProfile(card: CardId, profile: String): Boolean = false
 
     override fun setDevicePort(device: DeviceId, port: String): Boolean = false
 
-    /** Null, and [Capability.VIRTUAL_DEVICES] is absent. Section 13.8 says why. */
+    /**
+     * Null, and [Capability.VIRTUAL_DEVICES] is absent.
+     *
+     * `create_object` on the core is what would make one, and the object it
+     * makes belongs to this connection rather than to the server. That is a
+     * different lifetime from the module the libpulse mixer loads, and the one
+     * the restore obligation would prefer, so it is a decision to take rather
+     * than a call to translate.
+     */
     override fun createVirtualSink(name: String, channels: Int): DeviceId? = null
 
     override fun removeVirtualSink(id: DeviceId): Boolean = false

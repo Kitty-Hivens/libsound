@@ -69,8 +69,9 @@ class PipeWireMixerTest {
             Capability.DEVICE_VOLUME,
         ) shouldBe true
         // Absent rather than present and answering false, so a settings screen
-        // asks before it draws a control. Section 13.8 keeps the second group
-        // on the pulse protocol on purpose.
+        // asks before it draws a control. Absent because none of it is built,
+        // not because the graph withholds it: each is one interface along from
+        // what this already binds.
         mixer.capabilities.anyOf(
             Capability.DEVICE_PROFILES,
             Capability.VIRTUAL_DEVICES,
