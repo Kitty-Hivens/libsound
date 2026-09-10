@@ -44,15 +44,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   every one of the forty channel layouts FFmpeg names, four of which the
   libpulse backend refuses. It lists devices and follows them changing, through
   a registry connection of its own, and sets the stream's own volume as a
-  control on its node. What it does not answer is which device is default, and
-  it says so with a null rather than a guess: that value lives in a metadata
-  object rather than in the graph, and reading it means binding a proxy.
+  control on its node.
+
+  It reports the same capabilities as the libpulse backend on the same graph,
+  with one exception. Which device is default comes from the metadata object the
+  session manager writes it into, bound and listened to rather than guessed at.
+  A device's own volume and mute come from a parameter of its node, subscribed
+  rather than polled, so a slider somebody else moved arrives as an event; both
+  scales agree with the libpulse side without conversion. One application's
+  output can be recorded, aimed by the same id `VolumeMixer` hands out, and an
+  id naming nothing on the graph is refused rather than left to connect to
+  whatever was going anyway, which for a capture would be a microphone.
+
+  The exception is the sample cache, which is a PulseAudio protocol feature with
+  nothing behind it in the graph, and this backend says so rather than
+  pretending otherwise.
 
   Not on the selection path. It goes first once it passes everything the
   libpulse backend passes, and until then `-Dlibsound.backend=pipewire` reaches
   it. A name that matches nothing fails rather than quietly selecting something
   else, because a run that asked for one backend and measured another says
   nothing about either.
+- A connection to the graph knows what is on it before it returns. Enumeration
+  there is an event stream rather than a call, so nothing returning meant the
+  list was complete, and what stood in for that was a fixed wait. A wait long
+  enough for a quiet machine is a coin toss on a loaded one, and losing it means
+  an empty device list from a backend that says it can enumerate. It now waits
+  on a sync, which the graph answers only after everything it had already
+  queued.
 - `PcmRingBuffer.readFully`, the blocking read the capture direction needs. The
   rule the class was written around turned out not to be about reading or
   writing: it is about which side the device is on, and the side the consumer is
