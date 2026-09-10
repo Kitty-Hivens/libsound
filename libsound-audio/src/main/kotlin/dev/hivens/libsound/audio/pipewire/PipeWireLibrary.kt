@@ -20,12 +20,15 @@ import java.lang.invoke.MethodHandle
  *
  * ## Why the surface is this small
  *
- * `pw_stream` rather than `pw_context` and `pw_core`. A stream is a node with
- * the buffer handling done, which is the same trade `pa_stream` is against the
- * raw PulseAudio protocol, and it means a playback path needs a thread loop, a
- * stream and nothing between them. Enumerating the graph would need the
- * registry and a proxy for every global on it, which section 13.8 of the plan
- * deliberately leaves out.
+ * Audio travels on `pw_stream` rather than on a `pw_node` assembled by hand. A
+ * stream is a node with the buffer handling done, which is the same trade
+ * `pa_stream` is against the raw PulseAudio protocol, and it means a playback
+ * path needs a thread loop, a stream and nothing between them.
+ *
+ * The context and core below it are here for the registry, which is a second
+ * connection doing a different job: what is on the graph, which device is
+ * default, and what each one's volume is. Section 13.8 of the plan draws that
+ * line, and what stays on its far side is arbitrary port linking.
  */
 internal class PipeWireLibrary private constructor(
     val arena: Arena,
@@ -57,8 +60,9 @@ internal class PipeWireLibrary private constructor(
         /**
          * name -> (return layout or null for void, argument layouts).
          *
-         * Under thirty symbols. Expand deliberately: every addition is a new
-         * piece of ABI surface to keep correct.
+         * Around thirty, plus the one variadic call bound separately below.
+         * Expand deliberately: every addition is a new piece of ABI surface to
+         * keep correct.
          */
         private val LOAD_SET: List<Triple<String, MemoryLayout?, List<MemoryLayout>>> = listOf(
             // Initialised once per process and never torn down. pw_deinit is
@@ -84,7 +88,12 @@ internal class PipeWireLibrary private constructor(
             // server that accepts a sync and never answers it would otherwise
             // park the calling thread for the life of the process.
             Triple("pw_thread_loop_timed_wait", I32, listOf(ADDR, I32)),
-            Triple("pw_thread_loop_signal", null, listOf(ADDR, I32)),
+            // The second argument is a C bool, not an int. They travel in the
+            // same register here and this is only ever called with zero, so the
+            // wrong layout worked; declared properly because Panama checks
+            // neither, and a stray high bit would turn this into a wait for an
+            // accept nothing in this binding ever sends.
+            Triple("pw_thread_loop_signal", null, listOf(ADDR, ValueLayout.JAVA_BOOLEAN)),
             Triple("pw_thread_loop_get_loop", ADDR, listOf(ADDR)),
 
             // The stream, which is the whole playback path.
