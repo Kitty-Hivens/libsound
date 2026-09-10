@@ -79,6 +79,11 @@ internal class PipeWireLibrary private constructor(
             Triple("pw_thread_loop_lock", null, listOf(ADDR)),
             Triple("pw_thread_loop_unlock", null, listOf(ADDR)),
             Triple("pw_thread_loop_wait", null, listOf(ADDR)),
+            // The bounded sibling, for a wait that has to end even when the
+            // thing it is waiting for never arrives. A connect uses it: a
+            // server that accepts a sync and never answers it would otherwise
+            // park the calling thread for the life of the process.
+            Triple("pw_thread_loop_timed_wait", I32, listOf(ADDR, I32)),
             Triple("pw_thread_loop_signal", null, listOf(ADDR, I32)),
             Triple("pw_thread_loop_get_loop", ADDR, listOf(ADDR)),
 

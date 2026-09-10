@@ -55,6 +55,16 @@ internal class PipeWireLoop private constructor(
         lib.handle("pw_thread_loop_wait").invokeExact(threadLoop) as Unit
     }
 
+    /**
+     * The same, giving up after [seconds]. False when it gave up.
+     *
+     * For a wait whose subject may never arrive. A spurious wake returns true
+     * with nothing having happened, which is the ordinary behaviour of a
+     * condition and the reason every caller re-checks what it was waiting for.
+     */
+    fun awaitFor(seconds: Int): Boolean =
+        (lib.handle("pw_thread_loop_timed_wait").invokeExact(threadLoop, seconds) as Int) >= 0
+
     /** Wake everyone parked in [await]. Safe from any thread that holds the lock. */
     fun signal() {
         lib.handle("pw_thread_loop_signal").invokeExact(threadLoop, 0) as Unit

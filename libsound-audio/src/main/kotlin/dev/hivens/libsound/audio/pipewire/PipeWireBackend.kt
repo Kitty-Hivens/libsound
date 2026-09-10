@@ -32,17 +32,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * registry reports every object on the machine, and that traffic has no
  * business on the connection carrying audio timing.
  *
- * ## What is still missing, and it is one question
+ * ## What it does not do
  *
- * Which device is default. That is not a property of the graph but a value the
- * session manager writes into a metadata object, so reading it means binding
- * that object, and binding is a proxy method the headers reach through a macro.
- * `SpaAbi` carries the offsets a walk would need and section 13 names it as the
- * next thing. A device's own volume is behind the same door.
+ * A device's own volume, which is `SPA_PARAM_Props` on a bound node and needs
+ * a POD reader where everything here so far only writes them.
  *
- * Everything else this does not do is `VolumeMixer`'s: what else is playing,
- * how loud, and where. That interface answers those over the pulse protocol and
- * is not duplicated here.
+ * Everything past that is `VolumeMixer`'s: what else is playing, how loud, and
+ * where. That interface answers those over the pulse protocol and is not
+ * duplicated here.
  */
 internal class PipeWireBackend private constructor(
     private val loop: PipeWireLoop,
@@ -98,16 +95,15 @@ internal class PipeWireBackend private constructor(
         if (closed.get()) emptyList() else registry?.devices(StreamDirection.PLAYBACK).orEmpty()
 
     /**
-     * Null, always, and it is the one question this backend cannot answer yet.
+     * What the session manager currently calls the default output, or null.
      *
-     * Which device is default is not a property of the graph. It is a value the
-     * session manager writes into a metadata object, so reading it means
-     * binding that object, and binding is a proxy method the headers reach
-     * through a macro. Section 13 names it as the next thing rather than
-     * leaving it as a surprise, and the contract already allows null for
-     * unknown, so a consumer meeting one is told rather than misled.
+     * Not a property of the graph: it is a value written into a metadata
+     * object, so answering it means binding that object and listening to it,
+     * which is the one proxy this backend holds. Null is still a real answer
+     * and covers a graph with no session manager on it at all.
      */
-    override fun defaultDevice(): AudioDevice? = null
+    override fun defaultDevice(): AudioDevice? =
+        if (closed.get()) null else registry?.defaultDevice(StreamDirection.PLAYBACK)
 
     /**
      * The same stream with the direction reversed, which is how `pw_stream`
@@ -127,8 +123,15 @@ internal class PipeWireBackend private constructor(
     override fun captureDevices(): List<AudioDevice> =
         if (closed.get()) emptyList() else registry?.devices(StreamDirection.CAPTURE).orEmpty()
 
-    /** Null, for the reason [defaultDevice] is. */
-    override fun defaultCaptureDevice(): AudioDevice? = null
+    /**
+     * The default input, read out of the same metadata object.
+     *
+     * Null more often than [defaultDevice] is, and honestly so: a graph whose
+     * only input is a sink's monitor has the default naming a node that is not
+     * in this list, because a monitor is not a node of its own here.
+     */
+    override fun defaultCaptureDevice(): AudioDevice? =
+        if (closed.get()) null else registry?.defaultDevice(StreamDirection.CAPTURE)
 
     /** A server-side sample cache is a PulseAudio idea with no equivalent here. */
     override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
