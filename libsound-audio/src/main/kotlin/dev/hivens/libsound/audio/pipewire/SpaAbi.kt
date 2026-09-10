@@ -39,6 +39,14 @@ internal object SpaAbi {
     /** A property is a key, flags, and one value pod. Not itself a pod. */
     const val POD_PROP_HEADER_SIZE = 8
 
+    /**
+     * An array's body carries the size and type of one element before the
+     * elements themselves, which is why an array of six ids is thirty two bytes
+     * rather than twenty four. A reader that assumes otherwise walks off the
+     * front of the data rather than the end of it.
+     */
+    const val POD_ARRAY_BODY_SIZE = 8
+
     const val POD_ALIGN = 8
 
     // -- spa_dict, which is how properties cross without varargs -------------

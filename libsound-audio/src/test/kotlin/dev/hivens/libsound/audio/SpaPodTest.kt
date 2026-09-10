@@ -6,6 +6,7 @@ import dev.hivens.libsound.ChannelPosition
 import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pipewire.SpaPod
+import dev.hivens.libsound.audio.pipewire.SpaPodReader
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -92,6 +93,59 @@ class SpaPodTest {
     }
 
     @Test
+    fun `the reader pulls back out of those bytes what the builder put in`() {
+        // The other direction, against the same reference dump, which is what
+        // makes this a check rather than the encoder and the decoder agreeing
+        // with each other about something they both have wrong.
+        //
+        // The bytes are spa_pod_builder's. Reading a rate of 48000, six
+        // channels and the 5.1 positions out of them means the walk steps by
+        // the padded size rather than the declared one, and knows that an
+        // array's body starts with the size and type of one element.
+        val bytes = ENUM_FORMAT_5_1.fromHex()
+        SpaPodReader.objectHeader(bytes) shouldBe (SpaAbi.OBJECT_FORMAT to SpaAbi.PARAM_ENUM_FORMAT)
+        val read = SpaPodReader.objectProperties(bytes)
+        read[SpaAbi.FORMAT_MEDIA_TYPE] shouldBe SpaAbi.MEDIA_TYPE_AUDIO
+        read[SpaAbi.FORMAT_MEDIA_SUBTYPE] shouldBe SpaAbi.MEDIA_SUBTYPE_RAW
+        read[SpaAbi.FORMAT_AUDIO_FORMAT] shouldBe SpaAbi.AUDIO_FORMAT_S16_LE
+        read[SpaAbi.FORMAT_AUDIO_RATE] shouldBe 48_000
+        read[SpaAbi.FORMAT_AUDIO_CHANNELS] shouldBe 6
+        (read[SpaAbi.FORMAT_AUDIO_POSITION] as IntArray).toList() shouldBe listOf(
+            SpaAbi.CHANNEL_FL, SpaAbi.CHANNEL_FR, SpaAbi.CHANNEL_FC,
+            SpaAbi.CHANNEL_LFE, SpaAbi.CHANNEL_RL, SpaAbi.CHANNEL_RR,
+        )
+    }
+
+    @Test
+    fun `the reader takes a float, a boolean and a float array, which is what a volume is`() {
+        // A device's own volume is a Props object the graph wrote, carrying a
+        // float per channel and a mute beside it. This dump is spa_pod_builder's
+        // too, so the three types the format object does not exercise are read
+        // against the same authority as the rest.
+        val bytes = PROPS_VOLUME.fromHex()
+        SpaPodReader.objectHeader(bytes) shouldBe (SpaAbi.OBJECT_PROPS to SpaAbi.PARAM_PROPS)
+        val read = SpaPodReader.objectProperties(bytes)
+        read[SpaAbi.PROP_VOLUME] shouldBe 0.25f
+        read[SpaAbi.PROP_MUTE] shouldBe true
+        (read[SpaAbi.PROP_CHANNEL_VOLUMES] as FloatArray).toList() shouldBe listOf(0.25f, 0.5f)
+    }
+
+    @Test
+    fun `a length the object cannot hold ends the walk instead of reading past it`() {
+        // The bytes come from another process, so a size is a claim rather than
+        // a fact. Truncating the reference dump leaves a property whose value
+        // runs past the end, and what comes back is what was decoded before it
+        // rather than an exception on the graph's own thread.
+        val whole = ENUM_FORMAT_5_1.fromHex()
+        val cut = whole.copyOf(whole.size - SpaAbi.POD_ALIGN * 3)
+        val read = SpaPodReader.objectProperties(cut)
+        read[SpaAbi.FORMAT_AUDIO_RATE] shouldBe 48_000
+        withClue("the array ran past the end and was taken anyway") {
+            read.containsKey(SpaAbi.FORMAT_AUDIO_POSITION) shouldBe false
+        }
+    }
+
+    @Test
     fun `the graph names eight positions the compatibility layer has no word for`() {
         // The measurement section 13.1 is built on, kept here so it fails if
         // the table is edited rather than only if the plan is.
@@ -106,6 +160,10 @@ class SpaPodTest {
             ((this[offset + 3].toInt() and 0xFF) shl 24)
 
     private fun ByteArray.toHex(): String = joinToString(" ") { "%02x".format(it) }
+
+    /** The reference dumps read back, so a decoder can be put through them. */
+    private fun String.fromHex(): ByteArray =
+        split(" ").filter { it.isNotBlank() }.map { it.toInt(16).toByte() }.toByteArray()
 
     private companion object {
         /**
@@ -125,6 +183,20 @@ class SpaPodTest {
                 "20 00 00 00 0d 00 00 00 04 00 00 00 03 00 00 00 " +
                 "03 00 00 00 04 00 00 00 05 00 00 00 06 00 00 00 " +
                 "0c 00 00 00 0d 00 00 00"
+
+        /**
+         * `spa_pod_builder_add_object` for a Props carrying a volume, a mute
+         * and two channel volumes. 96 bytes, and the reference the decoder is
+         * checked against: it holds the three types the format object has none
+         * of, a float, a boolean and an array of floats.
+         */
+        const val PROPS_VOLUME =
+            "58 00 00 00 0f 00 00 00 02 00 04 00 02 00 00 00 " +
+                "03 00 01 00 00 00 00 00 04 00 00 00 06 00 00 00 " +
+                "00 00 80 3e 00 00 00 00 04 00 01 00 00 00 00 00 " +
+                "04 00 00 00 02 00 00 00 01 00 00 00 00 00 00 00 " +
+                "08 00 01 00 00 00 00 00 10 00 00 00 0d 00 00 00 " +
+                "04 00 00 00 06 00 00 00 00 00 80 3e 00 00 00 3f"
 
         /** The same, from `spa_latency_build` for one quantum out. 184 bytes. */
         const val PARAM_LATENCY_ONE_QUANTUM =

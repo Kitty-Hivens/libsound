@@ -285,6 +285,23 @@ int main(void) {
         dump("ParamLatency", pod, SPA_POD_SIZE(pod));
     }
 
+    /* And a third, for the other direction. A device's own volume arrives as a
+     * Props object the graph wrote, so this is the reference a reader is checked
+     * against: the encoder above is proved by emitting these bytes, and the
+     * decoder by pulling the same values back out of them. */
+    SECTION("a reference POD: a Props object, which is what a volume is");
+    {
+        uint8_t storage[1024];
+        struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
+        float volumes[2] = { 0.25f, 0.5f };
+        const struct spa_pod *pod = spa_pod_builder_add_object(&builder,
+            SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
+            SPA_PROP_volume, SPA_POD_Float(0.25f),
+            SPA_PROP_mute, SPA_POD_Bool(true),
+            SPA_PROP_channelVolumes, SPA_POD_Array(sizeof(float), SPA_TYPE_Float, 2, volumes));
+        dump("Props", pod, SPA_POD_SIZE(pod));
+    }
+
     /* Properties are built from a dict rather than from pw_properties_new,
      * which is variadic: a Panama downcall to a variadic function needs a
      * descriptor per call shape, and a dict needs none. */
