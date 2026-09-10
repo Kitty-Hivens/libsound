@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A stream pointer was read outside the lock that destroys it**, on both Linux
+  backends. Every reader took the field, checked it against null and only then
+  took the lock: a teardown running in that window freed the stream, and the
+  call that followed read freed memory inside the sound library, or wrote to it
+  through the volume control. The scenario is the one the sink contract
+  prescribes rather than a contrived one, since a clock reads the playhead from
+  a thread that is not the writer while a watchdog may close the sink. The read,
+  the check and the call now sit inside one locked block, and teardown claims
+  the pointer inside the same one.
+- A readiness wait with no bound. `open` on the native backend waited on a
+  condition nothing was obliged to signal, so a graph that stopped changing the
+  stream's state hung the caller for good and the timeout the code documented
+  was unreachable. It is bounded now, and a timeout throws rather than returning
+  as though the stream had started.
+- An `open` that failed left the sink open, with `isOpen` true and a format that
+  had not opened. A consumer walking down a ladder of encodings then wrote into
+  a ring nothing would drain.
+- `AudioSink.latencyNanos` on the native backend added three quantities as
+  though they shared a unit. Only one of the three is counted in the graph's
+  rate; the other two are in the stream's own, and a third part of the path was
+  not counted at all. A stream at 48 kHz on a graph at 44.1 was exactly the case
+  it got wrong.
+- `SinkConfig.realtime` was ignored by the native backend. Harmless while that
+  backend had to be asked for by name, and a silent loss once it became the
+  default: a caller whose lowest latency profile worked before got an ordinary
+  thread and no line saying why.
+- A capture period longer than the internal scratch was dropped without being
+  counted, which is the one thing `AudioSource` says must never happen. The same
+  callback also took the graph's chunk offset and length without holding them to
+  the mapping, where the playback half already did.
+- `AudioSink.underrunCount` counted the gap between `open` and the first write.
+  Opening starts the device, so every period before a consumer began feeding
+  came up short, and the number a consumer watches to decide whether it asked
+  for too little buffer reported a burst at every open and every track change.
+- Devices whose `media.class` the graph qualifies were dropped from both lists.
+  A loopback microphone is `Audio/Source/Virtual` and a device that plays and
+  records at once is `Audio/Duplex`, and neither matched the bare names.
+- `AudioSink.accepts` answered true above the channel count the graph can carry,
+  where the contract says a false answer is exactly an open that would throw.
 - The native PipeWire backend answered with a backend on a machine that had
   libpipewire installed and no graph running. Loading the library and starting a
   thread loop reaches no server, so nothing before the first sink touched a
