@@ -161,7 +161,7 @@ internal class CoreAudioSink(
     /**
      * The encoding, and nothing else.
      *
-     * The layout is not consulted and [Capability.CHANNEL_PLACEMENT] is absent:
+     * The layout is not consulted and [dev.hivens.libsound.Capability.CHANNEL_PLACEMENT] is absent:
      * placing channels here needs `kAudioUnitProperty_AudioChannelLayout` and
      * the `kAudioChannelLabel_*` values behind it, and those are ABI numbers
      * that have to come from `tools/coreaudio-oracle.c` before anything is
@@ -332,7 +332,7 @@ internal class CoreAudioSink(
      * What is still queued here, and not the device's own delay behind it.
      *
      * Which makes it short of what the contract asks for, and
-     * [Capability.TOTAL_LATENCY] is absent to say so rather than the number
+     * [dev.hivens.libsound.Capability.TOTAL_LATENCY] is absent to say so rather than the number
      * being quietly redefined. This used to carry an argument that a fill level
      * is the right answer because a fixed device delay does not move when a
      * flush empties the queue. That is true and beside the point: the question

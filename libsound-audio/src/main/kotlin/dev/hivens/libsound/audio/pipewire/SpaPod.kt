@@ -26,8 +26,8 @@ import dev.hivens.libsound.ChannelLayout
  *
  * ## How it is known to be right
  *
- * `tools/pipewire-oracle.c` builds the same two objects with the library's own
- * builder and dumps them. [SpaPodTest] holds those bytes and compares. That is
+ * `tools/pipewire-oracle.c` builds the same objects with the library's own
+ * builder and dumps them, and `SpaPodTest` holds those bytes and compares. That is
  * the whole verification, it needs no server, and it turns a class of defect
  * that would otherwise surface as a stream quietly negotiating something else
  * into a byte comparison with an offset in it.

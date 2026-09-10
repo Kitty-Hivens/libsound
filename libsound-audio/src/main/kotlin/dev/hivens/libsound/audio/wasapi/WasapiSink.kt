@@ -125,13 +125,23 @@ internal class WasapiSink(
     override val isOpen: Boolean get() = client.address() != 0L && !closed.get()
 
     /**
-     * All five, because the extensible form expresses all five and
-     * `AUTOCONVERTPCM` has the engine convert to its own mix format.
+     * Four of the five. The extensible form expresses them and `AUTOCONVERTPCM`
+     * has the engine convert to its own mix format.
      *
      * It was S16LE alone, which was true of the plain `WAVEFORMATEX` this used
-     * to write rather than of what Windows takes.
+     * to write rather than of what Windows takes. Then it was all five, which
+     * was one too many: the contract suite opened each encoding in turn and the
+     * engine refused a 64-bit float outright, `AUTOCONVERTPCM` included. The
+     * mix format is a 32-bit float and the conversion the flag performs does
+     * not reach past it.
+     *
+     * Established against the audio engine the Windows job runs on rather than
+     * against hardware, which is the only Windows this repository can reach on
+     * its own. If a real device turns out to take one, this is where the
+     * measurement goes, and the contract suite is what would show it: over-
+     * claiming here is what it caught in the first place.
      */
-    override val acceptedEncodings: Set<PcmEncoding> get() = PcmEncoding.entries.toSet()
+    override val acceptedEncodings: Set<PcmEncoding> get() = ACCEPTED_ENCODINGS
 
     /**
      * The encoding, and whether every named position has a `SPEAKER_*` bit.
@@ -143,15 +153,21 @@ internal class WasapiSink(
      * short of what was written.
      */
     override fun accepts(format: AudioFormat): Boolean =
-        !format.layout.isSpecified ||
-            format.channels <= UNIVERSAL_CHANNELS ||
-            WasapiAbi.channelMaskOf(format.layout) != null
+        format.encoding in ACCEPTED_ENCODINGS &&
+            (
+                !format.layout.isSpecified ||
+                    format.channels <= UNIVERSAL_CHANNELS ||
+                    WasapiAbi.channelMaskOf(format.layout) != null
+                )
 
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
         // AudioException rather than an argument check, because a consumer
         // walking a ladder catches what the contract promises.
         if (!accepts(format)) {
+            if (format.encoding !in ACCEPTED_ENCODINGS) {
+                throw AudioException("the audio engine does not take ${format.encoding}")
+            }
             val position = format.layout.positions.firstOrNull { WasapiAbi.speakerBitOf(it) == null }
             throw AudioException(
                 "Windows has no speaker bit for $position in ${format.layout}; " +
@@ -689,6 +705,15 @@ internal class WasapiSink(
 
         /** Below this every platform agrees, so there is nothing to place and nothing to refuse. */
         const val UNIVERSAL_CHANNELS = 2
+
+        /**
+         * What the engine takes, which is every encoding but the widest.
+         *
+         * A 64-bit float is refused outright, `AUTOCONVERTPCM` included: the
+         * mix format is a 32-bit float and the flag's conversion does not reach
+         * past it.
+         */
+        val ACCEPTED_ENCODINGS: Set<PcmEncoding> = PcmEncoding.entries.toSet() - PcmEncoding.F64LE
 
         /** `GUID` is sixteen bytes, and the SubFormat field is one. */
         const val GUID_BYTES = 16L

@@ -14,10 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * libpulse side transfer unchanged, and they are worth restating because they
  * are the ones that corrupt memory rather than merely fail.
  *
- * **The wait releases the lock.** That is what makes [AudioSink.latencyNanos]
- * and the playhead answerable while a write is parked, which the sink contract
- * requires and which every backend here satisfies by construction rather than
- * by care.
+ * **The wait releases the lock.** That is what makes
+ * [dev.hivens.libsound.AudioSink.latencyNanos] and the playhead answerable while
+ * a write is parked, which the sink contract requires and which every backend
+ * here satisfies by construction rather than by care.
  *
  * **Nothing that belongs to the loop is touched without the lock**, including
  * teardown. A stream destroyed while the loop thread is dispatching on it is a

@@ -111,14 +111,24 @@ public class ChannelLayout private constructor(
     /** Whether this layout names its channels or only counts them. */
     public val isSpecified: Boolean get() = positions.isNotEmpty()
 
+    /**
+     * Two layouts are equal when they carry the same name and the same
+     * positions.
+     *
+     * The count is not compared because it cannot differ once those two agree:
+     * a named layout's count is the length of its positions, and an unspecified
+     * one carries the count in its name.
+     */
     override fun equals(other: Any?): Boolean =
         other is ChannelLayout && other.name == name && other.positions == positions
 
+    /** The name's and the positions', so equal layouts hash alike. */
     override fun hashCode(): Int = 31 * name.hashCode() + positions.hashCode()
 
     /** The FFmpeg name, so a log line reads as the layout rather than as a wrapper. */
     override fun toString(): String = name
 
+    /** The layouts a decoder can name, and the two ways of getting one. */
     public companion object {
         private fun layout(name: String, vararg positions: ChannelPosition): ChannelLayout =
             ChannelLayout(name, positions.size, positions.toList())
@@ -214,9 +224,22 @@ public class ChannelLayout private constructor(
             24 to STANDARD.getValue("22.2"),
         )
 
+        /** One channel, at the centre. */
         public val MONO: ChannelLayout = STANDARD.getValue("mono")
+
+        /** The front pair, and what most media carries. */
         public val STEREO: ChannelLayout = STANDARD.getValue("stereo")
+
+        /**
+         * Front pair, centre, low frequency, rear pair, in that order.
+         *
+         * The rear pair rather than the sides, which is the whole reason a
+         * count is not a layout: `5.1(side)` carries the same six channels and
+         * puts the last two somewhere else.
+         */
         public val SURROUND_5_1: ChannelLayout = STANDARD.getValue("5.1")
+
+        /** `5.1` with the side pair added after the rears. */
         public val SURROUND_7_1: ChannelLayout = STANDARD.getValue("7.1")
     }
 }
