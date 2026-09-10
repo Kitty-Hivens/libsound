@@ -237,6 +237,42 @@ internal object SpaAbi {
     /** `struct spa_hook`, which a listener is registered through and which the caller owns. */
     const val HOOK_SIZE = 48L
 
+    // -- the node, which is where a device's own volume lives ----------------
+
+    /**
+     * Two slots. `param` answers a subscription and carries the object, and
+     * `info` carries the node's state.
+     *
+     * A device's volume is not on the global's property dict, so this is the
+     * one thing on a device row that a bind is the only way to reach. The
+     * libpulse side gets it in the same struct as the name, which is the shape
+     * difference between an introspection protocol and a graph.
+     */
+    const val NODE_EVENTS_SIZE = 24L
+    const val NODE_EVENTS_VERSION = 0L
+    const val NODE_EVENTS_INFO = 8L
+    const val NODE_EVENTS_PARAM = 16L
+    const val VERSION_NODE_EVENTS = 0
+
+    /** The interface version a bind asks for. */
+    const val VERSION_NODE = 3
+
+    /** `pw_node_methods`, where asking to be told about a parameter lives. */
+    const val NODE_METHOD_SUBSCRIBE_PARAMS = 16L
+    const val NODE_METHOD_ENUM_PARAMS = 24L
+    const val NODE_METHOD_SET_PARAM = 32L
+
+    /** `pw_node_info`, of which one field is read. */
+    const val NODE_INFO_SIZE = 72L
+    const val NODE_INFO_STATE = 32L
+
+    /**
+     * A node the server has closed the hardware for because nothing is using
+     * it. An ordinary resting state rather than a fault, and the one the
+     * libpulse side reports as suspended.
+     */
+    const val NODE_STATE_SUSPENDED = 1
+
     // -- metadata, which is where the default device lives -------------------
 
     /**

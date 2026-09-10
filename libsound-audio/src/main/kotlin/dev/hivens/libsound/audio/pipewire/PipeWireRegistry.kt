@@ -34,13 +34,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  * object on the machine puts introspection traffic on the connection carrying
  * audio timing, and the two have no business sharing a socket.
  *
- * ## The one object it binds
+ * ## What it binds, and why those
  *
- * A global's properties come with the event, so a list needs no proxy. Which
- * device is default is the exception and is not a property of the graph at all:
- * the session manager writes it into a metadata object, so reading it means
- * binding that object and listening to it. That is one bind, of one global,
- * chosen by name, and it is the whole of what this holds a proxy for.
+ * Most of a device row travels on the global's own dict, so a list needs no
+ * proxy. Two things do not, and each of them is a bind.
+ *
+ * Which device is default is not a property of the graph at all: the session
+ * manager writes it into a metadata object, so it means binding that object,
+ * chosen out of the several the graph carries by name.
+ *
+ * A device's own volume is a parameter of its node, and a parameter is only
+ * reachable through a bind. So each audio node gets one and a subscription to
+ * the one parameter that carries the volume and the mute, which is why a slider
+ * somebody else moved arrives here as an event rather than at the next re-read.
+ *
+ * Nothing else on the graph is bound. What is playing, how loud and where is
+ * `VolumeMixer`'s question, and this is not a second one.
  */
 internal class PipeWireRegistry private constructor(
     private val loop: PipeWireLoop,
@@ -84,6 +93,20 @@ internal class PipeWireRegistry private constructor(
 
     @Volatile
     private var metadata: MemorySegment = MemorySegment.NULL
+
+    /**
+     * A proxy and a listener hook for every audio node, and the hooks going
+     * spare after one was removed.
+     *
+     * Touched only on the loop's own thread and, in [close], under the loop
+     * lock, which is the same thing serialised: an ordinary map is enough where
+     * [nodes] needs a concurrent one, because nothing outside reads these.
+     */
+    private val nodeProxies = HashMap<Int, MemorySegment>()
+
+    private val nodeHooks = HashMap<Int, MemorySegment>()
+
+    private val spareHooks = ArrayDeque<MemorySegment>()
 
     /** The sequence number the barrier is waiting for, and whether it arrived. */
     @Volatile
@@ -155,8 +178,9 @@ internal class PipeWireRegistry private constructor(
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         runCatching {
             loop.locked {
-                // The bound proxy before the registry that handed it out, and
-                // both before the connection they travelled on.
+                // Every bound proxy before the registry that handed them out,
+                // and all of it before the connection they travelled on.
+                nodeProxies.keys.toList().forEach { releaseNode(it) }
                 releaseMetadata()
                 lib.handle("pw_proxy_destroy").invokeExact(registry) as Unit
                 lib.handle("pw_core_disconnect").invokeExact(core) as Int
@@ -208,6 +232,7 @@ internal class PipeWireRegistry private constructor(
                 defaultSourceName = null
                 fire()
             }
+            releaseNode(id)
             if (nodes.remove(id) != null) fire()
         }.onFailure { log.debug("registry global_remove threw: {}", it.message) }
     }
@@ -238,6 +263,67 @@ internal class PipeWireRegistry private constructor(
             fire()
         }.onFailure { log.debug("metadata property threw: {}", it.message) }
         return 0
+    }
+
+    /**
+     * One parameter of one node, which is where a device's own volume is.
+     *
+     * `channelVolumes` rather than `volume`, and the loudest of them, because
+     * that is what a slider shows and what the libpulse side reports through
+     * `pa_cvolume_max`. The two scales agree without conversion: both are
+     * linear amplitude, which was measured rather than assumed, by setting a
+     * sink to half through the pulse protocol and reading 0.125 back here.
+     *
+     * [data] is the node's global id, handed over at bind and never
+     * dereferenced.
+     */
+    fun onNodeParam(
+        data: MemorySegment,
+        unusedSeq: Int,
+        id: Int,
+        unusedIndex: Int,
+        unusedNext: Int,
+        param: MemorySegment,
+    ) {
+        runCatching {
+            if (id != SpaAbi.PARAM_PROPS) return
+            val node = data.address().toInt()
+            val current = nodes[node] ?: return
+            val props = SpaPodReader.objectProperties(param)
+            val channels = props[SpaAbi.PROP_CHANNEL_VOLUMES] as? FloatArray
+            val volume = channels?.maxOrNull() ?: props[SpaAbi.PROP_VOLUME] as? Float
+            val muted = props[SpaAbi.PROP_MUTE] as? Boolean
+            if (volume == null && muted == null) return
+            nodes[node] = current.copy(
+                // What the node did not say keeps what it said last, because a
+                // parameter arrives whole only the first time.
+                volume = volume?.coerceIn(0f, 1f) ?: current.volume,
+                muted = muted ?: current.muted,
+            )
+            fire()
+        }.onFailure { log.debug("node param threw: {}", it.message) }
+    }
+
+    /**
+     * A node's own description of itself, of which one field is read: whether
+     * the server has closed the hardware because nothing is using it.
+     *
+     * An ordinary resting state rather than a fault, and worth showing for the
+     * reason [AudioDevice.isSuspended] gives: somebody looking at a silent
+     * device wants to know which kind of silence it is.
+     */
+    fun onNodeInfo(data: MemorySegment, info: MemorySegment) {
+        runCatching {
+            if (info.address() == 0L) return
+            val node = data.address().toInt()
+            val current = nodes[node] ?: return
+            val state = info.reinterpret(SpaAbi.NODE_INFO_SIZE)
+                .get(ValueLayout.JAVA_INT, SpaAbi.NODE_INFO_STATE)
+            val suspended = state == SpaAbi.NODE_STATE_SUSPENDED
+            if (suspended == current.isSuspended) return
+            nodes[node] = current.copy(isSuspended = suspended)
+            fire()
+        }.onFailure { log.debug("node info threw: {}", it.message) }
     }
 
     /**
@@ -302,7 +388,74 @@ internal class PipeWireRegistry private constructor(
             ?: entries[SpaAbi.KEY_DEVICE_DESCRIPTION]
             ?: name
         nodes[id] = AudioDevice(id = DeviceId(name), name = label, direction = direction)
+        bindNode(id)
         fire()
+    }
+
+    /**
+     * Bind one audio node, and ask to be told about its properties.
+     *
+     * The rest of a device row travels on the global's own dict and needs no
+     * proxy at all. Its volume does not: that is a parameter of the node, and a
+     * parameter is only reachable through a bind. So an audio node gets one,
+     * and nothing else on the graph does.
+     *
+     * The subscription is not a question. Asking is `enum_params`, which
+     * answers once; this asks to be told again whenever the value changes, so a
+     * slider somebody else moved arrives here as an event rather than being
+     * discovered at the next re-read.
+     *
+     * The node's own global id goes across as the listener's data, which is
+     * what the callback has to tell one node from another. It is a number
+     * carried as a pointer and never dereferenced, and it is never zero,
+     * because zero is the core.
+     */
+    private fun bindNode(id: Int) {
+        if (id in nodeProxies) return
+        val proxy = bind(id, nodeType, SpaAbi.VERSION_NODE)
+        if (proxy.address() == 0L) return
+        val gave = interfaceType(proxy)
+        if (gave != SpaAbi.INTERFACE_NODE) {
+            log.debug("bind of node {} answered a {}", id, gave)
+            runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+            return
+        }
+        val hook = spareHooks.removeLastOrNull() ?: stubArena.allocate(SpaAbi.HOOK_SIZE, 8)
+        hook.fill(0)
+        nodeProxies[id] = proxy
+        nodeHooks[id] = hook
+        lib.handle("pw_proxy_add_object_listener")
+            .invokeExact(proxy, hook, nodeEvents, MemorySegment.ofAddress(id.toLong())) as Unit
+        runCatching { subscribeProps(proxy) }
+            .onFailure { log.debug("subscribe_params on node {} threw: {}", id, it.message) }
+    }
+
+    /** Drop one node's proxy and put its hook back. The loop lock must be held. */
+    private fun releaseNode(id: Int) {
+        val proxy = nodeProxies.remove(id) ?: return
+        // The hook is reusable once the proxy holding it is gone, and
+        // pw_proxy_add_object_listener overwrites its fields on the next bind.
+        // Recycled rather than allocated afresh, so a machine where devices
+        // come and go all day does not grow an arena a hook at a time.
+        nodeHooks.remove(id)?.let { spareHooks.addLast(it) }
+        runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+            .onFailure { log.debug("node proxy destroy threw: {}", it.message) }
+    }
+
+    /**
+     * `pw_node_subscribe_params` for the one parameter this reads, walked for
+     * the reason every other proxy method here is.
+     */
+    private fun subscribeProps(proxy: MemorySegment) {
+        val method = interfaceMethod(proxy, SpaAbi.NODE_METHOD_SUBSCRIBE_PARAMS, "subscribe_params")
+        val call = Linker.nativeLinker().downcallHandle(
+            method,
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+            ),
+        )
+        call.invokeExact(interfaceData(proxy), propsParam, 1) as Int
     }
 
     /**
@@ -378,6 +531,17 @@ internal class PipeWireRegistry private constructor(
     /** Allocated once and kept, for the reason [bind] gives. */
     private val metadataType: MemorySegment by lazy {
         stubArena.allocateFrom(SpaAbi.INTERFACE_METADATA)
+    }
+
+    private val nodeType: MemorySegment by lazy {
+        stubArena.allocateFrom(SpaAbi.INTERFACE_NODE)
+    }
+
+    /** The one parameter id a subscription names, in memory a call can point at. */
+    private val propsParam: MemorySegment by lazy {
+        stubArena.allocate(ValueLayout.JAVA_INT, 1).apply {
+            set(ValueLayout.JAVA_INT, 0L, SpaAbi.PARAM_PROPS)
+        }
     }
 
     /**
@@ -462,11 +626,15 @@ internal class PipeWireRegistry private constructor(
         // registry was asked for. See [openOrNull].
         lib.handle("pw_proxy_add_object_listener")
             .invokeExact(registry, hook, events, MemorySegment.NULL) as Unit
-        // Built here rather than at the first metadata global, so the stub is
-        // linked while nothing is waiting on it: the alternative pays for a
-        // method handle lookup inside a dispatch on the loop's thread.
+        // Built here rather than at the first global that needs one, so the
+        // stubs are linked while nothing is waiting on them: the alternative
+        // pays for a method handle lookup inside a dispatch on the loop's own
+        // thread, with the burst of every object on the graph behind it.
         metadataEvents
         metadataHook
+        nodeEvents
+        nodeType
+        propsParam
     }
 
     /**
@@ -504,6 +672,52 @@ internal class PipeWireRegistry private constructor(
 
     private val metadataHook: MemorySegment by lazy {
         stubArena.allocate(SpaAbi.HOOK_SIZE, 8).apply { fill(0) }
+    }
+
+    /**
+     * One events struct shared by every bound node, which is what the data
+     * pointer is for: the struct says what to call and the pointer says which
+     * node it is about.
+     */
+    private val nodeEvents: MemorySegment by lazy {
+        val linker = Linker.nativeLinker()
+        val lookup = MethodHandles.lookup()
+        val addr = ValueLayout.ADDRESS
+        val i32 = ValueLayout.JAVA_INT
+
+        val struct = stubArena.allocate(SpaAbi.NODE_EVENTS_SIZE, 8)
+        struct.fill(0)
+        struct.set(ValueLayout.JAVA_INT, SpaAbi.NODE_EVENTS_VERSION, SpaAbi.VERSION_NODE_EVENTS)
+        struct.set(
+            addr, SpaAbi.NODE_EVENTS_INFO,
+            linker.upcallStub(
+                lookup.findVirtual(
+                    PipeWireRegistry::class.java, "onNodeInfo",
+                    MethodType.methodType(
+                        Void.TYPE, MemorySegment::class.java, MemorySegment::class.java,
+                    ),
+                ).bindTo(this),
+                FunctionDescriptor.ofVoid(addr, addr),
+                stubArena,
+            ),
+        )
+        struct.set(
+            addr, SpaAbi.NODE_EVENTS_PARAM,
+            linker.upcallStub(
+                lookup.findVirtual(
+                    PipeWireRegistry::class.java, "onNodeParam",
+                    MethodType.methodType(
+                        Void.TYPE, MemorySegment::class.java,
+                        Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                        Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                        MemorySegment::class.java,
+                    ),
+                ).bindTo(this),
+                FunctionDescriptor.ofVoid(addr, i32, i32, i32, i32, addr),
+                stubArena,
+            ),
+        )
+        struct
     }
 
     internal companion object {
