@@ -91,6 +91,7 @@ internal class PipeWireMixer private constructor(
         Capability.CAPTURE_ROUTING,
         Capability.DEVICE_VOLUME,
         Capability.STREAM_METERING,
+        Capability.VIRTUAL_DEVICES,
     )
 
     override val isOpen: Boolean get() = !closed.get()
@@ -210,19 +211,64 @@ internal class PipeWireMixer private constructor(
     override fun setDevicePort(device: DeviceId, port: String): Boolean = false
 
     /**
-     * Null, and [Capability.VIRTUAL_DEVICES] is absent.
+     * A device the machine does not have, made through the core's own factory.
      *
-     * `create_object` on the core is what would make one, and the object it
-     * makes belongs to this connection rather than to the server. That is a
-     * different lifetime from the module the libpulse mixer loads, and the one
-     * the restore obligation would prefer, so it is a decision to take rather
-     * than a call to translate.
+     * It belongs to this connection and goes when this connection goes, because
+     * `object.linger` is left unset and the header describes that key as the
+     * one making an object outlive its client. That is a different lifetime
+     * from the server module the libpulse mixer loads, and it lines up with
+     * what this call is documented under: a virtual sink left behind is a
+     * device somebody finds in their settings and cannot account for.
+     *
+     * How that behaves when the connection ends without [close] running is not
+     * something this suite establishes, since it cannot end one that way. What
+     * it does establish is that the device goes when the mixer is closed and
+     * when [restoreAll] runs without it having been removed.
+     *
+     * [channels] is honoured or the call is refused, never narrowed, and the
+     * positions travel with it wherever the graph has a name for every one.
      */
-    override fun createVirtualSink(name: String, channels: Int): DeviceId? = null
+    override fun createVirtualSink(name: String, channels: Int): DeviceId? {
+        if (closed.get() || name.isBlank()) return null
+        if (!registry.createNullSink(name, channels)) return null
+        // Made and then waited for: the object exists when create_object
+        // returns and appears on the graph a moment later, and a caller handed
+        // an id it cannot yet use has been handed a promise rather than a
+        // device.
+        return awaitDevice(name)
+    }
 
-    override fun removeVirtualSink(id: DeviceId): Boolean = false
+    override fun removeVirtualSink(id: DeviceId): Boolean = registry.removeNullSink(id.value)
 
+    /**
+     * Null, and it is the server refusing rather than this declining to ask.
+     *
+     * Playing one thing to two devices is a module the daemon loads, and a
+     * graph that has not loaded it registers no factory for one, which a client
+     * cannot change from outside. Where a machine has loaded it, this is where
+     * the call would go.
+     */
     override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? = null
+
+    /**
+     * Wait for a device just made to appear on the graph, or give up and undo
+     * it.
+     *
+     * `create_object` answers with a proxy before the object has a global, so a
+     * name that never shows up is a device the graph accepted and did not
+     * build. Handing back an id for one would be handing back something every
+     * later call answers false for.
+     */
+    private fun awaitDevice(name: String): DeviceId? {
+        val deadline = System.nanoTime() + APPEAR_TIMEOUT_NANOS
+        while (System.nanoTime() < deadline) {
+            if (registry.devices(StreamDirection.PLAYBACK).any { it.id.value == name }) return DeviceId(name)
+            Thread.sleep(APPEAR_POLL_MILLIS)
+        }
+        log.debug("the graph took {} and never showed it", name)
+        registry.removeNullSink(name)
+        return null
+    }
 
     /**
      * Put back every volume and mute this process changed and has not changed
@@ -239,7 +285,12 @@ internal class PipeWireMixer private constructor(
         val streamMutes = drain(originalStreamMutes)
         val deviceVolumes = drain(originalDeviceVolumes)
         val deviceMutes = drain(originalDeviceMutes)
-        val total = streamVolumes.size + streamMutes.size + deviceVolumes.size + deviceMutes.size
+        // Devices this process made go first, which is the contract's own
+        // order: a volume put back onto a sink that is about to vanish is
+        // applied to nothing.
+        val made = registry.createdSinkNames()
+        made.forEach { runCatching { registry.removeNullSink(it) } }
+        val total = made.size + streamVolumes.size + streamMutes.size + deviceVolumes.size + deviceMutes.size
         if (total == 0) return
         log.info("restoring {} setting(s) this process changed", total)
         streamVolumes.forEach { (serial, volume) ->
@@ -477,6 +528,10 @@ internal class PipeWireMixer private constructor(
 
         /** Fast enough to look live, slow enough to cost nothing worth measuring. */
         private const val METER_WINDOWS_PER_SECOND = 20
+
+        /** How long a device just made has to appear before it is taken back. */
+        private const val APPEAR_TIMEOUT_NANOS = 5_000_000_000L
+        private const val APPEAR_POLL_MILLIS = 25L
 
         /**
          * Open a connection of this mixer's own, or null where no graph

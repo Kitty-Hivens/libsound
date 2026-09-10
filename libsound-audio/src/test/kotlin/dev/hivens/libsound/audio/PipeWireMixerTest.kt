@@ -74,17 +74,17 @@ class PipeWireMixerTest {
         // asks before it draws a control. Absent because none of it is built,
         // not because the graph withholds it: each is one interface along from
         // what this already binds.
-        mixer.capabilities.anyOf(
-            Capability.DEVICE_PROFILES,
-            Capability.VIRTUAL_DEVICES,
-        ) shouldBe false
+        // Cards and profiles are a Device global with its own parameters, which
+        // is one interface along from what this binds. Absent because nothing
+        // here can exercise them: an isolated graph has no card and the suite
+        // does not run against a machine that has one.
+        (Capability.DEVICE_PROFILES in mixer.capabilities) shouldBe false
+        mixer.cards() shouldBe emptyList()
         // Watching what a row plays is here; watching what one records is not,
         // and they are separate capabilities because aiming at a recording row
         // would tap the device it records from rather than that row.
         (Capability.STREAM_METERING in mixer.capabilities) shouldBe true
         (Capability.CAPTURE_METERING in mixer.capabilities) shouldBe false
-        mixer.cards() shouldBe emptyList()
-        mixer.createVirtualSink("libsound_never") shouldBe null
     }
 
     @Test
@@ -215,6 +215,49 @@ class PipeWireMixerTest {
         val cancel = mixer.meter(StreamId("sink-input:999999999")) { error("never") }
         cancel()
         cancel()
+    }
+
+    @Test
+    fun `a device this process made appears, takes a stream, and goes with the mixer`() {
+        val mixer = checkNotNull(mixer)
+        (Capability.VIRTUAL_DEVICES in mixer.capabilities) shouldBe true
+        val name = "libsound_pw_virtual_${ProcessHandle.current().pid()}"
+        val made = checkNotNull(mixer.createVirtualSink(name)) { "the graph refused a device of its own" }
+        made.value shouldBe name
+        // On the graph, in the backend's own list, which is a second connection
+        // reading it rather than this one remembering what it asked for.
+        withClue("the device the mixer made is not on the graph") {
+            checkNotNull(backend).devices().any { it.id == made } shouldBe true
+        }
+
+        // And a stream can be pointed at it, which is what a separate bus is
+        // for and the only thing that makes one worth having.
+        play()
+        val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
+        eventually("the move to be taken") { mixer.moveTo(row.id, made).takeIf { it } }
+        eventually("the stream to land on it") {
+            mixer.streams().firstOrNull { it.id == row.id && it.device == made }
+        }
+
+        mixer.removeVirtualSink(made) shouldBe true
+        eventually("the device to go") {
+            checkNotNull(backend).devices().none { it.id == made }.takeIf { it }
+        }
+        // Removing one twice is a caller that lost track, not a reason to throw.
+        mixer.removeVirtualSink(made) shouldBe false
+    }
+
+    @Test
+    fun `a device this process made and forgot is taken back by restore`() {
+        val mixer = checkNotNull(mixer)
+        val name = "libsound_pw_orphan_${ProcessHandle.current().pid()}"
+        checkNotNull(mixer.createVirtualSink(name))
+        // The obligation this call is documented under. A device left behind is
+        // one somebody finds in their settings and cannot account for.
+        mixer.restoreAll()
+        eventually("the forgotten device to be taken back") {
+            checkNotNull(backend).devices().none { it.id.value == name }.takeIf { it }
+        }
     }
 
     @Test
