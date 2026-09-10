@@ -29,6 +29,7 @@ import java.lang.invoke.MethodHandle
  */
 internal class PipeWireLibrary private constructor(
     val arena: Arena,
+    private val lookup: SymbolLookup,
     private val handles: Map<String, MethodHandle>,
 ) {
     /**
@@ -45,6 +46,9 @@ internal class PipeWireLibrary private constructor(
     companion object {
         /** Exact soname first; the bare name only as a development courtesy. */
         val LIB_CANDIDATES: List<String> = listOf("libpipewire-0.3.so.0", "libpipewire-0.3.so")
+
+        /** Everything past the fourth argument of pw_stream_set_control is variadic. */
+        private const val VARIADIC_FROM = 4
 
         private val ADDR = ValueLayout.ADDRESS
         private val I32 = ValueLayout.JAVA_INT
@@ -98,6 +102,24 @@ internal class PipeWireLibrary private constructor(
             Triple("pw_properties_new_dict", ADDR, listOf(ADDR)),
             Triple("pw_properties_set", I32, listOf(ADDR, ADDR, ADDR)),
             Triple("pw_properties_free", null, listOf(ADDR)),
+
+            // The context and the core, which exist for one thing: a registry
+            // hangs off a core and a stream created with pw_stream_new_simple
+            // gets a core of its own. That separation is deliberate rather than
+            // incidental, and the reason is the one the libpulse mixer already
+            // gives: a registry reports every object on the graph, and putting
+            // that traffic on the connection carrying audio timing is what the
+            // other backend takes a second connection to avoid.
+            Triple("pw_context_new", ADDR, listOf(ADDR, ADDR, I64)),
+            Triple("pw_context_destroy", null, listOf(ADDR)),
+            Triple("pw_context_connect", ADDR, listOf(ADDR, ADDR, I64)),
+            Triple("pw_core_disconnect", I32, listOf(ADDR)),
+
+            // A proxy's listener. Getting the registry itself is a macro over
+            // the core's method table, so it is walked by hand rather than
+            // bound: see SpaAbi's note on calling a proxy method.
+            Triple("pw_proxy_add_object_listener", null, listOf(ADDR, ADDR, ADDR, ADDR)),
+            Triple("pw_proxy_destroy", null, listOf(ADDR)),
         )
 
         /**
@@ -131,7 +153,7 @@ internal class PipeWireLibrary private constructor(
                 }
                 handles[name] = linker.downcallHandle(symbol, descriptor)
             }
-            val library = PipeWireLibrary(arena, handles)
+            val library = PipeWireLibrary(arena, lookup, handles)
             // Once per process. Calling it twice is documented as harmless and
             // this is the only path that reaches it.
             runCatching {
@@ -139,6 +161,30 @@ internal class PipeWireLibrary private constructor(
             }
             return library
         }
+    }
+
+    /**
+     * `pw_stream_set_control`, which is variadic and therefore bound apart from
+     * the rest.
+     *
+     * A Panama downcall to a variadic function needs a descriptor per call
+     * shape, so it cannot live in a table of name-to-descriptor like everything
+     * else here. This is the one shape the library uses: one control, then the
+     * zero that ends the list, because the implementation reads triples until
+     * it meets one.
+     */
+    val setControl: MethodHandle by lazy {
+        val symbol = checkNotNull(lookup.find("pw_stream_set_control").orElse(null)) {
+            "libpipewire has no pw_stream_set_control"
+        }
+        Linker.nativeLinker().downcallHandle(
+            symbol,
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+            ),
+            Linker.Option.firstVariadicArg(VARIADIC_FROM),
+        )
     }
 
     /** The runtime's own version, for the one line of log that says what was reached. */

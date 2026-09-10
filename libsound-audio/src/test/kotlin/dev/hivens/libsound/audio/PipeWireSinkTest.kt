@@ -11,6 +11,7 @@ import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.StreamDirection
 import dev.hivens.libsound.audio.pipewire.PipeWireBackend
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pulse.PulseAbi
@@ -232,24 +233,79 @@ class PipeWireBackendTest {
     fun `the backend says what it is and what it is not`() {
         val backend = checkNotNull(PipeWireFixture.backend)
         backend.name shouldBe "pipewire"
-        // What it has over the shim.
+        // What it has over the shim, plus what the registry brought.
         backend.capabilities.allOf(
             Capability.CHANNEL_PLACEMENT,
             Capability.TOTAL_LATENCY,
             Capability.LOW_LATENCY,
-        ) shouldBe true
-        // A stream in each direction.
-        (Capability.CAPTURE in backend.capabilities) shouldBe true
-        // And what it does not have, which is everything that needs the
-        // registry. A consumer that asks first draws no device menu here and no
-        // slider on a mixer row.
-        backend.capabilities.anyOf(
+            Capability.CAPTURE,
+            Capability.STREAM_VOLUME,
             Capability.DEVICE_ENUMERATION,
             Capability.DEVICE_SELECTION,
             Capability.DEVICE_EVENTS,
-            Capability.STREAM_VOLUME,
-        ) shouldBe false
-        backend.devices().isEmpty() shouldBe true
-        backend.captureDevices().isEmpty() shouldBe true
+        ) shouldBe true
+    }
+
+    @Test
+    fun `the device list arrives without anybody asking for it`() {
+        // The shape that differs from every other backend here. A registry
+        // global carries the object's whole property dict, so the list is what
+        // has been heard rather than a round trip: by the time a consumer asks,
+        // the answer is already in hand.
+        //
+        // Any graph that can play at all has a sink on it, which is what makes
+        // this assertable rather than a count that depends on the machine.
+        val backend = checkNotNull(PipeWireFixture.backend)
+        val sinks = backend.devices()
+        withClue("the graph reported no audio sink at all") { sinks.isNotEmpty() shouldBe true }
+        sinks.all { it.id.value.isNotBlank() && it.name.isNotBlank() } shouldBe true
+        sinks.all { it.direction == StreamDirection.PLAYBACK } shouldBe true
+        backend.captureDevices().all { it.direction == StreamDirection.CAPTURE } shouldBe true
+    }
+
+    @Test
+    fun `a device names something a stream can actually be pointed at`() {
+        // The list is only worth having if its ids work, and here an id is a
+        // node.name that goes across as target.object. A device menu whose rows
+        // cannot be selected is a menu with dead rows.
+        val backend = checkNotNull(PipeWireFixture.backend)
+        val device = backend.devices().firstOrNull() ?: return
+        backend.createSink(PipeWireFixture.config().copy(device = device.id)).use { sink ->
+            sink.open(AudioFormat(48_000, 2))
+            sink.isOpen shouldBe true
+            val frame = ByteArray(480 * sink.format!!.bytesPerFrame)
+            sink.write(frame, 0, frame.size)
+        }
+    }
+
+    @Test
+    fun `which device is default is unknown rather than guessed`() {
+        // The one question this backend cannot answer. It is not a property of
+        // the graph: the session manager writes it into a metadata object, and
+        // reading that means binding a proxy. Null is what the contract says to
+        // answer when it is unknown, and answering the first device instead
+        // would be a guess a settings screen would draw a tick beside.
+        val backend = checkNotNull(PipeWireFixture.backend)
+        backend.defaultDevice() shouldBe null
+        backend.defaultCaptureDevice() shouldBe null
+        backend.devices().none { it.isDefault } shouldBe true
+    }
+
+    @Test
+    fun `a volume set on the stream is the stream's, at the system level`() {
+        // A control on the node rather than arithmetic on the samples, which is
+        // the whole of what STREAM_VOLUME distinguishes: the desktop's mixer
+        // shows this one and follows it.
+        checkNotNull(PipeWireFixture.backend).createSink(PipeWireFixture.config()).use { sink ->
+            sink.open(AudioFormat(48_000, 2))
+            (Capability.STREAM_VOLUME in sink.capabilities) shouldBe true
+            sink.setVolume(0.4f)
+            sink.volume() shouldBe 0.4f
+            // Clamped rather than refused, which the contract suite asserts for
+            // every backend and is restated here because this one applies it
+            // natively rather than remembering it.
+            sink.setVolume(4f)
+            sink.volume() shouldBe 1f
+        }
     }
 }

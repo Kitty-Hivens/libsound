@@ -42,9 +42,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   against a live graph, and it takes what the layer cannot carry: all five
   encodings including the 64-bit float `pa_sample_format_t` has no name for, and
   every one of the forty channel layouts FFmpeg names, four of which the
-  libpulse backend refuses. Deliberately narrow otherwise, and the capability
-  set says so rather than the documentation alone: no device list, no events, no
-  stream volume, because each of those needs the registry.
+  libpulse backend refuses. It lists devices and follows them changing, through
+  a registry connection of its own, and sets the stream's own volume as a
+  control on its node. What it does not answer is which device is default, and
+  it says so with a null rather than a guess: that value lives in a metadata
+  object rather than in the graph, and reading it means binding a proxy.
 
   Not on the selection path. It goes first once it passes everything the
   libpulse backend passes, and until then `-Dlibsound.backend=pipewire` reaches

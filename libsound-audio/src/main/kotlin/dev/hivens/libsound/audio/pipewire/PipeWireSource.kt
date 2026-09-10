@@ -140,6 +140,7 @@ internal class PipeWireSource(
         awaitReady()
         // The contract's first rule: open starts the device. A consumer that
         // wants the microphone open and idle stops immediately after.
+        applyVolume()
         start()
         log.info("capture open: {} ring={} frames", format, depthFrames)
     }
@@ -203,9 +204,32 @@ internal class PipeWireSource(
 
     override fun overrunFrames(): Long = overruns.get()
 
-    /** Remembered and not applied, for the reason [PipeWireSink.setVolume] gives. */
+    /**
+     * The stream's own volume, at the system level, which is what
+     * [Capability.STREAM_VOLUME] means.
+     *
+     * A control on this node rather than arithmetic on the samples, so the
+     * desktop's mixer shows it and follows it. `pw_stream_set_control` is the
+     * one variadic call in this binding, and it takes a control and then the
+     * zero that ends the list.
+     */
     override fun setVolume(volume: Float) {
         volumeValue = volume.coerceIn(0f, 1f)
+        applyVolume()
+    }
+
+    private fun applyVolume() {
+        val current = stream
+        if (current.address() == 0L) return
+        loop.locked {
+            runCatching {
+                Arena.ofConfined().use { call ->
+                    val values = call.allocate(ValueLayout.JAVA_FLOAT)
+                    values.set(ValueLayout.JAVA_FLOAT, 0L, volumeValue)
+                    lib.setControl.invokeExact(current, SpaAbi.PROP_VOLUME, 1, values, 0) as Int
+                }
+            }.onFailure { log.debug("set_control(volume) threw: {}", it.message) }
+        }
     }
 
     override fun volume(): Float = volumeValue

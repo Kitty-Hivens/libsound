@@ -135,7 +135,72 @@ internal object SpaAbi {
     const val TIME_QUEUED = 32L
     const val TIME_BUFFERED = 40L
 
+    // -- calling a proxy method by hand --------------------------------------
+
+    /**
+     * A proxy pointer is a `spa_interface`, whose callbacks point at the
+     * interface's method table, and the headers read a function out of it
+     * through a macro. Panama cannot call a macro, so a binding walks the
+     * layout: the same discipline the WASAPI vtable indices are held to, and
+     * the same failure when it is wrong, which is a call through a function
+     * that is not the one meant.
+     */
+    const val INTERFACE_CB_FUNCS = 16L
+
+    /** `pw_core_methods`, where `get_registry` lives. */
+    const val CORE_METHOD_GET_REGISTRY = 48L
+
+    /** `pw_registry_methods`, where `bind` lives. */
+    const val REGISTRY_METHOD_BIND = 16L
+    const val REGISTRY_METHOD_DESTROY = 24L
+
+    const val VERSION_CORE = 4
+    const val VERSION_REGISTRY = 3
+
+    // -- registry events -----------------------------------------------------
+
+    /**
+     * Three slots. A global arrives with its whole property dict attached,
+     * which is what makes a device list need no method call at all: the answer
+     * is in the event.
+     */
+    const val REGISTRY_EVENTS_SIZE = 24L
+    const val REGISTRY_EVENTS_VERSION = 0L
+    const val REGISTRY_EVENTS_GLOBAL = 8L
+    const val REGISTRY_EVENTS_GLOBAL_REMOVE = 16L
+    const val VERSION_REGISTRY_EVENTS = 0
+
+    /** What a global says it is. A node is what a device list is made of. */
+    const val INTERFACE_CORE = "PipeWire:Interface:Core"
+    const val INTERFACE_NODE = "PipeWire:Interface:Node"
+    const val INTERFACE_DEVICE = "PipeWire:Interface:Device"
+    const val INTERFACE_METADATA = "PipeWire:Interface:Metadata"
+
+    /** `struct spa_hook`, which a listener is registered through and which the caller owns. */
+    const val HOOK_SIZE = 48L
+
+    // -- properties a volume is set through ----------------------------------
+
+    const val OBJECT_PROPS = 262_146
+    const val PARAM_PROPS = 2
+    const val PROP_VOLUME = 65_539
+    const val PROP_MUTE = 65_540
+    const val PROP_CHANNEL_VOLUMES = 65_544
+
     // -- property keys -------------------------------------------------------
+
+    /**
+     * What a node says it is, and the whole of what a device list filters on.
+     * `Audio/Sink` and `Audio/Source` are devices; `Stream/Output/Audio` and
+     * its sibling are somebody playing or recording.
+     */
+    const val KEY_MEDIA_CLASS = "media.class"
+    const val MEDIA_CLASS_SINK = "Audio/Sink"
+    const val MEDIA_CLASS_SOURCE = "Audio/Source"
+
+    const val KEY_OBJECT_SERIAL = "object.serial"
+    const val KEY_NODE_NICK = "node.nick"
+    const val KEY_DEVICE_DESCRIPTION = "device.description"
 
     const val KEY_MEDIA_TYPE = "media.type"
     const val KEY_MEDIA_CATEGORY = "media.category"
