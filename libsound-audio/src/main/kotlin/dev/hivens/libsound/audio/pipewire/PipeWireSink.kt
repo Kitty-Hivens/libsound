@@ -7,6 +7,7 @@ import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.PcmRingBuffer
+import dev.hivens.libsound.audio.realtime.RealtimeThreads
 import dev.hivens.libsound.SinkConfig
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
@@ -40,11 +41,15 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## The playhead is counted, not read off the clock
  *
- * `pw_time.ticks` is the graph's own clock and keeps advancing through an
- * underrun on frames this stream never provided, which is the trap
- * `pa_stream_get_time` and `AudioTimeStamp.mSampleTime` both set. So what is
- * reported is what the callback actually took out of the ring, and a starved
- * stream stalls a consumer's clock instead of running it away.
+ * `pw_time.ticks` is the graph's own clock, described by the header as the time
+ * the remote end is reading and monotonically increasing. Whether it keeps
+ * advancing through an underrun on frames this stream never provided has not
+ * been measured, and section 13.10 of the plan says so rather than this
+ * pretending otherwise. What is reported is the count of frames the callback
+ * actually took out of the ring, which is right either way and needs no such
+ * measurement. `pa_stream_get_time` and `AudioTimeStamp.mSampleTime` each had
+ * that trap and each needed a different correction, so counting is the answer
+ * that does not depend on which kind this turns out to be.
  *
  * ## The process callback runs on the graph's thread
  *
@@ -57,32 +62,55 @@ import java.util.concurrent.atomic.AtomicLong
 internal class PipeWireSink(
     private val loop: PipeWireLoop,
     private val config: SinkConfig,
-    override val capabilities: Capabilities,
+    private val baseCapabilities: Capabilities,
 ) : AudioSink {
 
+    /**
+     * The base set, plus the one entry decided per thread at runtime.
+     *
+     * [Capability.REALTIME_THREAD] cannot be a constant: whether the worker
+     * runs at a priority that will not be preempted depends on a caller asking
+     * for it and a system service agreeing, and a consumer offering the lowest
+     * latency profile needs to know which of those happened.
+     */
+    override val capabilities: Capabilities
+        get() = if (realtimeGranted) {
+            Capabilities(baseCapabilities.supported + Capability.REALTIME_THREAD)
+        } else {
+            baseCapabilities
+        }
+
     private val log = LoggerFactory.getLogger("libsound.PipeWire")
+
+    /** Per thread, because the promotion is per thread and so is the refusal. */
+    private val promotionAttempted = ThreadLocal.withInitial { false }
+
+    @Volatile
+    private var realtimeGranted = false
+
+    private val realtimeRefusalLogged = AtomicBoolean(false)
+
 
     private val lib = loop.lib
 
     private val closed = AtomicBoolean(false)
 
     /**
-     * Guards the stream pointer for its whole use, not only across the swap.
+     * The stream, read and written only under the loop lock.
      *
-     * The same rule the WASAPI sink needed and for the same reason: a caller
-     * that reads the pointer into a local and calls through it afterwards is
-     * safe when the local keeps a Java object alive, and this local is an
-     * address. Everything that dereferences it takes the loop lock, which is
-     * also what libpipewire requires of anything belonging to the loop.
+     * Volatile is not enough on its own and the reason is worth stating: a
+     * caller that reads the pointer into a local and calls through it
+     * afterwards is safe when the local keeps a Java object alive, and this
+     * local is an address. So the read, the null check and the call all happen
+     * inside one `loop.locked`, which is the same lock [disconnectStream]
+     * destroys under. Reading it outside and calling inside would leave the
+     * destroy free to run in between.
      */
     @Volatile
     private var stream: MemorySegment = MemorySegment.NULL
 
     @Volatile
     private var openFormat: AudioFormat? = null
-
-    @Volatile
-    private var running = false
 
     @Volatile
     private var volumeValue = 1f
@@ -92,6 +120,19 @@ internal class PipeWireSink(
 
     /** Periods the callback could not fill from the ring. */
     private val underruns = AtomicLong(0)
+
+    /**
+     * Whether anybody has started feeding this sink since [open].
+     *
+     * The contract says open starts the device, so the graph pulls from the
+     * moment it returns and every period before the first write comes up short.
+     * Counting those would make the number a consumer watches to decide whether
+     * it asked for too short a buffer report a guaranteed burst at every open
+     * and every track change, which is noise in the one place the count is
+     * supposed to be signal.
+     */
+    @Volatile
+    private var fed = false
 
     /** Read by the process callback; replaced wholesale on each open. */
     @Volatile
@@ -133,22 +174,37 @@ internal class PipeWireSink(
     override val acceptedEncodings: Set<PcmEncoding> get() = PcmEncoding.entries.toSet()
 
     /**
-     * The encoding, and whether the graph has a name for every position the
-     * layout claims.
+     * The channel count, the encoding, and whether the graph has a name for
+     * every position the layout claims.
      *
      * Twenty-six of the thirty-six, against the compatibility layer's eighteen.
-     * The ten with none are refused rather than placed as a neighbour, and the
-     * message says to send the same audio with an unspecified layout.
+     * A layout naming one of the other ten is refused rather than placed as a
+     * neighbour, and the message says to send the same audio with an
+     * unspecified layout instead.
+     *
+     * Except at two channels and below, where nothing is refused: there is
+     * nothing to place and every platform agrees, so `binaural` and `downmix`
+     * open and travel as a bare count. That is the rule
+     * [dev.hivens.libsound.Capability.CHANNEL_PLACEMENT] states, and it is what
+     * lets those two through on every backend here.
      */
     override fun accepts(format: AudioFormat): Boolean =
-        !format.layout.isSpecified ||
-            format.channels <= UNIVERSAL_CHANNELS ||
-            SpaPod.positionsOf(format.layout) != null
+        format.channels <= SpaAbi.MAX_CHANNELS &&
+            (
+                !format.layout.isSpecified ||
+                    format.channels <= UNIVERSAL_CHANNELS ||
+                    SpaPod.positionsOf(format.layout) != null
+                )
 
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
         refuseUnacceptable(format)
         disconnectStream()
+        // Cleared before anything is attempted rather than replaced after it
+        // succeeded. An open that throws half way leaves nothing open, and a
+        // consumer walking down a ladder of encodings reads isOpen and format
+        // between the rungs.
+        openFormat = null
 
         frameBytes = format.bytesPerFrame
         val depthFrames = format.framesFor(config.targetNanos)
@@ -161,6 +217,7 @@ internal class PipeWireSink(
         scratch = ByteArray(MAX_FRAMES_PER_PERIOD * frameBytes)
         framesRendered.set(0)
         underruns.set(0)
+        fed = false
 
         val fresh = Arena.ofConfined().use { setup ->
             val props = properties(setup, format)
@@ -197,16 +254,26 @@ internal class PipeWireSink(
         }
 
         stream = fresh
-        openFormat = format
-        awaitReady()
-        // The contract's first rule: open starts the device. A consumer that
-        // wants silence stops immediately after.
-        applyVolume()
-        start()
-        log.info(
-            "stream open: {} ring={} frames, layout {}",
-            format, depthFrames, if (accepts(format)) format.layout else "by count",
-        )
+        // Everything past here can fail, and a sink that failed to open is a
+        // sink that is not open: the stream goes and the format stays null, so
+        // isOpen answers false and write refuses rather than parking on a ring
+        // nothing will ever drain.
+        runCatching {
+            awaitReady()
+            openFormat = format
+            // The contract's first rule: open starts the device. A consumer
+            // that wants silence stops immediately after.
+            applyVolume()
+            start()
+        }.onFailure { failure ->
+            openFormat = null
+            disconnectStream()
+            ring?.close()
+            throw failure as? AudioException ?: AudioException("open failed: ${failure.message}", failure)
+        }
+        // No "by count" case to report: refuseUnacceptable above has already
+        // thrown for every layout this would not honour.
+        log.info("stream open: {} ring={} frames, layout {}", format, depthFrames, format.layout)
     }
 
     override fun write(data: ByteArray, offset: Int, length: Int) {
@@ -217,7 +284,11 @@ internal class PipeWireSink(
         require(length % format.bytesPerFrame == 0) {
             "length ($length) must be a whole number of frames (${format.bytesPerFrame})"
         }
+        if (config.realtime) promoteThisThread()
         val current = ring ?: throw AudioException("write on a closed sink")
+        // From here the device running dry is the consumer falling behind
+        // rather than the consumer not having started.
+        fed = true
         // The pacing point, and it holds no lock of ours: the ring parks on its
         // own condition, so reading the playhead while this is parked costs
         // nothing, which is what the contract asks for.
@@ -238,9 +309,9 @@ internal class PipeWireSink(
         // Ours first, then the graph's. What is in the ring belongs to the old
         // position as much as what the graph is holding.
         ring?.clear()
-        val current = stream
-        if (current.address() == 0L) return
         loop.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             runCatching { lib.handle("pw_stream_flush").invokeExact(current, false) as Int }
                 .onFailure { log.debug("stream flush threw: {}", it.message) }
         }
@@ -260,9 +331,9 @@ internal class PipeWireSink(
         val format = openFormat ?: return 0L
         val buffered = ring?.available() ?: 0
         val ours = format.nanosFor((buffered / format.bytesPerFrame).toLong())
-        val current = stream
-        if (current.address() == 0L) return ours
         return ours + loop.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked 0L
             Arena.ofConfined().use { call ->
                 val time = call.allocate(SpaAbi.TIME_SIZE, 8)
                 val rc = lib.handle("pw_stream_get_time_n")
@@ -276,26 +347,48 @@ internal class PipeWireSink(
     /**
      * The graph's share of the path, in nanoseconds.
      *
-     * `delay` and `queued` are both counted in the rate `pw_time` reports as a
-     * fraction, which is the graph's rather than the stream's: reading them
-     * against the stream's sample rate is right only while the two happen to
-     * agree, and a graph running at 44.1 while a stream asks for 48 is the
-     * ordinary case this library exists to stop mattering.
+     * Three segments, in two different units, and adding them as one number was
+     * wrong. The header draws the path as `queued`, then `buffered`, then
+     * `delay`, and says of the rate field that it is "the rate of ticks and
+     * delay". So only `delay` is in the graph's units.
+     *
+     * `queued` is the sum of the `size` fields of the buffers this client has
+     * handed over, and this client writes frames of its own format into that
+     * field, so it is in the stream's frames. `buffered` is documented as
+     * frames held in the resampler, which sits on the stream's side of the rate
+     * change. Both are converted at the stream's rate and only `delay` at the
+     * graph's.
+     *
+     * A stream at 48 kHz on a graph at 44.1 is where the difference shows, and
+     * that is the ordinary case this library exists to stop mattering rather
+     * than an exotic one.
      */
     private fun graphNanos(time: MemorySegment, format: AudioFormat): Long {
+        val queued = time.get(ValueLayout.JAVA_LONG, SpaAbi.TIME_QUEUED)
+        val buffered = time.get(ValueLayout.JAVA_LONG, SpaAbi.TIME_BUFFERED)
+        val ours = format.nanosFor(maxOf(queued, 0L) + maxOf(buffered, 0L))
+        return ours + delayNanos(time)
+    }
+
+    /**
+     * `pw_time.delay`, in nanoseconds, at the rate the same struct reports.
+     *
+     * Negative is a documented value rather than an error, and it means the
+     * stream is asked for late rather than early. Zero here is the honest
+     * answer where the graph has not yet decided a rate, because a delay
+     * converted at the stream's rate instead would be a number invented from
+     * the wrong clock.
+     */
+    private fun delayNanos(time: MemorySegment): Long {
+        val delay = time.get(ValueLayout.JAVA_LONG, SpaAbi.TIME_DELAY)
+        if (delay <= 0) return 0L
         val num = time.get(ValueLayout.JAVA_INT, SpaAbi.TIME_RATE_NUM)
         val denom = time.get(ValueLayout.JAVA_INT, SpaAbi.TIME_RATE_DENOM)
-        val delay = time.get(ValueLayout.JAVA_LONG, SpaAbi.TIME_DELAY)
-        val queued = time.get(ValueLayout.JAVA_LONG, SpaAbi.TIME_QUEUED)
-        val ticks = delay + queued
-        if (ticks <= 0) return 0L
-        // A fraction of zero either way is a stream the graph has not yet
-        // decided a rate for, and a division by it is worse than a zero.
-        if (num <= 0 || denom <= 0) return format.nanosFor(ticks)
+        if (num <= 0 || denom <= 0) return 0L
         // Split so the multiplication cannot overflow, the same correction the
         // frame arithmetic in AudioFormat carries.
-        val whole = ticks / denom
-        val remainder = ticks % denom
+        val whole = delay / denom
+        val remainder = delay % denom
         return (whole * num * AudioFormat.NANOS_PER_SECOND) +
             (remainder * num * AudioFormat.NANOS_PER_SECOND / denom)
     }
@@ -317,9 +410,9 @@ internal class PipeWireSink(
     }
 
     private fun applyVolume() {
-        val current = stream
-        if (current.address() == 0L) return
         loop.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             runCatching {
                 Arena.ofConfined().use { call ->
                     val values = call.allocate(ValueLayout.JAVA_FLOAT)
@@ -343,6 +436,36 @@ internal class PipeWireSink(
         // Only here. The stream is destroyed, so no callback can be in flight
         // and nothing native still holds a pointer into this arena.
         runCatching { stubArena.close() }
+    }
+
+    /**
+     * Ask for real-time priority for the thread that writes, once per thread.
+     *
+     * Off unless the config asked, because the limit is process wide and not
+     * something a library takes on behalf of a caller that did not. Done at the
+     * call rather than at open because the contract's pacing puts the deadline
+     * on whichever thread writes, and that is not necessarily the one that
+     * opened.
+     *
+     * Failure is not fatal and not silent: the reason goes out once, and
+     * [Capability.REALTIME_THREAD] stays absent, so a settings screen can say
+     * why the lowest profile is not on offer instead of letting somebody pick
+     * one that crackles.
+     */
+    private fun promoteThisThread() {
+        if (promotionAttempted.get()) return
+        promotionAttempted.set(true)
+        val refusal = RealtimeThreads.promoteCurrentThread()
+        if (refusal == null) {
+            realtimeGranted = true
+            log.info("the writer thread runs at real-time priority")
+        } else if (realtimeRefusalLogged.compareAndSet(false, true)) {
+            log.info(
+                "no real-time priority for the writer thread ({}); the lowest latency profiles will " +
+                    "underrun under load",
+                refusal,
+            )
+        }
     }
 
     // -- the callbacks, on the graph's own thread -----------------------------
@@ -413,8 +536,10 @@ internal class PipeWireSink(
 
         if (real > 0) framesRendered.addAndGet((real / bytesPerFrame).toLong())
         // A short read is the graph asking for audio nobody had ready. One
-        // atomic increment, which is what this may cost on this thread.
-        if (real < wanted) underruns.incrementAndGet()
+        // atomic increment, which is what this may cost on this thread. Not
+        // counted before the first write, where a dry ring is the ordinary
+        // state of a sink that has been opened and not yet fed.
+        if (real < wanted && fed) underruns.incrementAndGet()
     }
 
     /** Wakes whoever is waiting for the stream to reach a state. */
@@ -531,17 +656,17 @@ internal class PipeWireSink(
     }
 
     private fun setActive(active: Boolean) {
-        val current = stream
-        if (current.address() == 0L) return
         loop.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             runCatching { lib.handle("pw_stream_set_active").invokeExact(current, active) as Int }
                 .onFailure { log.debug("set_active({}) threw: {}", active, it.message) }
-            running = active
-            // A stream that has stopped will never take from the ring again, so
-            // a producer parked in write has to be woken to re-check rather
-            // than left to discover it at a timeout it does not have. It does
-            // not free it: the ring is still full, so the loop parks again, and
-            // close is the escape.
+            // Whoever is parked on the loop's own condition is woken to
+            // re-read the state. A producer parked in write is not one of
+            // them: it waits on the ring's condition, which this cannot reach
+            // and does not try to. Stopping a full sink leaves that producer
+            // parked until flush or close, which is what the contract promises
+            // and no more.
             loop.signal()
         }
     }
@@ -555,34 +680,57 @@ internal class PipeWireSink(
      * rather than hang on.
      */
     private fun awaitReady() {
-        val current = stream
-        if (current.address() == 0L) return
         val deadline = System.nanoTime() + READY_TIMEOUT_NANOS
-        loop.locked {
+        val timedOut = loop.locked {
             while (System.nanoTime() < deadline) {
+                // Re-read under the lock every time round. The wait below
+                // releases it, and a close in that window destroys the stream:
+                // a pointer taken before the loop would be read again after it
+                // had been freed.
+                val current = stream
+                if (current.address() == 0L) return@locked false
                 val state = Arena.ofConfined().use { call ->
                     lib.handle("pw_stream_get_state").invokeExact(current, call.allocate(ValueLayout.ADDRESS)) as Int
                 }
                 if (state == SpaAbi.STREAM_STATE_ERROR) throw AudioException("the stream went to error")
-                if (state != SpaAbi.STREAM_STATE_CONNECTING && state != SpaAbi.STREAM_STATE_UNCONNECTED) return
-                loop.await()
+                if (state != SpaAbi.STREAM_STATE_CONNECTING && state != SpaAbi.STREAM_STATE_UNCONNECTED) {
+                    return@locked false
+                }
+                // Bounded, because the unbounded sibling never returns on a
+                // graph that stops changing the state: the deadline above is
+                // only reached by waking up, and nothing is obliged to wake it.
+                loop.awaitFor(READY_WAIT_SECONDS)
             }
+            true
         }
-        log.warn("the stream did not leave connecting within {} ms", READY_TIMEOUT_NANOS / 1_000_000)
+        // Reported by failing, not by a line in a log. A consumer whose open
+        // returned believes it has a stream, writes into it, and parks on a
+        // ring that nothing drains, which is a worse way to learn the graph
+        // never answered than an exception at the call it made.
+        if (timedOut) {
+            throw AudioException(
+                "the stream did not leave connecting within ${READY_TIMEOUT_NANOS / 1_000_000} ms",
+            )
+        }
     }
 
+    /**
+     * Destroy the stream, with the claim and the destroy under one lock.
+     *
+     * The lock is what makes the pointer safe to use rather than merely safe to
+     * swap. Everything that dereferences it reads the field inside the same
+     * `loop.locked`, so a reader either finds it alive, in which case this waits
+     * for the lock, or finds null. Claiming it under a monitor of our own and
+     * destroying it under the loop's would leave a reader holding a pointer
+     * across the window between the two, which is a read of freed memory inside
+     * libpipewire and, through the volume control, a write.
+     */
     private fun disconnectStream() {
-        // Claim the pointer before touching it, so two threads cannot walk away
-        // with the same stream and destroy it twice.
-        val current = synchronized(this) {
-            val held = stream
-            stream = MemorySegment.NULL
-            held
-        }
-        running = false
-        if (current.address() == 0L) return
         runCatching {
             loop.locked {
+                val current = stream
+                if (current.address() == 0L) return@locked
+                stream = MemorySegment.NULL
                 lib.handle("pw_stream_disconnect").invokeExact(current) as Int
                 lib.handle("pw_stream_destroy").invokeExact(current) as Unit
             }
@@ -592,6 +740,11 @@ internal class PipeWireSink(
     /** The refusal [accepts] promised, naming the position that could not be placed. */
     private fun refuseUnacceptable(format: AudioFormat) {
         if (accepts(format)) return
+        if (format.channels > SpaAbi.MAX_CHANNELS) {
+            throw AudioException(
+                "the graph carries at most ${SpaAbi.MAX_CHANNELS} channels and this asks for ${format.channels}",
+            )
+        }
         val position = format.layout.positions.firstOrNull { SpaAbi.channelOf(it) == null }
         throw AudioException(
             "the graph has no channel position for $position in ${format.layout}; " +
@@ -617,5 +770,8 @@ internal class PipeWireSink(
         const val MAX_FRAMES_PER_PERIOD = 8_192
 
         const val READY_TIMEOUT_NANOS = 2_000_000_000L
+
+        /** The bounded wait's own ceiling, past the deadline above so the deadline decides. */
+        const val READY_WAIT_SECONDS = 3
     }
 }

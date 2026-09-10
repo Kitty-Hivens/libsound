@@ -388,9 +388,9 @@ internal class PulseSink(
     override fun stop() = cork(true)
 
     override fun flush() {
-        val current = stream
-        if (current.address() == 0L) return
         pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             val op = lib.handle("pa_stream_flush")
                 .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
             pulse.releaseOperation(op)
@@ -398,10 +398,10 @@ internal class PulseSink(
     }
 
     override fun framePosition(): Long {
-        val current = stream
         val format = openFormat ?: return 0L
-        if (current.address() == 0L) return lastKnownFrames
         return pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked lastKnownFrames
             Arena.ofConfined().use { call ->
                 val out = call.allocate(ValueLayout.JAVA_LONG)
                 val rc = lib.handle("pa_stream_get_time").invokeExact(current, out) as Int
@@ -420,9 +420,9 @@ internal class PulseSink(
     }
 
     override fun latencyNanos(): Long {
-        val current = stream
-        if (current.address() == 0L) return 0L
         return pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked 0L
             Arena.ofConfined().use { call ->
                 val usec = call.allocate(ValueLayout.JAVA_LONG)
                 val negative = call.allocate(ValueLayout.JAVA_INT)
@@ -489,9 +489,9 @@ internal class PulseSink(
     }
 
     private fun cork(on: Boolean) {
-        val current = stream
-        if (current.address() == 0L) return
         pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             val op = lib.handle("pa_stream_cork")
                 .invokeExact(current, if (on) 1 else 0, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
             pulse.releaseOperation(op)
@@ -524,9 +524,9 @@ internal class PulseSink(
      * the playhead can answer would hand the clock a stream that looks stopped.
      */
     private fun awaitTimingInfo() {
-        val current = stream
-        if (current.address() == 0L) return
         pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             val op = lib.handle("pa_stream_update_timing_info")
                 .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
             pulse.releaseOperation(op)
@@ -534,6 +534,8 @@ internal class PulseSink(
         val deadline = System.nanoTime() + TIMING_TIMEOUT_NANOS
         while (System.nanoTime() < deadline) {
             val ready = pulse.locked {
+                val current = stream
+                if (current.address() == 0L) return@locked true
                 Arena.ofConfined().use { call ->
                     val out = call.allocate(ValueLayout.JAVA_LONG)
                     (lib.handle("pa_stream_get_time").invokeExact(current, out) as Int) == 0
