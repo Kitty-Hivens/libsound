@@ -310,9 +310,30 @@ internal object SpaAbi {
     const val NODE_METHOD_ENUM_PARAMS = 24L
     const val NODE_METHOD_SET_PARAM = 32L
 
-    /** `pw_node_info`, of which one field is read. */
+    /** `pw_node_info`, of which three fields are read. */
     const val NODE_INFO_SIZE = 72L
+    const val NODE_INFO_CHANGE_MASK = 16L
     const val NODE_INFO_STATE = 32L
+
+    /**
+     * The node's own property dict, which is a larger set than the one the
+     * registry global carries.
+     *
+     * Measured, and the difference matters: `application.process.id` is on this
+     * one and not on the global's, so a mixer that read only the global could
+     * not tell which rows belong to the process it is running in.
+     */
+    const val NODE_INFO_PROPS = 48L
+
+    /**
+     * Which fields the info event actually refreshed.
+     *
+     * A pointer whose bit is clear has not been filled in, so reading the props
+     * off every info event would sooner or later read one the event did not
+     * carry.
+     */
+    const val NODE_CHANGE_MASK_STATE = 0x0000_0004L
+    const val NODE_CHANGE_MASK_PROPS = 0x0000_0008L
 
     /**
      * A node the server has closed the hardware for because nothing is using
@@ -320,6 +341,15 @@ internal object SpaAbi {
      * libpulse side reports as suspended.
      */
     const val NODE_STATE_SUSPENDED = 1
+
+    /**
+     * A node that is actually rendering, against one attached and idle.
+     *
+     * What a mixer greys a row for: a paused player holds its node open and
+     * produces nothing, and the row belongs on screen either way, which is why
+     * this is a field rather than a reason to leave it out of the list.
+     */
+    const val NODE_STATE_RUNNING = 3
 
     // -- metadata, which is where the default device lives -------------------
 
@@ -432,6 +462,15 @@ internal object SpaAbi {
 
     /** Which client a node belongs to, so a mixer can tell its own rows apart. */
     const val KEY_CLIENT_ID = "client.id"
+
+    /**
+     * Which process a node belongs to.
+     *
+     * How a mixer marks its own rows. The client id would do it on the
+     * connection that made the stream, and a mixer is a second connection with
+     * a client id of its own, so the process is the thing both sides agree on.
+     */
+    const val KEY_APP_PROCESS_ID = "application.process.id"
 
     const val KEY_NODE_LATENCY = "node.latency"
     const val KEY_NODE_RATE = "node.rate"

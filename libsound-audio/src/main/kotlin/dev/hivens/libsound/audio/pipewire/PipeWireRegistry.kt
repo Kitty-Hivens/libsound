@@ -2,7 +2,10 @@ package dev.hivens.libsound.audio.pipewire
 
 import dev.hivens.libsound.AudioDevice
 import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.MediaRole
+import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.StreamDirection
+import dev.hivens.libsound.audio.pulse.PulseStreamHandle
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -79,15 +82,41 @@ internal class PipeWireRegistry private constructor(
     private val nodes = ConcurrentHashMap<Int, GraphNode>()
 
     /**
-     * One audio node, and which lists it belongs on.
+     * One audio node, whether it is something to play to or somebody playing.
      *
-     * A set rather than the device's own field because the graph has nodes that
-     * are both: `Audio/Duplex` is one device that plays and records, and it has
-     * to appear in each list with that list's direction stamped on it.
+     * Both kinds in one map rather than two, because everything after the
+     * `media.class` is identical: each is bound, each is subscribed to the same
+     * parameter, each reports its volume and its state through the same two
+     * callbacks. Splitting them would be that machinery written twice.
+     *
+     * [directions] is a set because the graph has devices that are both:
+     * `Audio/Duplex` plays and records, and appears in each list with that
+     * list's direction stamped on it. For a stream it holds the one direction
+     * it flows in, and [isStream] is what tells the two kinds apart.
      */
     private data class GraphNode(
-        val device: AudioDevice,
+        /** `node.name`, the stable identity a target names. */
+        val name: String,
+        /** What a person reads, which falls back to the name. */
+        val label: String,
         val directions: Set<StreamDirection>,
+        val isStream: Boolean,
+        /**
+         * The serial that names this object for the life of the graph, which is
+         * what a [dev.hivens.libsound.StreamId] carries.
+         */
+        val serial: Long,
+        /**
+         * The global's own property dict.
+         *
+         * Kept whole for streams, where a mixer row is most of it: the
+         * application's name, its icon, what it is playing and what it says the
+         * audio is for. A device row needs three of them and they are read out
+         * above, so this is here for the rows that need the rest.
+         */
+        val properties: Map<String, String>,
+        val volume: Float? = null,
+        val muted: Boolean? = null,
         /**
          * How many channels the node's volume has, as its own parameter
          * reported it, or zero until one has arrived.
@@ -97,7 +126,45 @@ internal class PipeWireRegistry private constructor(
          * and leaves four where they were.
          */
         val volumeChannels: Int = 0,
-    )
+        val suspended: Boolean = false,
+        /** True while the node is actually rendering rather than merely attached. */
+        val running: Boolean = false,
+    ) {
+        /**
+         * The device row this node makes, in one direction.
+         *
+         * isMonitor stays false and that is not a default standing in for the
+         * unknown. A sink's monitor is ports on the sink's own node here rather
+         * than a node of its own, so there is nothing in this list that is one:
+         * what `pipewire-pulse` presents as `<sink>.monitor` it synthesises, and
+         * the graph carries no such object. Measured on a graph whose only node
+         * was a null sink, where the pulse protocol listed a monitor source and
+         * the node list had none.
+         */
+        fun asDevice(direction: StreamDirection, isDefault: Boolean): AudioDevice = AudioDevice(
+            id = DeviceId(name),
+            name = label,
+            isDefault = isDefault,
+            direction = direction,
+            volume = volume,
+            muted = muted,
+            isSuspended = suspended,
+        )
+    }
+
+    /**
+     * Which link joins which two nodes, by the link's own global id.
+     *
+     * The only thing on the graph that says where a stream's audio goes. A
+     * stream names a target only when it asked for one and most do not, so a
+     * mixer row's device is found by following the link out of that stream's
+     * node rather than by reading any property of the stream.
+     *
+     * A pair of node ids rather than the ports they joined: several links carry
+     * one stream, one per channel, and for this question they all answer the
+     * same.
+     */
+    private val links = ConcurrentHashMap<Int, Pair<Int, Int>>()
 
     /**
      * What the session manager currently calls the default, by `node.name`.
@@ -182,8 +249,8 @@ internal class PipeWireRegistry private constructor(
     fun devices(direction: StreamDirection): List<AudioDevice> {
         val default = defaultName(direction)
         return nodes.values.asSequence()
-            .filter { direction in it.directions }
-            .map { it.device.copy(direction = direction, isDefault = it.device.id.value == default) }
+            .filter { !it.isStream && direction in it.directions }
+            .map { it.asDevice(direction, it.name == default) }
             .sortedWith(compareByDescending<AudioDevice> { it.isDefault }.thenBy { it.name })
             .toList()
     }
@@ -201,8 +268,8 @@ internal class PipeWireRegistry private constructor(
     fun defaultDevice(direction: StreamDirection): AudioDevice? {
         val default = defaultName(direction) ?: return null
         return nodes.values
-            .firstOrNull { direction in it.directions && it.device.id.value == default }
-            ?.device?.copy(direction = direction, isDefault = true)
+            .firstOrNull { !it.isStream && direction in it.directions && it.name == default }
+            ?.asDevice(direction, isDefault = true)
     }
 
     /**
@@ -213,6 +280,62 @@ internal class PipeWireRegistry private constructor(
      * application and a caller would be handed its audio instead.
      */
     fun isPlaying(serial: Long): Boolean = playing.containsKey(serial)
+
+    /**
+     * Everybody using the graph, in both directions, as a mixer draws them.
+     *
+     * Most of a row is the global's own property dict and needs nothing asked
+     * for. The volume and the mute come from the parameter every audio node is
+     * subscribed to, and the device from following the node's links, which is
+     * the only thing on the graph that says where a stream's audio goes.
+     *
+     * A row whose serial the graph never gave is left out. The serial is the
+     * whole of the identity a caller gets back, and one that cannot be named
+     * cannot be acted on, so offering it would be offering a row whose slider
+     * does nothing.
+     */
+    fun streams(ourProcess: Long): List<AudioStream> = nodes.entries.asSequence()
+        .filter { it.value.isStream && it.value.serial != NO_SERIAL }
+        .mapNotNull { (id, node) -> row(id, node, ourProcess) }
+        .sortedBy { it.applicationName ?: it.id.value }
+        .toList()
+
+    private fun row(id: Int, node: GraphNode, ourProcess: Long): AudioStream? {
+        val direction = node.directions.firstOrNull() ?: return null
+        // The same shape the libpulse mixer hands out, because a consumer holds
+        // one id and may take it to either. Its number is the object serial,
+        // which is also the index `pipewire-pulse` gives the same object.
+        if (node.serial > Int.MAX_VALUE) return null
+        val handle = PulseStreamHandle(direction, node.serial.toInt())
+        val properties = node.properties
+        return AudioStream(
+            id = handle.id(),
+            applicationName = properties[SpaAbi.KEY_APP_NAME] ?: node.label,
+            applicationId = properties[SpaAbi.KEY_APP_ID],
+            iconName = properties[SpaAbi.KEY_APP_ICON_NAME],
+            mediaName = properties[SpaAbi.KEY_MEDIA_NAME],
+            mediaRole = roleOf(properties[SpaAbi.KEY_MEDIA_ROLE]),
+            device = deviceOf(id, direction),
+            volume = node.volume ?: 1f,
+            muted = node.muted ?: false,
+            active = node.running,
+            isOurs = properties[SpaAbi.KEY_APP_PROCESS_ID]?.toLongOrNull() == ourProcess,
+            direction = direction,
+        )
+    }
+
+    /**
+     * What the node calls its role, back into the enum a consumer knows.
+     *
+     * Case-insensitively, because the two sides disagree about it: the wire
+     * names are lower case and this library's own streams write them capitalised,
+     * which is what the graph's own tools show. A role this has no name for is
+     * null rather than a guess.
+     */
+    private fun roleOf(role: String?): MediaRole? {
+        if (role == null) return null
+        return MediaRole.entries.firstOrNull { it.wireName.equals(role, ignoreCase = true) }
+    }
 
     fun onChanged(handler: () -> Unit): () -> Unit {
         listeners.add(handler)
@@ -266,6 +389,7 @@ internal class PipeWireRegistry private constructor(
             when (type.readCString()) {
                 SpaAbi.INTERFACE_NODE -> addNode(id, readDict(props))
                 SpaAbi.INTERFACE_METADATA -> bindDefaults(id, readDict(props))
+                SpaAbi.INTERFACE_LINK -> addLink(id, readDict(props))
                 else -> return@runCatching
             }
         }.onFailure { log.debug("registry global threw: {}", it.message) }
@@ -285,6 +409,9 @@ internal class PipeWireRegistry private constructor(
             }
             releaseNode(id)
             playing.entries.removeIf { it.value == id }
+            // A link going is a stream that stopped playing to something, which
+            // is a row whose device changed rather than a row that left.
+            if (links.remove(id) != null) fire()
             if (nodes.remove(id) != null) fire()
         }.onFailure { log.debug("registry global_remove threw: {}", it.message) }
     }
@@ -341,19 +468,16 @@ internal class PipeWireRegistry private constructor(
             if (id != SpaAbi.PARAM_PROPS) return
             val node = data.address().toInt()
             val held = nodes[node] ?: return
-            val current = held.device
             val props = SpaPodReader.objectProperties(param)
             val channels = props[SpaAbi.PROP_CHANNEL_VOLUMES] as? FloatArray
             val volume = channels?.maxOrNull() ?: props[SpaAbi.PROP_VOLUME] as? Float
             val muted = props[SpaAbi.PROP_MUTE] as? Boolean
             if (volume == null && muted == null) return
             nodes[node] = held.copy(
-                device = current.copy(
-                    // What the node did not say keeps what it said last,
-                    // because a parameter arrives whole only the first time.
-                    volume = volume?.coerceIn(0f, 1f) ?: current.volume,
-                    muted = muted ?: current.muted,
-                ),
+                // What the node did not say keeps what it said last, because a
+                // parameter arrives whole only the first time.
+                volume = volume?.coerceIn(0f, 1f) ?: held.volume,
+                muted = muted ?: held.muted,
                 volumeChannels = channels?.size ?: held.volumeChannels,
             )
             fire()
@@ -373,11 +497,33 @@ internal class PipeWireRegistry private constructor(
             if (info.address() == 0L) return
             val node = data.address().toInt()
             val held = nodes[node] ?: return
-            val state = info.reinterpret(SpaAbi.NODE_INFO_SIZE)
-                .get(ValueLayout.JAVA_INT, SpaAbi.NODE_INFO_STATE)
+            val whole = info.reinterpret(SpaAbi.NODE_INFO_SIZE)
+            val changed = whole.get(ValueLayout.JAVA_LONG, SpaAbi.NODE_INFO_CHANGE_MASK)
+            val state = whole.get(ValueLayout.JAVA_INT, SpaAbi.NODE_INFO_STATE)
             val suspended = state == SpaAbi.NODE_STATE_SUSPENDED
-            if (suspended == held.device.isSuspended) return
-            nodes[node] = held.copy(device = held.device.copy(isSuspended = suspended))
+            // Running rather than merely attached, which is what a mixer greys
+            // a row for: a paused player holds its node open and renders
+            // nothing, and the row belongs on screen either way.
+            val running = state == SpaAbi.NODE_STATE_RUNNING
+            // The node's own dict, which is a larger set than the registry
+            // global's: an application's process id is on this one and not on
+            // that one, so a mixer reading only the global could not tell which
+            // rows belong to the process it is running in. Read only when the
+            // event says it refreshed the pointer, and merged rather than
+            // replacing, because an event that carried none should not empty
+            // what the global already said.
+            val refreshed = if (changed and SpaAbi.NODE_CHANGE_MASK_PROPS != 0L) {
+                val dict = whole.get(ValueLayout.ADDRESS, SpaAbi.NODE_INFO_PROPS)
+                if (dict.address() == 0L) emptyMap() else readDict(dict)
+            } else {
+                emptyMap()
+            }
+            if (suspended == held.suspended && running == held.running && refreshed.isEmpty()) return
+            nodes[node] = held.copy(
+                suspended = suspended,
+                running = running,
+                properties = if (refreshed.isEmpty()) held.properties else held.properties + refreshed,
+            )
             fire()
         }.onFailure { log.debug("node info threw: {}", it.message) }
     }
@@ -434,18 +580,10 @@ internal class PipeWireRegistry private constructor(
 
     private fun addNode(id: Int, entries: Map<String, String>) {
         val mediaClass = entries[SpaAbi.KEY_MEDIA_CLASS] ?: return
-        // Somebody playing rather than something to play to. Kept for one
-        // question, which is whether a stream a caller asked to record is still
-        // there, and kept out of the device list for the reason the rest of
-        // this is: a device menu offering a running application as an output is
-        // a menu with a broken row.
-        if (mediaClass == SpaAbi.MEDIA_CLASS_STREAM_OUTPUT) {
-            entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull()?.let { playing[it] = id }
-            return
-        }
-        val directions = directionsOf(mediaClass)
-        // A filter, a video node, or a capture stream, and none of them is
-        // anything this answers a question about.
+        val streaming = streamDirectionOf(mediaClass)
+        val directions = streaming?.let { setOf(it) } ?: directionsOf(mediaClass)
+        // A filter, a video node, or anything else the graph carries that is
+        // neither a device nor somebody using one.
         if (directions.isEmpty()) return
         // node.name is the stable identity a target.object is named by, and
         // the description is what a person reads. Falling back to the name
@@ -455,24 +593,62 @@ internal class PipeWireRegistry private constructor(
             ?: entries[SpaAbi.KEY_NODE_NICK]
             ?: entries[SpaAbi.KEY_DEVICE_DESCRIPTION]
             ?: name
+        val serial = entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull() ?: NO_SERIAL
         nodes[id] = GraphNode(
-            // isMonitor stays false and that is not a default standing in for
-            // the unknown. A sink's monitor is ports on the sink's own node
-            // here rather than a node of its own, so there is nothing in this
-            // list that is one: what `pipewire-pulse` presents as
-            // `<sink>.monitor` it synthesises, and the graph carries no such
-            // object. Measured on a graph whose only node was a null sink,
-            // where the pulse protocol listed a monitor source and the node
-            // list had none.
-            device = AudioDevice(id = DeviceId(name), name = label),
+            name = name,
+            label = label,
             directions = directions,
+            isStream = streaming != null,
+            serial = serial,
+            properties = entries,
         )
+        // What a capture aimed at one application checks against. Playback only,
+        // because recording something that is itself recording is not a thing
+        // this offers.
+        if (streaming == StreamDirection.PLAYBACK && serial != NO_SERIAL) playing[serial] = id
         bindNode(id)
         fire()
     }
 
     /**
-     * Which lists a `media.class` puts a node on.
+     * One link, kept for the one question it answers.
+     *
+     * Both ends arrive on the global's own dict as decimal node ids, so this
+     * needs no bind and no round trip, the same as a device row.
+     */
+    private fun addLink(id: Int, entries: Map<String, String>) {
+        val output = entries[SpaAbi.KEY_LINK_OUTPUT_NODE]?.toIntOrNull() ?: return
+        val input = entries[SpaAbi.KEY_LINK_INPUT_NODE]?.toIntOrNull() ?: return
+        links[id] = output to input
+        fire()
+    }
+
+    /**
+     * The device at the far end of a stream's links, or null while it is
+     * attached to nothing.
+     *
+     * Audio leaves a playback stream and enters a device, and enters a capture
+     * stream having left one, so which end to follow depends on which way the
+     * row flows. Several links carry one stream, one per channel, and they all
+     * lead to the same node, so the first that lands on a device is the answer.
+     *
+     * Null is a real state rather than a gap: a stream the session manager has
+     * not placed yet, or one whose target went away, is attached to nothing for
+     * as long as that lasts.
+     */
+    private fun deviceOf(node: Int, direction: StreamDirection): DeviceId? {
+        val far = links.values.asSequence().mapNotNull { (output, input) ->
+            when {
+                direction == StreamDirection.PLAYBACK && output == node -> input
+                direction == StreamDirection.CAPTURE && input == node -> output
+                else -> null
+            }
+        }
+        return far.mapNotNull { nodes[it] }.firstOrNull { !it.isStream }?.let { DeviceId(it.name) }
+    }
+
+    /**
+     * Which lists a `media.class` puts a device on.
      *
      * Prefix rather than equality, because the graph qualifies these: a
      * loopback microphone is `Audio/Source/Virtual`, and matching the bare name
@@ -485,6 +661,21 @@ internal class PipeWireRegistry private constructor(
         mediaClass.startsWith(SpaAbi.MEDIA_CLASS_SINK) -> setOf(StreamDirection.PLAYBACK)
         mediaClass.startsWith(SpaAbi.MEDIA_CLASS_SOURCE) -> setOf(StreamDirection.CAPTURE)
         else -> emptySet()
+    }
+
+    /**
+     * Which way somebody's audio flows, or null where the node is not somebody
+     * but something.
+     *
+     * The graph's own names read the opposite way round from a mixer's: a node
+     * playing music is a `Stream/Output/Audio`, because the audio leaves it,
+     * and a mixer calls that row playback. One is about the node's ports and the
+     * other about the person looking at the screen.
+     */
+    private fun streamDirectionOf(mediaClass: String): StreamDirection? = when (mediaClass) {
+        SpaAbi.MEDIA_CLASS_STREAM_OUTPUT -> StreamDirection.PLAYBACK
+        SpaAbi.MEDIA_CLASS_STREAM_INPUT -> StreamDirection.CAPTURE
+        else -> null
     }
 
     /**
@@ -543,7 +734,8 @@ internal class PipeWireRegistry private constructor(
     fun setNodeProps(name: String, volume: Float?, muted: Boolean?): Boolean {
         if (closed.get()) return false
         return loop.locked {
-            val entry = nodes.entries.firstOrNull { it.value.device.id.value == name } ?: return@locked false
+            val entry = nodes.entries.firstOrNull { !it.value.isStream && it.value.name == name }
+                ?: return@locked false
             val proxy = nodeProxies[entry.key] ?: return@locked false
             val channels = entry.value.volumeChannels
             if (volume != null && channels <= 0) return@locked false
@@ -878,6 +1070,9 @@ internal class PipeWireRegistry private constructor(
 
         /** No sequence outstanding. Real ones are assigned by the protocol and positive. */
         private const val NO_SEQ = -1
+
+        /** No serial. Real ones are assigned by the graph and positive. */
+        private const val NO_SERIAL = 0L
 
         /**
          * How long a connect waits for the graph to answer a sync.

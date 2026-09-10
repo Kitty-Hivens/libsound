@@ -634,6 +634,19 @@ internal class PipeWireSink(
             add(SpaAbi.KEY_NODE_DESCRIPTION to config.applicationName)
             config.applicationId?.let { add(SpaAbi.KEY_APP_ID to it) }
             config.iconName?.let { add(SpaAbi.KEY_APP_ICON_NAME to it) }
+            // Which process this belongs to, which is how a mixer marks its
+            // own rows.
+            //
+            // Set here because the graph does not set it for a stream: it
+            // fills in the process binary, host and user by itself and leaves
+            // the id out, measured by removing this line and watching our own
+            // stream stop being recognised as ours. A node made through the
+            // pulse compatibility layer carries it, because the shim copies the
+            // client's whole property set onto the node.
+            //
+            // It goes to the local sound daemon, which already knows which
+            // process connected to it, and no further.
+            add(SpaAbi.KEY_APP_PROCESS_ID to ProcessHandle.current().pid().toString())
             // The lever the compatibility layer overwrites. A quantum in the
             // stream's own rate, which is what a node asks the graph for.
             add(SpaAbi.KEY_NODE_LATENCY to "${format.framesFor(config.targetNanos)}/${format.sampleRate}")
