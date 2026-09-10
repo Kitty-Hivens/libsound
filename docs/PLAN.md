@@ -1302,11 +1302,14 @@ the second covers what binding the metadata object inside that burst asked for.
 Measured to be load bearing rather than assumed, on a graph with one sink, where
 the default read after the first sync was null and after the second was the sink.
 
-**Creating devices is not in this section either.** `createVirtualSink` and
-`combineSinks` load server modules through the pulse protocol today, and they
-keep doing that until something says otherwise. A null sink is a system-wide
-object with a restore obligation attached, and it is a different subject from a
-stream this process plays through.
+**Creating devices is not in this section.** `createVirtualSink` and
+`combineSinks` load server modules through the pulse protocol today. That is
+where they are rather than where they have to be: `create_object` on the core
+would make one natively, with a lifetime tied to the connection instead of to the
+server. Section 13.11 weighs the two. What this section says is only that a null
+sink is a system-wide object with a restore obligation attached, which is a
+different subject from a stream this process plays through, and that nothing here
+changes how they are made.
 
 ### 13.9 Selection, and what happens on a machine without a graph
 
@@ -1417,22 +1420,43 @@ mechanism this backend already uses:
 | `onStreamsChanged` | The registry's own event stream, filtered the way the device list is. |
 | `meter` | A capture stream aimed at the node, which is what per-application capture already builds. |
 
-**What it does not cover, and this is the reason it is a half.** Cards, profiles
-and ports are the `Device` interface with its `Profile` and `Route` parameters,
-which is a second object type and a second parameter vocabulary. Virtual and
-combined sinks load server modules, and 13.8 already says those keep going
-through the pulse protocol: a null sink is a system-wide object with a restore
-obligation on it, which is a different subject from a stream this process plays
-through.
+**What it does not cover, and the reason is scope rather than reach.** An
+earlier draft of this paragraph said cards and virtual devices stay on the pulse
+protocol, and cited 13.8 for it. That was citing a decision as though it were a
+property of the graph, which it is not.
+
+Everything on that list is reachable, checked against the installed headers:
+cards and profiles are `PipeWire:Interface:Device` with `SPA_PARAM_EnumProfile`
+and `SPA_PARAM_Profile`, ports are `SPA_PARAM_EnumRoute` and `SPA_PARAM_Route` on
+the same object, and both are the bind, the subscription and the setter this
+already uses on a node, one interface along. A virtual sink is `create_object` on
+the core, whose offset the oracle has printed since the first day, and a combined
+one has a factory shipped beside it.
+
+One of them would not be a translation, and that is worth deciding rather than
+inheriting. An object made with `create_object` belongs to the connection that
+asked for it and goes when that connection goes, where a server module outlives
+its client. `createVirtualSink` is documented under an obligation about exactly
+that, a device left behind that nothing owns, so the connection-scoped lifetime
+is the better of the two rather than a shortfall.
 
 **Which means selection has the shape 13.9 already worked out.** The pulse mixer
-covers more, the native one covers what the graph owns, and neither is a subset
-of the other in the way that matters, so `VolumeMixers.open` takes the same
-optional set of capabilities `AudioBackends.open` does and answers with the
-first that offers them. The machine with no shim gets a mixer for the first
-time, and nothing anywhere loses one.
+covers more of the interface today, the native one covers what has been built,
+and neither is a subset of the other in the way that matters, so
+`VolumeMixers.open` takes the same optional set of capabilities
+`AudioBackends.open` does and answers with the first that offers them. The
+machine with no shim gets a mixer for the first time, and nothing anywhere loses
+one.
 
-**Not in this pull request.** The work that is in it is a backend and the repair
-a review found it needed, and a second interface the size of `VolumeMixer` on
-top of that would be one change nobody could read. The decision is recorded here
-so the next one starts from it rather than from the question.
+That ordering rests on today's coverage rather than on anything permanent. Close
+the four and the wider mixer is the native one, and the order should turn over
+the way the backends' did.
+
+**Built, on a branch of its own.** Streams, their volume and mute, moving one,
+each device's volume and mute, choosing the default, and the three events a
+consumer subscribes for, worked out from the one coarse signal the graph gives.
+
+**Still open inside it**, and each is named rather than left to be discovered:
+metering, which needs a capture stream aimed at a node and a loop of its own,
+since putting it on the connection this uses would have a meter's callback hold
+up the registry's dispatch; and the four above.
