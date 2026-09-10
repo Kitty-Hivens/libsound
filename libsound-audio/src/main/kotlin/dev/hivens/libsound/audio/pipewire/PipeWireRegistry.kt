@@ -48,8 +48,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the one parameter that carries the volume and the mute, which is why a slider
  * somebody else moved arrives here as an event rather than at the next re-read.
  *
- * Nothing else on the graph is bound. What is playing, how loud and where is
- * `VolumeMixer`'s question, and this is not a second one.
+ * Nothing else is bound. What else is on the graph it merely hears: the running
+ * applications go into a set of their own, keyed by the serial that names one
+ * for good, and that set answers one question, which is whether a stream
+ * somebody asked to record is still there.
+ *
+ * What is playing, how loud and where remains `VolumeMixer`'s question, and
+ * this is not a second one.
  */
 internal class PipeWireRegistry private constructor(
     private val loop: PipeWireLoop,
@@ -93,6 +98,17 @@ internal class PipeWireRegistry private constructor(
 
     @Volatile
     private var metadata: MemorySegment = MemorySegment.NULL
+
+    /**
+     * Every application currently playing, by the serial that names it for good.
+     *
+     * Not a device list and never offered as one. It answers exactly one
+     * question, asked before a capture stream is aimed at one of them: is the
+     * thing a caller wants to record still on the graph. Getting that wrong
+     * would record a different application, or a microphone, which is the one
+     * mistake this feature must not make.
+     */
+    private val playing = ConcurrentHashMap<Long, Int>()
 
     /**
      * A proxy and a listener hook for every audio node, and the hooks going
@@ -162,6 +178,15 @@ internal class PipeWireRegistry private constructor(
         return nodes.values.firstOrNull { it.direction == direction && it.id.value == default }
             ?.copy(isDefault = true)
     }
+
+    /**
+     * Whether the graph still carries the application a capture was aimed at.
+     *
+     * The serial rather than the global id, because a global id is recycled and
+     * a serial is not: an id that has come round again would name a different
+     * application and a caller would be handed its audio instead.
+     */
+    fun isPlaying(serial: Long): Boolean = playing.containsKey(serial)
 
     fun onChanged(handler: () -> Unit): () -> Unit {
         listeners.add(handler)
@@ -233,6 +258,7 @@ internal class PipeWireRegistry private constructor(
                 fire()
             }
             releaseNode(id)
+            playing.entries.removeIf { it.value == id }
             if (nodes.remove(id) != null) fire()
         }.onFailure { log.debug("registry global_remove threw: {}", it.message) }
     }
@@ -375,8 +401,17 @@ internal class PipeWireRegistry private constructor(
         val direction = when (entries[SpaAbi.KEY_MEDIA_CLASS]) {
             SpaAbi.MEDIA_CLASS_SINK -> StreamDirection.PLAYBACK
             SpaAbi.MEDIA_CLASS_SOURCE -> StreamDirection.CAPTURE
-            // Everything else is a stream, a filter or a video node, and a
-            // device menu offering one of those is a menu with a broken row.
+            // Somebody playing rather than something to play to. Kept for one
+            // question, which is whether a stream a caller asked to record is
+            // still there, and kept out of the device list for the reason the
+            // rest of this is: a device menu offering a running application as
+            // an output is a menu with a broken row.
+            SpaAbi.MEDIA_CLASS_STREAM_OUTPUT -> {
+                entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull()?.let { playing[it] = id }
+                return
+            }
+            // A filter, a video node, or a capture stream, and none of them is
+            // anything this answers a question about.
             else -> return
         }
         // node.name is the stable identity a target.object is named by, and
