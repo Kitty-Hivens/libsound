@@ -25,9 +25,12 @@ reason to prefer one sends S16LE.
 
 ## Ask what it takes, do not find out
 
-Backends do not accept the same set, and the differences are not small:
-libpulse has no 64-bit float at all, and the JavaSound fallback takes whatever
-the JVM's default line takes, which is three of the five.
+Backends do not accept the same set, and the differences are not small: two of
+them have no 64-bit float at all, libpulse because the protocol has no name for
+one and WASAPI because the engine refuses it whatever conversion is asked for,
+and the JavaSound fallback takes whatever the JVM's default line takes, which is
+three of the five. Speaking PipeWire natively is the one path that takes all
+five, which is most of why that path exists.
 
 ```kotlin
 if (sink.accepts(shape)) sink.open(shape)
@@ -98,10 +101,11 @@ without forking the library, which is the outcome the plugin seam exists to
 prevent.
 
 Today that leaves the conversion to the sound server, which does it anyway.
-Measured rather than assumed, in all three backends: the PulseAudio one puts
-the rate you gave into the sample spec and the server meets it, the WASAPI sink
-sets `AUTOCONVERTPCM` because the engine otherwise refuses any format but its
-own mix format, and the CoreAudio output unit is told the rate in its stream
+Measured rather than assumed, in every backend: the PulseAudio one puts the rate
+you gave into the sample spec and the server meets it, the native PipeWire one
+puts it in the format it negotiates and in `node.rate`, the WASAPI sink sets
+`AUTOCONVERTPCM` because the engine otherwise refuses any format but its own mix
+format, and the CoreAudio output unit is told the rate in its stream
 description.
 
 So a 44.1 kHz file on a 48 kHz graph is not your problem. Decoding it to 48 kHz
@@ -145,10 +149,21 @@ sink.latencyNanos()    // how far ahead of the speaker the write head is
 `framePosition` counts frames the device has actually played, not frames you
 have written. `open` resets it to zero, `stop` freezes it, `start` resumes it.
 
-`latencyNanos` is the whole path: what is queued in the client, plus the
-server's share, plus the device's own. Do not add your own estimate of the
-server's part on top. A pacer that did would get it wrong differently on every
-machine, which is the reason this number is specified the way it is.
+**Ask [Capability.TOTAL_LATENCY] before treating this as the whole path.**
+Present, it is: what is queued in the client, plus the server's share, plus the
+device's own. Absent, it is what the client has queued and nothing else, because
+that backend has no way to ask the hardware, and it is short by a fixed amount
+that does not go away when a flush empties the queue.
+
+Either way, do not add your own estimate of the missing part on top. A pacer
+that did would get it wrong differently on every machine, which is the reason
+this number is specified the way it is rather than left to each caller. What a
+consumer does with a short number is decide whether its own synchronisation
+needs the whole path, and pace from the playhead alone when it cannot have it.
+
+At the time of writing the two Linux backends and WASAPI report the whole path
+and the JavaSound fallback and CoreAudio do not, but the capability is the
+question rather than that list.
 
 Where a video frame will be heard is therefore `framePosition` plus
 `latencyNanos`, converted through `AudioFormat`. That arithmetic being in every
@@ -220,10 +235,14 @@ Named in the plan rather than left to be discovered.
 is `framePosition` plus `latencyNanos`, converted through `AudioFormat`, and
 every consumer writes it out. Section 9.4 makes it one call.
 
-**Channel placement stops at eighteen positions.** The ones libpulse and Windows
-both name, which is every standard layout up to 9.1.4 and not the ones with a
-second LFE, a bottom row or a wide pair. Those are refused rather than
-mis-placed, and an unspecified layout is the way through.
+**Channel placement stops where the backend does, and they differ.** Speaking
+PipeWire natively names twenty-six of the thirty-six positions a decoder can
+send and carries every one of the forty layouts FFmpeg names. Through libpulse
+or on Windows it is eighteen, which is every standard layout up to 9.1.4 and not
+the four that need a second LFE, a bottom row, a top side pair or a wide pair.
+Those four are refused rather than mis-placed, and an unspecified layout is the
+way through. Which kind you were handed is `AudioSink.accepts`, asked before you
+have frames.
 
 **Two backends take a channel count and nothing more.** JavaSound has nothing to
 say it with, and CoreAudio will get it when the oracle has printed the channel
