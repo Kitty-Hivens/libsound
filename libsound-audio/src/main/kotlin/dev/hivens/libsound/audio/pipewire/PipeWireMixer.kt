@@ -2,6 +2,10 @@ package dev.hivens.libsound.audio.pipewire
 
 import dev.hivens.libsound.AudioCard
 import dev.hivens.libsound.AudioStream
+import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.PcmEncoding
+import dev.hivens.libsound.LatencyProfile
+import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.CardId
@@ -17,6 +21,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlin.math.abs
 
 /**
  * Everyone else's audio, read off the graph rather than through the protocol in
@@ -66,6 +71,7 @@ import kotlin.concurrent.withLock
  * a settings screen asks before it draws.
  */
 internal class PipeWireMixer private constructor(
+    private val applicationName: String,
     private val registry: PipeWireRegistry,
 ) : VolumeMixer {
 
@@ -84,6 +90,7 @@ internal class PipeWireMixer private constructor(
         Capability.CAPTURE_CONTROL,
         Capability.CAPTURE_ROUTING,
         Capability.DEVICE_VOLUME,
+        Capability.STREAM_METERING,
     )
 
     override val isOpen: Boolean get() = !closed.get()
@@ -119,9 +126,28 @@ internal class PipeWireMixer private constructor(
     /** Registered once whatever the number of subscribers, and released with them. */
     private var unsubscribe: (() -> Unit)? = null
 
+    /** Started at the first meter and released at [close]. */
+    private val meterLock = ReentrantLock()
+
+    private var meters: PipeWireLoop? = null
+
     override fun streams(): List<AudioStream> =
         if (closed.get()) emptyList() else registry.streams(ourProcess)
 
+    /**
+     * False also means not yet, and a consumer that has just seen the row
+     * appear should try again.
+     *
+     * The graph describes an object in pieces: a node's global arrives first
+     * and its parameters a moment later, and writing a volume means writing one
+     * per channel, so until that parameter has landed there is no channel count
+     * to write. Refused rather than guessed, because an array of the wrong
+     * length sets some of a device's channels and leaves the rest.
+     *
+     * A row is settable within a moment of appearing and stays settable. What
+     * this cannot do is tell that case apart from a stream that has gone, which
+     * is the same false either way.
+     */
     override fun setVolume(id: StreamId, volume: Float): Boolean {
         val serial = serialOf(id) ?: return false
         remember(id) { row -> originalStreamVolumes.putIfAbsent(serial, row.volume) }
@@ -252,16 +278,108 @@ internal class PipeWireMixer private constructor(
     }
 
     /**
-     * Nothing, and [Capability.STREAM_METERING] is absent so a consumer asks
-     * rather than watching a meter that never moves.
+     * Watch one row's level, by recording it.
      *
-     * Reaching a stream's level means attaching to the audio itself, which here
-     * is a capture stream aimed at that node and a loop of its own to run it on:
-     * putting it on the loop this connection uses would have a meter's callback
-     * hold up the registry's own dispatch. That is a mechanism rather than a
-     * line, so it is absent and said to be absent.
+     * The contract says this costs something and here it is plain what: a
+     * capture stream aimed at that node, which is the same mechanism recording
+     * one application uses, and a thread reading it. So it is a subscription
+     * with a cancel rather than a property, and a mixer drawing twenty rows
+     * should watch the ones on screen.
+     *
+     * On a loop of its own rather than the one this connection runs on. A
+     * meter's callback on the registry's loop would hold up the registry's own
+     * dispatch, so a mixer with a meter open would stop hearing about the
+     * streams it is metering.
+     *
+     * Playback rows only, and [Capability.CAPTURE_METERING] is absent to say so.
+     * Aiming at a row that is itself recording would tap what it is recording
+     * from, which is the device rather than that row: a meter that moved because
+     * somebody else was talking is worse than no meter, which is the same
+     * conclusion the libpulse mixer reached by a different route.
+     *
+     * Each call opens its own stream. Two meters on one row is two recordings,
+     * which is wasteful and correct, and the alternative is sharing state
+     * between subscriptions that cancel independently.
      */
-    override fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit = {}
+    override fun meter(id: StreamId, handler: (Float) -> Unit): () -> Unit {
+        if (closed.get()) return {}
+        val playing = streams().firstOrNull { it.id == id && it.direction == StreamDirection.PLAYBACK }
+        if (playing == null) return { }
+        val loop = meterLoop() ?: return {}
+        val source = PipeWireSource(
+            loop,
+            SourceConfig(
+                applicationName = "$applicationName meter",
+                captureStream = id,
+                // Short, because a meter wants what is happening rather than
+                // what happened: a long buffer is a level that lags the sound
+                // by its own depth.
+                latency = LatencyProfile.LOW,
+            ),
+            METER_CAPABILITIES,
+            registry,
+        )
+        val running = AtomicBoolean(true)
+        val thread = Thread({ pump(source, running, handler) }, "libsound-pipewire-meter")
+        thread.isDaemon = true
+        // Named rather than written as the last expression of each branch: a
+        // lambda literal after a call is read as that call's trailing argument.
+        val cancel: () -> Unit = {
+            running.set(false)
+            runCatching { source.close() }
+        }
+        val none: () -> Unit = {}
+        return runCatching {
+            source.open(AudioFormat(METER_RATE, METER_CHANNELS, PcmEncoding.F32LE))
+            thread.start()
+            cancel
+        }.getOrElse { failure ->
+            log.debug("no meter on {}: {}", id, failure.message)
+            runCatching { source.close() }
+            none
+        }
+    }
+
+    /**
+     * Read windows and hand the loudest sample of each one over.
+     *
+     * The loudest rather than an average, because a meter is drawn to show that
+     * something is happening and an average of a window that is mostly silence
+     * shows that nothing is.
+     */
+    private fun pump(source: PipeWireSource, running: AtomicBoolean, handler: (Float) -> Unit) {
+        val window = ByteArray(METER_RATE / METER_WINDOWS_PER_SECOND * METER_CHANNELS * Float.SIZE_BYTES)
+        runCatching {
+            while (running.get()) {
+                source.read(window, 0, window.size)
+                if (!running.get()) return
+                var peak = 0f
+                var at = 0
+                while (at + Float.SIZE_BYTES <= window.size) {
+                    val bits = (window[at].toInt() and 0xFF) or
+                        ((window[at + 1].toInt() and 0xFF) shl 8) or
+                        ((window[at + 2].toInt() and 0xFF) shl 16) or
+                        ((window[at + 3].toInt() and 0xFF) shl 24)
+                    val sample = abs(Float.fromBits(bits))
+                    if (sample > peak) peak = sample
+                    at += Float.SIZE_BYTES
+                }
+                runCatching { handler(peak.coerceIn(0f, 1f)) }
+                    .onFailure { log.warn("meter handler threw: {}", it.message) }
+            }
+        }.onFailure { if (running.get()) log.debug("meter stopped: {}", it.message) }
+    }
+
+    /**
+     * The loop every meter runs on, started at the first one and kept.
+     *
+     * Kept rather than released with the last meter, because a loop is one idle
+     * thread and closing it on the last cancel would race the next subscription.
+     */
+    private fun meterLoop(): PipeWireLoop? = meterLock.withLock {
+        if (closed.get()) return null
+        meters ?: PipeWireLoop.startOrNull("$applicationName meters")?.also { meters = it }
+    }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -271,6 +389,12 @@ internal class PipeWireMixer private constructor(
             unsubscribe = null
         }
         runCatching { restoreAll() }.onFailure { log.warn("restore on close threw: {}", it.message) }
+        // The meters' loop before the registry's, because a meter's stream was
+        // created against the registry and checked through it.
+        meterLock.withLock {
+            meters?.let { runCatching { it.close() } }
+            meters = null
+        }
         runCatching { registry.close() }
     }
 
@@ -344,6 +468,16 @@ internal class PipeWireMixer private constructor(
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.PipeWire")
 
+        /** What a metering stream is allowed to say about itself. */
+        private val METER_CAPABILITIES = Capabilities.of(Capability.CAPTURE)
+
+        /** The shape a meter reads in, which the graph converts to whatever the row is. */
+        private const val METER_RATE = 48_000
+        private const val METER_CHANNELS = 2
+
+        /** Fast enough to look live, slow enough to cost nothing worth measuring. */
+        private const val METER_WINDOWS_PER_SECOND = 20
+
         /**
          * Open a connection of this mixer's own, or null where no graph
          * answered.
@@ -354,7 +488,7 @@ internal class PipeWireMixer private constructor(
          */
         fun openOrNull(applicationName: String): VolumeMixer? {
             val registry = PipeWireRegistry.openOrNull("$applicationName mixer") ?: return null
-            return runCatching { PipeWireMixer(registry) }.getOrElse {
+            return runCatching { PipeWireMixer(applicationName, registry) }.getOrElse {
                 log.debug("no PipeWire mixer: {}", it.message)
                 runCatching { registry.close() }
                 null

@@ -19,7 +19,9 @@ import org.junit.jupiter.api.Timeout
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.sin
 
 /**
  * The mixer read off the graph, against the same graph the shim reads.
@@ -75,8 +77,12 @@ class PipeWireMixerTest {
         mixer.capabilities.anyOf(
             Capability.DEVICE_PROFILES,
             Capability.VIRTUAL_DEVICES,
-            Capability.STREAM_METERING,
         ) shouldBe false
+        // Watching what a row plays is here; watching what one records is not,
+        // and they are separate capabilities because aiming at a recording row
+        // would tap the device it records from rather than that row.
+        (Capability.STREAM_METERING in mixer.capabilities) shouldBe true
+        (Capability.CAPTURE_METERING in mixer.capabilities) shouldBe false
         mixer.cards() shouldBe emptyList()
         mixer.createVirtualSink("libsound_never") shouldBe null
     }
@@ -111,13 +117,17 @@ class PipeWireMixerTest {
         val mixer = checkNotNull(mixer)
         play()
         val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
-        mixer.setVolume(row.id, 0.25f) shouldBe true
+        // Retried rather than asserted once. A node's global arrives before its
+        // parameters do, and a volume cannot be written until the channel count
+        // has, so a row is settable a moment after it appears rather than at
+        // the instant it does.
+        eventually("the row to become settable") { mixer.setVolume(row.id, 0.25f).takeIf { it } }
         val quiet = eventually("the volume to come back") {
             mixer.streams().firstOrNull { it.id == row.id }?.takeIf { abs(it.volume - 0.25f) < TOLERANCE }
         }
         (abs(quiet.volume - 0.25f) < TOLERANCE) shouldBe true
 
-        mixer.setMuted(row.id, true) shouldBe true
+        eventually("the mute to be taken") { mixer.setMuted(row.id, true).takeIf { it } }
         eventually("the mute to come back") {
             mixer.streams().firstOrNull { it.id == row.id }?.takeIf { it.muted }
         }
@@ -129,7 +139,7 @@ class PipeWireMixerTest {
         play()
         val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
         val before = row.volume
-        mixer.setVolume(row.id, 0.1f) shouldBe true
+        eventually("the row to become settable") { mixer.setVolume(row.id, 0.1f).takeIf { it } }
         eventually("the change to land") {
             mixer.streams().firstOrNull { it.id == row.id }?.takeIf { abs(it.volume - 0.1f) < TOLERANCE }
         }
@@ -169,6 +179,45 @@ class PipeWireMixerTest {
     }
 
     @Test
+    fun `a meter on a row reports the level of what is playing`() {
+        // Loud audio through a stream of this suite's own, metered by id. What
+        // is asserted is that the level moves, because a meter that never moves
+        // is exactly what a consumer would see if the capability were claimed
+        // and the mechanism were not there.
+        //
+        // Not that it followed the row rather than the device, which this could
+        // not tell apart: one stream into a null sink means a capture of either
+        // carries the same tone. That aim is the capture stream's, and
+        // PipeWirePerStreamCaptureTest is where it is discriminated, by playing
+        // a loud stream and a silent one into one sink and aiming at each.
+        val mixer = checkNotNull(mixer)
+        play(amplitude = LOUD)
+        val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
+        val peaks = CopyOnWriteArrayList<Float>()
+        val cancel = mixer.meter(row.id) { peaks.add(it) }
+        try {
+            val loud = eventually("a level to arrive") { peaks.firstOrNull { it > SILENCE } }
+            (loud > SILENCE) shouldBe true
+            withClue("a peak outside nought to one is not a linear level") {
+                peaks.all { it in 0f..1f } shouldBe true
+            }
+        } finally {
+            cancel()
+        }
+    }
+
+    @Test
+    fun `metering an id that names nothing hands back a cancel that is safe to call`() {
+        // The contract asks for a cancel in every case, including the ones
+        // where the handler will never run, so a consumer's teardown is the
+        // same code either way.
+        val mixer = checkNotNull(mixer)
+        val cancel = mixer.meter(StreamId("sink-input:999999999")) { error("never") }
+        cancel()
+        cancel()
+    }
+
+    @Test
     fun `an id naming nothing is refused rather than answered for`() {
         val mixer = checkNotNull(mixer)
         // A stream that has gone is a row that springs back, which is the
@@ -182,14 +231,14 @@ class PipeWireMixerTest {
 
     // -- the machinery --------------------------------------------------------
 
-    private fun play() {
+    private fun play(amplitude: Double = 0.0) {
         val sink = checkNotNull(backend).createSink(SinkConfig(applicationName = appName))
         val running = AtomicBoolean(true)
         val thread = Thread(
             {
                 runCatching {
                     sink.open(AudioFormat(48_000, 2))
-                    val pcm = ByteArray(4_800 * sink.format!!.bytesPerFrame)
+                    val pcm = tone(checkNotNull(sink.format), amplitude)
                     while (running.get()) sink.write(pcm, 0, pcm.size)
                 }
             },
@@ -212,6 +261,22 @@ class PipeWireMixerTest {
         }
     }
 
+    /** A tenth of a second of tone, or of silence where the case does not need one. */
+    private fun tone(format: AudioFormat, amplitude: Double): ByteArray {
+        val frames = format.sampleRate / 10
+        val pcm = ByteArray(frames * format.bytesPerFrame)
+        if (amplitude <= 0.0) return pcm
+        for (frame in 0 until frames) {
+            val value = (sin(2.0 * PI * 440.0 * frame / format.sampleRate) * amplitude * Short.MAX_VALUE).toInt()
+            val at = frame * format.bytesPerFrame
+            repeat(format.channels) { channel ->
+                pcm[at + channel * 2] = (value and 0xFF).toByte()
+                pcm[at + channel * 2 + 1] = ((value shr 8) and 0xFF).toByte()
+            }
+        }
+        return pcm
+    }
+
     private fun <T : Any> eventually(what: String, produce: () -> T?): T {
         val deadline = System.nanoTime() + APPEAR_TIMEOUT_NANOS
         while (System.nanoTime() < deadline) {
@@ -226,5 +291,11 @@ class PipeWireMixerTest {
         const val TOLERANCE = 0.01f
 
         const val APPEAR_TIMEOUT_NANOS = 15_000_000_000L
+
+        /** Loud enough that a level reaching the meter cannot be mistaken for noise. */
+        const val LOUD = 0.5
+
+        /** Above anything a null sink's own path carries, which is nothing. */
+        const val SILENCE = 0.05f
     }
 }
