@@ -8,6 +8,7 @@ import dev.hivens.libsound.audio.wasapi.WasapiBackend
 import dev.hivens.libsound.testing.AudioSinkContract
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -65,6 +66,14 @@ class AudioBackendsTest {
         // Every capability at once is a set nothing can satisfy: no backend has
         // both the mixer's and the session module's, and macOS has almost none
         // of it at all.
+        //
+        // Skipped under a pin, because the pin is documented to win: a run
+        // comparing two backends must get the one it named, and asserting the
+        // refusal here would be asserting against that rule rather than for it.
+        Assumptions.assumeTrue(
+            System.getProperty("libsound.backend").isNullOrBlank(),
+            "a pinned backend is documented to win over a capability request",
+        )
         AudioBackends.open("libsound selection test", Capability.entries.toSet()) shouldBe null
     }
 

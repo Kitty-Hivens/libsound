@@ -57,6 +57,9 @@ public object AudioBackends {
      * container with no device. That is a real state and the caller has to
      * handle it, but it is not the same as "no sound server", which is served
      * by the fallback.
+     *
+     * @throws IllegalArgumentException where `-Dlibsound.backend=` names
+     *   nothing this library has.
      */
     public fun open(applicationName: String): AudioBackend? = open(applicationName, emptySet())
 
@@ -83,6 +86,17 @@ public object AudioBackends {
      * Naming something no backend on this platform has returns null. That is
      * the honest answer and not a fallback: handing back a backend that was
      * explicitly told it would not do is worse than saying so.
+     *
+     * One exception, and it is the property. A run that pins a backend with
+     * `-Dlibsound.backend=` gets that backend even when it does not offer what
+     * was asked for, with the disagreement logged as a warning. The pin exists
+     * so somebody comparing two backends on one machine can be sure which one
+     * answered, and a pin that silently lost to a capability request would
+     * measure the wrong thing and say nothing about it.
+     *
+     * @throws IllegalArgumentException where `-Dlibsound.backend=` names
+     *   nothing this library has, which is a mistake worth failing on rather
+     *   than ignoring.
      */
     public fun open(applicationName: String, needs: Set<Capability>): AudioBackend? {
         val osName = System.getProperty("os.name", "").lowercase()

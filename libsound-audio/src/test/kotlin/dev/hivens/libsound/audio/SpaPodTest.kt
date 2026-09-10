@@ -7,6 +7,7 @@ import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pipewire.SpaPod
 import dev.hivens.libsound.audio.pipewire.SpaPodReader
+import dev.hivens.libsound.audio.pulse.PulseAbi
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -148,9 +149,24 @@ class SpaPodTest {
     @Test
     fun `the graph names eight positions the compatibility layer has no word for`() {
         // The measurement section 13.1 is built on, kept here so it fails if
-        // the table is edited rather than only if the plan is.
-        val named = ChannelPosition.entries.count { SpaAbi.channelOf(it) != null }
-        withClue("positions the graph can place") { named shouldBe 26 }
+        // either table is edited rather than only if the plan is.
+        //
+        // Both counts and the difference between them, because the number in
+        // the name is the difference. Asserting only the graph's twenty-six
+        // left the eight unguarded: widening the shim's table would have made
+        // this test's own name wrong while it stayed green.
+        val graph = ChannelPosition.entries.filter { SpaAbi.channelOf(it) != null }
+        val shim = ChannelPosition.entries.filter { PulseAbi.channelPositionOf(it) != null }
+        withClue("positions the graph can place") { graph.size shouldBe 26 }
+        withClue("positions the compatibility layer can place") { shim.size shouldBe 18 }
+        withClue("what the layer costs") { (graph - shim.toSet()).size shouldBe 8 }
+        // And they are these eight, by name, so a table edited to keep the
+        // count and change the members is caught too.
+        (graph - shim.toSet()).map { it.name }.sorted() shouldBe
+            listOf("BFC", "BFL", "BFR", "LFE2", "TSL", "TSR", "WL", "WR")
+        // Nothing the shim places is missing from the graph, which is the
+        // direction that would make "wider" the wrong word entirely.
+        withClue("positions only the shim can place") { (shim - graph.toSet()) shouldBe emptyList() }
     }
 
     private fun ByteArray.int32At(offset: Int): Int =
