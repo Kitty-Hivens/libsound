@@ -731,11 +731,17 @@ internal class PipeWireRegistry private constructor(
      * the libpulse side carries and the reason a caller that needs the value to
      * hold reads it back.
      */
-    fun setNodeProps(name: String, volume: Float?, muted: Boolean?): Boolean {
+    fun setDeviceProps(name: String, volume: Float?, muted: Boolean?): Boolean =
+        setProps({ !it.isStream && it.name == name }, volume, muted)
+
+    /** The same, for one of the rows a mixer draws, named by its serial. */
+    fun setStreamProps(serial: Long, volume: Float?, muted: Boolean?): Boolean =
+        setProps({ it.isStream && it.serial == serial }, volume, muted)
+
+    private fun setProps(match: (GraphNode) -> Boolean, volume: Float?, muted: Boolean?): Boolean {
         if (closed.get()) return false
         return loop.locked {
-            val entry = nodes.entries.firstOrNull { !it.value.isStream && it.value.name == name }
-                ?: return@locked false
+            val entry = nodes.entries.firstOrNull { match(it.value) } ?: return@locked false
             val proxy = nodeProxies[entry.key] ?: return@locked false
             val channels = entry.value.volumeChannels
             if (volume != null && channels <= 0) return@locked false
@@ -744,7 +750,77 @@ internal class PipeWireRegistry private constructor(
                 mute = muted,
             )
             runCatching { setParam(proxy, SpaAbi.PARAM_PROPS, pod) }
-                .onFailure { log.debug("set_param on {} threw: {}", name, it.message) }
+                .onFailure { log.debug("set_param on {} threw: {}", entry.value.name, it.message) }
+                .getOrDefault(false)
+        }
+    }
+
+    /**
+     * Make [name] the device applications get when they ask for none.
+     *
+     * Written into the entry that records a choice rather than the one that
+     * records the result: the session manager computes the second from the
+     * first, so writing the result directly is writing a value the next rescan
+     * replaces.
+     */
+    fun setDefaultDevice(name: String, direction: StreamDirection): Boolean {
+        val key = when (direction) {
+            StreamDirection.PLAYBACK -> SpaAbi.METADATA_KEY_CONFIGURED_SINK
+            StreamDirection.CAPTURE -> SpaAbi.METADATA_KEY_CONFIGURED_SOURCE
+        }
+        // The same shape the session manager writes, and the reader above takes
+        // it back apart.
+        return setMetadata(SpaAbi.METADATA_SUBJECT_GRAPH, key, SpaAbi.METADATA_TYPE_JSON, "{\"name\":\"$name\"}")
+    }
+
+    /**
+     * Move one stream onto one device.
+     *
+     * A property on the stream rather than a link made by hand: the session
+     * manager owns linking, reads this and relinks. Making the links here
+     * instead would be a second policy running beside the one the desktop
+     * already has, and the two would disagree the first time anything else
+     * moved.
+     */
+    fun moveStream(serial: Long, device: String): Boolean {
+        val node = nodes.entries.firstOrNull { it.value.isStream && it.value.serial == serial } ?: return false
+        return setMetadata(node.key, SpaAbi.METADATA_KEY_TARGET_OBJECT, null, device)
+    }
+
+    /**
+     * `pw_metadata_set_property`, walked for the reason every other proxy
+     * method here is.
+     *
+     * False where nothing is bound, which is a graph with no session manager on
+     * it: there is no object to write into and no policy that would read it.
+     */
+    private fun setMetadata(subject: Int, key: String, type: String?, value: String?): Boolean {
+        if (closed.get()) return false
+        return loop.locked {
+            val proxy = metadata
+            if (proxy.address() == 0L) return@locked false
+            runCatching {
+                val method = interfaceMethod(proxy, SpaAbi.METADATA_METHOD_SET_PROPERTY, "set_property")
+                val call = Linker.nativeLinker().downcallHandle(
+                    method,
+                    FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                    ),
+                )
+                Arena.ofConfined().use { call2 ->
+                    // The strings are read during the call and marshalled onto
+                    // the wire, so a confined arena is the right lifetime here
+                    // where a bind's type string was not.
+                    val rc = call.invokeExact(
+                        interfaceData(proxy), subject,
+                        call2.allocateFrom(key),
+                        type?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                        value?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                    ) as Int
+                    rc >= 0
+                }
+            }.onFailure { log.debug("set_property({}) threw: {}", key, it.message) }
                 .getOrDefault(false)
         }
     }

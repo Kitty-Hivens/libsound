@@ -388,6 +388,26 @@ internal object SpaAbi {
     const val METADATA_KEY_DEFAULT_SINK = "default.audio.sink"
     const val METADATA_KEY_DEFAULT_SOURCE = "default.audio.source"
 
+    /**
+     * What a person chose, which is the entry a choice is written into.
+     *
+     * The session manager reads these and computes the effective pair above
+     * from them, so writing the effective one directly is writing a value the
+     * next rescan overwrites. It is also the difference between a preference
+     * that survives the device being unplugged and one that does not.
+     */
+    const val METADATA_KEY_CONFIGURED_SINK = "default.configured.audio.sink"
+    const val METADATA_KEY_CONFIGURED_SOURCE = "default.configured.audio.source"
+
+    /** What the session manager reads to move a node somewhere else. */
+    const val METADATA_KEY_TARGET_OBJECT = "target.object"
+
+    /** The subject a graph-wide entry is written under, against one node's id. */
+    const val METADATA_SUBJECT_GRAPH = 0
+
+    /** How a default names a device, which is a JSON object with one field. */
+    const val METADATA_TYPE_JSON = "Spa:String:JSON"
+
     // -- properties a volume is set through ----------------------------------
 
     const val OBJECT_PROPS = 262_146
