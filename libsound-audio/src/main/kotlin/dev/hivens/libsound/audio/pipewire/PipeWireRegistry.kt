@@ -1,6 +1,7 @@
 package dev.hivens.libsound.audio.pipewire
 
 import dev.hivens.libsound.AudioDevice
+import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.MediaRole
 import dev.hivens.libsound.AudioStream
@@ -212,6 +213,15 @@ internal class PipeWireRegistry private constructor(
 
     private val spareHooks = ArrayDeque<MemorySegment>()
 
+    /**
+     * Devices this connection made, by the name they were made under.
+     *
+     * The proxy is the ownership: destroying it destroys the device, and losing
+     * it without destroying it would leave one on the graph until the
+     * connection went. Touched only under the loop lock, like the maps above.
+     */
+    private val createdSinks = HashMap<String, MemorySegment>()
+
     /** The sequence number the barrier is waiting for, and whether it arrived. */
     @Volatile
     private var pendingSeq = NO_SEQ
@@ -352,6 +362,14 @@ internal class PipeWireRegistry private constructor(
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
         runCatching {
             loop.locked {
+                // Devices this connection made go first: each is a proxy like
+                // any other, and one destroyed after the connection would be
+                // destroyed by the connection going, which works and says
+                // nothing about whether this remembered to.
+                createdSinks.values.forEach { proxy ->
+                    runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+                }
+                createdSinks.clear()
                 // Every bound proxy before the registry that handed them out,
                 // and all of it before the connection they travelled on.
                 nodeProxies.keys.toList().forEach { releaseNode(it) }
@@ -785,6 +803,105 @@ internal class PipeWireRegistry private constructor(
     fun moveStream(serial: Long, device: String): Boolean {
         val node = nodes.entries.firstOrNull { it.value.isStream && it.value.serial == serial } ?: return false
         return setMetadata(node.key, SpaAbi.METADATA_KEY_TARGET_OBJECT, null, device)
+    }
+
+    /**
+     * Make a device the machine does not have, and hold the proxy that owns it.
+     *
+     * `create_object` on the core, with the adapter factory and the null sink
+     * behind it, which is the pair the daemon's own shipped configuration names.
+     *
+     * `object.linger` is deliberately not set. The header describes that key as
+     * the one that makes an object outlive its client, so leaving it out ties
+     * what comes back to this connection. That is not a shortfall against the
+     * module the libpulse mixer loads: the obligation
+     * `VolumeMixer.createVirtualSink` is written under is that a device left
+     * behind is one a person finds in their settings and cannot account for,
+     * and a connection-scoped object is the shape that obligation wants.
+     *
+     * The channel count is honoured or the whole thing is refused, never
+     * narrowed. The positions travel with it where every one of them has a name
+     * here, and where they do not the count goes on its own and the graph lays
+     * it out, which is what a device with no layout gets anywhere.
+     */
+    fun createNullSink(name: String, channels: Int): Boolean {
+        if (closed.get()) return false
+        if (channels !in 1..SpaAbi.MAX_CHANNELS) return false
+        if (createdSinks.containsKey(name)) return false
+        val layout = ChannelLayout.defaultFor(channels)
+        val positions = layout.positions.map { SpaAbi.channelNameOf(it) }
+        val entries = buildList {
+            add(SpaAbi.KEY_FACTORY_NAME to SpaAbi.FACTORY_NULL_SINK)
+            add(SpaAbi.KEY_NODE_NAME to name)
+            add(SpaAbi.KEY_NODE_DESCRIPTION to name)
+            add(SpaAbi.KEY_MEDIA_CLASS to SpaAbi.MEDIA_CLASS_SINK)
+            add(SpaAbi.KEY_AUDIO_CHANNELS to channels.toString())
+            if (positions.isNotEmpty() && positions.none { it == null }) {
+                add(SpaAbi.KEY_AUDIO_POSITION to positions.joinToString(",") { checkNotNull(it) })
+            }
+        }
+        return loop.locked {
+            runCatching {
+                val proxy = createObject(SpaAbi.FACTORY_ADAPTER, nodeType, SpaAbi.VERSION_NODE, entries)
+                if (proxy.address() == 0L) return@runCatching false
+                createdSinks[name] = proxy
+                true
+            }.onFailure { log.debug("create_object({}) threw: {}", name, it.message) }
+                .getOrDefault(false)
+        }
+    }
+
+    /** Drop a device this connection made. False for one it did not make. */
+    fun removeNullSink(name: String): Boolean {
+        if (closed.get()) return false
+        return loop.locked {
+            val proxy = createdSinks.remove(name) ?: return@locked false
+            runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+                .onFailure { log.debug("destroy of {} threw: {}", name, it.message) }
+                .isSuccess
+        }
+    }
+
+    /** Every device this connection made and has not removed. */
+    fun createdSinkNames(): List<String> = createdSinks.keys.toList()
+
+    /**
+     * `pw_core_create_object`, walked like every other proxy method here.
+     *
+     * The loop lock must be held. The property strings live only for the call,
+     * which is right here and was not right for a bind: `pw_proxy_new` keeps
+     * the type string it is handed, and a dict is marshalled onto the wire
+     * before this returns.
+     */
+    private fun createObject(
+        factory: String,
+        type: MemorySegment,
+        version: Int,
+        entries: List<Pair<String, String>>,
+    ): MemorySegment {
+        val method = interfaceMethod(core, SpaAbi.CORE_METHOD_CREATE_OBJECT, "create_object")
+        val call = Linker.nativeLinker().downcallHandle(
+            method,
+            FunctionDescriptor.of(
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+            ),
+        )
+        return Arena.ofConfined().use { call2 ->
+            val items = call2.allocate(SpaAbi.DICT_ITEM_SIZE * entries.size, 8)
+            entries.forEachIndexed { index, (key, value) ->
+                val at = SpaAbi.DICT_ITEM_SIZE * index
+                items.set(ValueLayout.ADDRESS, at + SpaAbi.DICT_ITEM_KEY, call2.allocateFrom(key))
+                items.set(ValueLayout.ADDRESS, at + SpaAbi.DICT_ITEM_VALUE, call2.allocateFrom(value))
+            }
+            val dict = call2.allocate(SpaAbi.DICT_SIZE, 8)
+            dict.set(ValueLayout.JAVA_INT, SpaAbi.DICT_FLAGS, 0)
+            dict.set(ValueLayout.JAVA_INT, SpaAbi.DICT_N_ITEMS, entries.size)
+            dict.set(ValueLayout.ADDRESS, SpaAbi.DICT_ITEMS, items)
+            call.invokeExact(
+                interfaceData(core), call2.allocateFrom(factory), type, version, dict, 0L,
+            ) as MemorySegment
+        }
     }
 
     /**

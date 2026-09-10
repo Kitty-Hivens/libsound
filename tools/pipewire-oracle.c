@@ -108,6 +108,14 @@ int main(void) {
         if (spa_name) named++;
     }
     printf("  %d of the 36 positions FFmpeg names have a SPA constant here\n", named);
+    /* The same table as a property value. audio.position takes names rather
+     * than numbers, which is what creating a device with a layout needs. */
+    printf("  as audio.position names:\n");
+    for (size_t i = 0; i < SPA_N_ELEMENTS(CHANNELS); i++) {
+        const char *spa_name =
+            spa_debug_type_find_short_name(spa_type_audio_channel, CHANNELS[i].spa);
+        printf("    %-5s -> \"%s\"\n", CHANNELS[i].ffmpeg, spa_name ? spa_name : "");
+    }
     printf("  (pa_channel_position_t names 18 of them, which is the shim's ceiling)\n");
 
     /* The ceiling a format has to be refused above. accepts() promises that a
@@ -489,6 +497,16 @@ int main(void) {
     /* Which process a node belongs to, which is how a mixer marks its own rows
      * without needing to know its own client id on a second connection. */
     printf("  %-30s = %s\n", "PW_KEY_APP_PROCESS_ID", PW_KEY_APP_PROCESS_ID);
+
+    /* Making a device that is not hardware. The core's create_object takes a
+     * factory by name and a property set, and which factory is the adapter's
+     * business rather than the core's: support.null-audio-sink is named in the
+     * daemon's own shipped configuration. object.linger decides whether what
+     * comes back outlives the connection that asked for it. */
+    printf("  %-30s = %s\n", "PW_KEY_FACTORY_NAME", PW_KEY_FACTORY_NAME);
+    printf("  %-30s = %s\n", "PW_KEY_OBJECT_LINGER", PW_KEY_OBJECT_LINGER);
+    printf("  %-30s = %s\n", "SPA_KEY_AUDIO_CHANNELS", SPA_KEY_AUDIO_CHANNELS);
+    printf("  %-30s = %s\n", "SPA_KEY_AUDIO_POSITION", SPA_KEY_AUDIO_POSITION);
     printf("  %-30s = %s\n", "MEDIA_CLASS Stream/Input/Audio", "Stream/Input/Audio");
 
     /* A stream's own volume, which is a control on its node rather than

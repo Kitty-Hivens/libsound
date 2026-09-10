@@ -208,9 +208,10 @@ internal object SpaAbi {
      */
     const val INTERFACE_CB_DATA = 24L
 
-    /** `pw_core_methods`, where `sync` and `get_registry` live. */
+    /** `pw_core_methods`, where `sync`, `get_registry` and `create_object` live. */
     const val CORE_METHOD_SYNC = 24L
     const val CORE_METHOD_GET_REGISTRY = 48L
+    const val CORE_METHOD_CREATE_OBJECT = 56L
 
     /** `pw_registry_methods`, where `bind` lives. */
     const val REGISTRY_METHOD_BIND = 16L
@@ -492,6 +493,27 @@ internal object SpaAbi {
      */
     const val KEY_APP_PROCESS_ID = "application.process.id"
 
+    /** What creating a device that is not hardware needs. */
+    const val KEY_FACTORY_NAME = "factory.name"
+
+    /**
+     * Whether a created object outlives the connection that asked for it.
+     *
+     * Left unset here, so what is created belongs to the connection that asked
+     * for it. That is the shape `VolumeMixer.createVirtualSink`'s own obligation
+     * wants: a device left behind is one a person finds in their settings and
+     * cannot account for.
+     */
+    const val KEY_OBJECT_LINGER = "object.linger"
+
+    /** The factory the daemon's own shipped configuration names for a null sink. */
+    const val FACTORY_ADAPTER = "adapter"
+    const val FACTORY_NULL_SINK = "support.null-audio-sink"
+
+    /** How many channels a created device has, and what each of them is. */
+    const val KEY_AUDIO_CHANNELS = "audio.channels"
+    const val KEY_AUDIO_POSITION = "audio.position"
+
     const val KEY_NODE_LATENCY = "node.latency"
     const val KEY_NODE_RATE = "node.rate"
     const val KEY_TARGET_OBJECT = "target.object"
@@ -618,6 +640,50 @@ internal object SpaAbi {
     const val CHANNEL_BC = 35
     const val CHANNEL_BLC = 36
     const val CHANNEL_BRC = 37
+
+    /**
+     * What a property calls a position, or null where the graph has no name for
+     * it.
+     *
+     * The same twenty-six [channelOf] answers for, spelled rather than
+     * numbered, because `audio.position` in a property set takes names. Both
+     * come out of the same table in the oracle so the two cannot drift apart
+     * without the run that produced them saying so.
+     */
+    fun channelNameOf(position: ChannelPosition): String? = when (position) {
+        ChannelPosition.FL -> "FL"
+        ChannelPosition.FR -> "FR"
+        ChannelPosition.FC -> "FC"
+        ChannelPosition.LFE -> "LFE"
+        ChannelPosition.SL -> "SL"
+        ChannelPosition.SR -> "SR"
+        ChannelPosition.FLC -> "FLC"
+        ChannelPosition.FRC -> "FRC"
+        ChannelPosition.BC -> "RC"
+        ChannelPosition.BL -> "RL"
+        ChannelPosition.BR -> "RR"
+        ChannelPosition.TC -> "TC"
+        ChannelPosition.TFL -> "TFL"
+        ChannelPosition.TFC -> "TFC"
+        ChannelPosition.TFR -> "TFR"
+        ChannelPosition.TBL -> "TRL"
+        ChannelPosition.TBC -> "TRC"
+        ChannelPosition.TBR -> "TRR"
+        ChannelPosition.WL -> "FLW"
+        ChannelPosition.WR -> "FRW"
+        ChannelPosition.LFE2 -> "LFE2"
+        ChannelPosition.TSL -> "TSL"
+        ChannelPosition.TSR -> "TSR"
+        ChannelPosition.BFC -> "BC"
+        ChannelPosition.BFL -> "BLC"
+        ChannelPosition.BFR -> "BRC"
+        ChannelPosition.DL, ChannelPosition.DR,
+        ChannelPosition.SDL, ChannelPosition.SDR,
+        ChannelPosition.SSL, ChannelPosition.SSR,
+        ChannelPosition.TTL, ChannelPosition.TTR,
+        ChannelPosition.BIL, ChannelPosition.BIR,
+        -> null
+    }
 
     /**
      * What the graph calls a position, or null where it has no name for it.
