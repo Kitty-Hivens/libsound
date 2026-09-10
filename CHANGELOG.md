@@ -45,6 +45,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   records at once is `Audio/Duplex`, and neither matched the bare names.
 - `AudioSink.accepts` answered true above the channel count the graph can carry,
   where the contract says a false answer is exactly an open that would throw.
+- The WASAPI sink claimed a 64-bit float and the audio engine refuses one, flag
+  to convert included, because the mix format is a 32-bit float. The same rule
+  broken on the other platform, and the contract suite is what caught both.
 - The native PipeWire backend answered with a backend on a machine that had
   libpipewire installed and no graph running. Loading the library and starting a
   thread loop reaches no server, so nothing before the first sink touched a
