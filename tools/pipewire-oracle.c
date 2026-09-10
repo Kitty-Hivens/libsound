@@ -413,6 +413,12 @@ int main(void) {
     SECTION("metadata, which is where the default device lives");
     P(PW_VERSION_METADATA);
     P(PW_VERSION_METADATA_EVENTS);
+    P(sizeof(struct pw_metadata_methods));
+    P(offsetof(struct pw_metadata_methods, version));
+    P(offsetof(struct pw_metadata_methods, add_listener));
+    P(offsetof(struct pw_metadata_methods, set_property));
+    P(offsetof(struct pw_metadata_methods, clear));
+    P(PW_VERSION_METADATA_METHODS);
     P(sizeof(struct pw_metadata_events));
     P(offsetof(struct pw_metadata_events, version));
     P(offsetof(struct pw_metadata_events, property));
@@ -464,6 +470,17 @@ int main(void) {
     P(offsetof(struct spa_pod_array_body, child));
     P(sizeof(struct spa_pod_bool));
     P(sizeof(struct spa_pod_float));
+
+    /* A link, which is how a mixer finds out which device a stream is playing
+     * to. Nothing else on the graph says: a stream names a target only when it
+     * asked for one, and most do not. */
+    SECTION("links, which is what a stream playing to a device is");
+    printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Link", PW_TYPE_INTERFACE_Link);
+    printf("  %-30s = %s\n", "PW_KEY_LINK_OUTPUT_NODE", PW_KEY_LINK_OUTPUT_NODE);
+    printf("  %-30s = %s\n", "PW_KEY_LINK_INPUT_NODE", PW_KEY_LINK_INPUT_NODE);
+    printf("  %-30s = %s\n", "PW_KEY_MEDIA_NAME", PW_KEY_MEDIA_NAME);
+    printf("  %-30s = %s\n", "PW_KEY_CLIENT_ID", PW_KEY_CLIENT_ID);
+    printf("  %-30s = %s\n", "MEDIA_CLASS Stream/Input/Audio", "Stream/Input/Audio");
 
     /* A stream's own volume, which is a control on its node rather than
      * anything pw_stream carries directly. */

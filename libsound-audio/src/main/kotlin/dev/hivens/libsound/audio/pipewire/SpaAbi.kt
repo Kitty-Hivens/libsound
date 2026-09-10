@@ -272,6 +272,16 @@ internal object SpaAbi {
     const val INTERFACE_DEVICE = "PipeWire:Interface:Device"
     const val INTERFACE_METADATA = "PipeWire:Interface:Metadata"
 
+    /**
+     * A link, which is the only thing on the graph that says which device a
+     * stream is playing to.
+     *
+     * Nothing else does. A stream carries a target only when it asked for one
+     * and most do not, so a mixer row's device comes from following the link
+     * out of the stream's node rather than from any property of the stream.
+     */
+    const val INTERFACE_LINK = "PipeWire:Interface:Link"
+
     /** `struct spa_hook`, which a listener is registered through and which the caller owns. */
     const val HOOK_SIZE = 48L
 
@@ -328,6 +338,9 @@ internal object SpaAbi {
     const val METADATA_EVENTS_PROPERTY = 8L
     const val VERSION_METADATA_EVENTS = 0
 
+    /** `pw_metadata_methods`, where writing a default goes. */
+    const val METADATA_METHOD_SET_PROPERTY = 16L
+
     /** The interface version a bind asks for. */
     const val VERSION_METADATA = 3
 
@@ -378,6 +391,9 @@ internal object SpaAbi {
     /** Somebody playing, which is what recording one application aims at. */
     const val MEDIA_CLASS_STREAM_OUTPUT = "Stream/Output/Audio"
 
+    /** Somebody recording, which is the other half of what a mixer lists. */
+    const val MEDIA_CLASS_STREAM_INPUT = "Stream/Input/Audio"
+
     /**
      * A number that names one object for the life of the graph.
      *
@@ -407,6 +423,16 @@ internal object SpaAbi {
      * it and keeps it; a pulse client sets it and has the shim recompute it
      * from the buffer size that client asked for.
      */
+    /** The two ends of a link, each the global id of a node, as decimal strings. */
+    const val KEY_LINK_OUTPUT_NODE = "link.output.node"
+    const val KEY_LINK_INPUT_NODE = "link.input.node"
+
+    /** What a stream says it is playing, which is a mixer row's second line. */
+    const val KEY_MEDIA_NAME = "media.name"
+
+    /** Which client a node belongs to, so a mixer can tell its own rows apart. */
+    const val KEY_CLIENT_ID = "client.id"
+
     const val KEY_NODE_LATENCY = "node.latency"
     const val KEY_NODE_RATE = "node.rate"
     const val KEY_TARGET_OBJECT = "target.object"
