@@ -71,10 +71,20 @@ every one of them and passes the same contract suites. It also lists devices,
 reads which one is default out of the object the session manager writes it into,
 carries each device's own volume, and can record one application's output.
 
-On the same graph the two now report the same capabilities but one: the sample
-cache, which is a feature of the PulseAudio protocol rather than of the graph.
-So the native path is reached with `-Dlibsound.backend=pipewire`, and which
-backend won is the first line either of them logs.
+On the same graph the two report the same capabilities but one: the sample cache,
+which is a feature of the PulseAudio protocol rather than of the graph.
+
+The native path is what `AudioBackends.open` returns on Linux, with libpulse
+below it for the machine running real PulseAudio and the one running PipeWire
+without `pipewire-pulse`. A consumer that needs the sample cache asks for it and
+gets the rung that has it, rather than losing it to a promotion:
+
+```kotlin
+AudioBackends.open("Example", setOf(Capability.SAMPLE_CACHE))
+```
+
+Which backend won is the first line either of them logs, and
+`-Dlibsound.backend=` pins one for anybody comparing them.
 MPRIS carries repeat, shuffle and fullscreen in both directions, each optional
 the way the specification means it: a player with no queue to repeat does not
 advertise the property, so a widget draws no button for it.
@@ -241,7 +251,8 @@ something to depend on directly.
 | Area | State |
 |---|---|
 | Contracts and core | Done. Types, sink and session contracts, ring buffer, pull pump, fake backend, contract suite. |
-| Linux audio (libpulse) | Done and exercised. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. |
+| Linux audio (PipeWire natively) | Done and exercised, and what `AudioBackends.open` returns on Linux. Streams in both directions on a `pw_stream`, a POD encoder and decoder checked against `spa_pod_builder`'s own bytes, a device list from the registry with each device's own volume, the default read out of the metadata object the session manager writes it into, and one application's output recordable on its own. Both contract suites pass against a live graph. |
+| Linux audio (libpulse) | Done and exercised, and the rung below. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. It reaches PulseAudio itself, and PipeWire on a machine that has no `pipewire-pulse`. |
 | Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events, per-stream level meters -- and everything it changes put back. |
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
 | Windows audio (WASAPI) | Runs. Device enumeration, playback, playhead and volume execute on every push against a Windows JVM under wine, and so does the sink contract suite -- the rules a consumer's clock rides on, asserted against a real WASAPI implementation rather than argued from the code. Gradle cannot run there, so the suite is started through the JUnit launcher directly. What none of it checks is hardware: real devices need [docs/TESTING.md](docs/TESTING.md). |
@@ -257,7 +268,7 @@ something to depend on directly.
 | Capture (fallback) | Done and exercised. `TargetDataLine` behind the same contract, losing the same things the fallback sink loses and one more: nothing there counts what went past unread. |
 | Capture (Windows, macOS) | Absent. `IAudioCaptureClient`'s vtable slots have not come from an oracle yet, and macOS capture needs a bundle, a signature and a live user session, which no runner can provide. |
 | Device and card control | Done on Linux and exercised. Devices carry their own volume, mute, suspended state and ports; the mixer sets all of it, moves the default, switches card profiles, and creates virtual and combined sinks that it removes again. |
-| Sample cache | Done on Linux, and probed rather than assumed: a silent frame is uploaded, looked up and removed at connect, because whether a server keeps a cache at all is a fact about the server. |
+| Sample cache | Done on the libpulse backend, and probed rather than assumed: a silent frame is uploaded, looked up and removed at connect, because whether a server keeps a cache at all is a fact about the server. It is a feature of the PulseAudio protocol with nothing behind it in the graph, so the native backend has none and says so, and a consumer that needs one names it in `AudioBackends.open`. |
 | macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`VolumeMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/VolumeMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux

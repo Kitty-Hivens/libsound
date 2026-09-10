@@ -1295,7 +1295,7 @@ stream this process plays through.
 
 ### 13.9 Selection, and what happens on a machine without a graph
 
-`AudioBackends.open` gains a rung above the existing one:
+`AudioBackends.open` has a rung above the existing one, and it is the default:
 
 ```
 PipeWire native -> libpulse -> JavaSound
@@ -1333,9 +1333,35 @@ and a machine that has the graph and not the shim is one of the two machines the
 rung below exists for. So the honest answer is that the native backend has no
 sample cache and says so, which is what `Capability` is for.
 
-That leaves the promotion as a trade rather than an upgrade, and it is the one
-open decision in this section: four exotic layouts, a 64-bit float and a node's
-own latency, against a working sample cache on the default path.
+That made the promotion a trade rather than an upgrade, and taking it as a trade
+would have meant removing a working feature from everyone who had it. So the
+trade was refused rather than accepted: `open` takes an optional set of
+capabilities the caller needs, and answers with the first rung that offers them.
+
+```kotlin
+AudioBackends.open("Example")                                   // pipewire
+AudioBackends.open("Example", setOf(Capability.SAMPLE_CACHE))   // pulse
+```
+
+The same question `capabilities` already answered, asked one step earlier, and
+it is for the consumer that cannot adapt. One that can should open plainly and
+hide what is missing, which is what every other capability here is for. A rung
+that opens and turns out to be short is closed again rather than left attached,
+and a capability nothing on the machine offers answers null instead of a backend
+that was already told it would not do.
+
+The property still pins either and now wins over the request, with the
+disagreement logged. A run that pinned a backend and silently got another
+measures the wrong thing, which is the one failure a pin exists to prevent.
+
+**One thing had to be fixed before the promotion could be safe**, and it was
+invisible while the native backend was reachable only by asking. Loading
+libpipewire and starting a thread loop touches no socket, measured, so on a
+machine with the library installed and no graph running both succeeded and
+`connectOrNull` answered with a backend whose first sink would fail. Harmless
+while nothing selected it; not harmless as a rung, because by then the selection
+has committed and the rung below is gone. The registry's connect is the test for
+a graph now, rather than an extra a backend could do without.
 
 ### 13.10 Open questions
 
