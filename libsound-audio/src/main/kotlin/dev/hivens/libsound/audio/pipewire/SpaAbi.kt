@@ -104,6 +104,17 @@ internal object SpaAbi {
     const val STREAM_FLAG_MAP_BUFFERS = 0x0000_0004
     const val STREAM_FLAG_RT_PROCESS = 0x0000_0010
 
+    /**
+     * Keeps a stream on the object it was aimed at.
+     *
+     * Recording one application means naming its node, and a stream that
+     * reconnected when that node went would quietly start recording whatever
+     * the graph offered instead. The same trap `PA_STREAM_DONT_MOVE` answers on
+     * the other side, and worth more here because what it would record instead
+     * is a microphone.
+     */
+    const val STREAM_FLAG_DONT_RECONNECT = 0x0000_0080
+
     /** `PW_ID_ANY`, which is how a stream says it does not name a target. */
     const val ID_ANY = -1
 
@@ -326,6 +337,20 @@ internal object SpaAbi {
     const val MEDIA_CLASS_SINK = "Audio/Sink"
     const val MEDIA_CLASS_SOURCE = "Audio/Source"
 
+    /** Somebody playing, which is what recording one application aims at. */
+    const val MEDIA_CLASS_STREAM_OUTPUT = "Stream/Output/Audio"
+
+    /**
+     * A number that names one object for the life of the graph.
+     *
+     * Not the global id, which is recycled, and that difference is what makes
+     * this the safe thing to aim a capture at: a serial is monotonic and never
+     * reused, so it either names the object meant or names nothing.
+     *
+     * It is also the index `pipewire-pulse` gives that object, measured on
+     * 1.6.8 against `pactl list short sink-inputs`, which is what lets an id
+     * from the mixer be resolved here at all.
+     */
     const val KEY_OBJECT_SERIAL = "object.serial"
     const val KEY_NODE_NICK = "node.nick"
     const val KEY_DEVICE_DESCRIPTION = "device.description"

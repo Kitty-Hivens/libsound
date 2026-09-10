@@ -7,6 +7,9 @@ import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.PcmRingBuffer
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.StreamDirection
+import dev.hivens.libsound.StreamId
+import dev.hivens.libsound.audio.pulse.PulseStreamHandle
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -42,6 +45,7 @@ internal class PipeWireSource(
     private val loop: PipeWireLoop,
     private val config: SourceConfig,
     override val capabilities: Capabilities,
+    private val registry: PipeWireRegistry? = null,
 ) : AudioSource {
 
     private val log = LoggerFactory.getLogger("libsound.PipeWire")
@@ -123,7 +127,12 @@ internal class PipeWireSource(
 
                 val flags = SpaAbi.STREAM_FLAG_AUTOCONNECT or
                     SpaAbi.STREAM_FLAG_MAP_BUFFERS or
-                    SpaAbi.STREAM_FLAG_INACTIVE
+                    SpaAbi.STREAM_FLAG_INACTIVE or
+                    // A stream aimed at one application stays aimed at it. Let
+                    // it reconnect and the graph would give it whatever was
+                    // available when that application left, which here means
+                    // handing a caller a microphone it did not ask for.
+                    (if (config.captureStream != null) SpaAbi.STREAM_FLAG_DONT_RECONNECT else 0)
                 val rc = lib.handle("pw_stream_connect").invokeExact(
                     created, SpaAbi.DIRECTION_INPUT, SpaAbi.ID_ANY, flags, params, 1,
                 ) as Int
@@ -388,7 +397,19 @@ internal class PipeWireSource(
             config.iconName?.let { add(SpaAbi.KEY_APP_ICON_NAME to it) }
             add(SpaAbi.KEY_NODE_LATENCY to "${format.framesFor(config.targetNanos)}/${format.sampleRate}")
             add(SpaAbi.KEY_NODE_RATE to "1/${format.sampleRate}")
-            config.device?.let { add(SpaAbi.KEY_TARGET_OBJECT to it.value) }
+            val stream = config.captureStream
+            if (stream != null) {
+                // The device is ignored beside it, which the contract already
+                // says: the device is then whichever one the target is playing
+                // to, so naming another would be a contradiction rather than a
+                // preference.
+                // pw_stream_connect turns STREAM_FLAG_DONT_RECONNECT into the
+                // matching property itself, so this names the target and
+                // nothing else.
+                add(SpaAbi.KEY_TARGET_OBJECT to serialOf(stream).toString())
+            } else {
+                config.device?.let { add(SpaAbi.KEY_TARGET_OBJECT to it.value) }
+            }
         }
         val items = setup.allocate(SpaAbi.DICT_ITEM_SIZE * entries.size, 8)
         entries.forEachIndexed { index, (key, value) ->
@@ -456,6 +477,36 @@ internal class PipeWireSource(
                 lib.handle("pw_stream_destroy").invokeExact(current) as Unit
             }
         }.onFailure { log.warn("capture stream teardown threw: {}", it.message) }
+    }
+
+    /**
+     * The serial behind a [StreamId], checked against the graph.
+     *
+     * The id comes from `VolumeMixer`, which speaks the pulse protocol even on
+     * a machine whose backend does not, so what arrives is that mixer's own
+     * shape. Its number is the object serial, measured on `pipewire-pulse`
+     * 1.6.8 against `pactl list short sink-inputs`, and a serial is monotonic
+     * and never reused, so it names the application meant or names nothing.
+     *
+     * Checked rather than passed through, and this is the whole reason the
+     * registry is a parameter here. An unknown serial left to the graph would
+     * autoconnect, and a caller that asked to record one application would be
+     * handed the default input instead, which is a microphone in a room.
+     */
+    private fun serialOf(stream: StreamId): Long {
+        val handle = PulseStreamHandle.parse(stream)
+        if (handle == null || handle.direction != StreamDirection.PLAYBACK) {
+            throw AudioException(
+                "$stream does not name a playback stream; captureStream takes an id from VolumeMixer.streams()",
+            )
+        }
+        val watching = registry ?: throw AudioException(
+            "this backend has no registry connection, so it cannot tell which stream $stream is",
+        )
+        if (!watching.isPlaying(handle.index.toLong())) {
+            throw AudioException("$stream is not playing on this graph any more")
+        }
+        return handle.index.toLong()
     }
 
     private fun refuseUnacceptable(format: AudioFormat) {

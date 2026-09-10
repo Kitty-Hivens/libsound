@@ -315,7 +315,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,PulseDeviceControl,PulsePerStreamCapture,PulseSampleCache,PipeWireSinkContract,PipeWireSourceContract,PipeWireBackend,SpaPod,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,PulseDeviceControl,PulsePerStreamCapture,PulseSampleCache,PipeWireSinkContract,PipeWireSourceContract,PipeWireBackend,PipeWirePerStreamCapture,SpaPod,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure

@@ -130,6 +130,11 @@ int main(void) {
     HEX(PW_STREAM_FLAG_MAP_BUFFERS);
     HEX(PW_STREAM_FLAG_RT_PROCESS);
     HEX(PW_STREAM_FLAG_INACTIVE);
+    /* What keeps a stream on the object it was aimed at. Recording one
+     * application means naming its node, and a stream that reconnected when
+     * that node went would quietly start recording something else, which is the
+     * same trap PA_STREAM_DONT_MOVE answers on the other side. */
+    HEX(PW_STREAM_FLAG_DONT_RECONNECT);
     P(PW_DIRECTION_INPUT);
     P(PW_DIRECTION_OUTPUT);
     P(PW_ID_ANY);
@@ -479,6 +484,11 @@ int main(void) {
     printf("  %-30s = %s\n", "PW_KEY_NODE_AUTOCONNECT", PW_KEY_NODE_AUTOCONNECT);
     printf("  %-30s = %s\n", "PW_KEY_TARGET_OBJECT", PW_KEY_TARGET_OBJECT);
     printf("  %-30s = %s\n", "PW_KEY_STREAM_CAPTURE_SINK", PW_KEY_STREAM_CAPTURE_SINK);
+    printf("  %-30s = %s\n", "PW_KEY_NODE_DONT_RECONNECT", PW_KEY_NODE_DONT_RECONNECT);
+    /* What a Stream node calls itself, which is what a per-application capture
+     * has to find in the registry before it can aim at one. */
+    printf("  %-30s = %s\n", "MEDIA_CLASS Stream/Output/Audio", "Stream/Output/Audio");
+    printf("  %-30s = %s\n", "MEDIA_CLASS Stream/Input/Audio", "Stream/Input/Audio");
     /* What a registry global says it is, which is the whole of a device list:
      * Audio/Sink and Audio/Source are devices, Stream/Output/Audio and its
      * sibling are somebody playing. */

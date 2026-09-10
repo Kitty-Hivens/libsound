@@ -72,11 +72,26 @@ internal class PipeWireBackend private constructor(
                     // The device's own, not a stream's, which is what the
                     // registry binds each audio node to reach.
                     Capability.DEVICE_VOLUME,
+                    // Recording one application means naming its node, and
+                    // knowing which node is the registry's answer.
+                    Capability.PER_STREAM_CAPTURE,
                 ),
         )
     }
 
     private val closed = AtomicBoolean(false)
+
+    /**
+     * A source's, which is the backend's own minus what a source cannot do.
+     *
+     * Recording one application rather than a device is the one entry that
+     * depends on the second connection, because aiming at a stream means
+     * checking that the stream is there.
+     */
+    private val sourceCapabilities: Capabilities = Capabilities(
+        SOURCE_CAPABILITIES.supported +
+            if (registry == null) emptySet() else setOf(Capability.PER_STREAM_CAPTURE),
+    )
 
     private val sinks = CopyOnWriteArrayList<PipeWireSink>()
     private val sources = CopyOnWriteArrayList<PipeWireSource>()
@@ -119,7 +134,7 @@ internal class PipeWireBackend private constructor(
      */
     override fun createSource(config: SourceConfig): AudioSource {
         if (closed.get()) throw AudioException("backend is closed")
-        val source = PipeWireSource(loop, config, SOURCE_CAPABILITIES)
+        val source = PipeWireSource(loop, config, sourceCapabilities, registry)
         sources.add(source)
         return source
     }
