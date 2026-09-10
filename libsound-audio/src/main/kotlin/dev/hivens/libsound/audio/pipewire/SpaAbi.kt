@@ -145,9 +145,25 @@ internal object SpaAbi {
      * the same failure when it is wrong, which is a call through a function
      * that is not the one meant.
      */
+    const val INTERFACE_SIZE = 32L
+    const val INTERFACE_TYPE = 0L
+    const val INTERFACE_VERSION = 8L
     const val INTERFACE_CB_FUNCS = 16L
 
-    /** `pw_core_methods`, where `get_registry` lives. */
+    /**
+     * The interface's own data, which is the first argument every method on it
+     * takes.
+     *
+     * Measured on 1.6.8 rather than assumed: for every proxy pipewire hands
+     * out, this field holds the proxy itself, so passing one where the other
+     * belongs is currently indistinguishable. The field is read anyway because
+     * that is what the macro does and nothing promises the two keep coinciding,
+     * least of all for an interface that is not a proxy.
+     */
+    const val INTERFACE_CB_DATA = 24L
+
+    /** `pw_core_methods`, where `sync` and `get_registry` live. */
+    const val CORE_METHOD_SYNC = 24L
     const val CORE_METHOD_GET_REGISTRY = 48L
 
     /** `pw_registry_methods`, where `bind` lives. */
@@ -156,6 +172,32 @@ internal object SpaAbi {
 
     const val VERSION_CORE = 4
     const val VERSION_REGISTRY = 3
+
+    // -- core events, which is where a round trip comes back -----------------
+
+    /**
+     * Ten slots, of which two are filled. Handed over whole like every other
+     * events struct here, so the size matters as much as the offsets.
+     *
+     * This is what makes a connect wait for an answer rather than for a clock.
+     * `sync` is replied to only after everything the server had already queued,
+     * so a `done` carrying the seq a sync returned means the burst of globals
+     * is delivered and anything bound out of it has answered.
+     *
+     * That `pw_proxy_add_object_listener` delivers these on a core was measured
+     * against a live graph rather than read off the header, which carries a
+     * second listener list for the core that a different call reaches.
+     */
+    const val CORE_EVENTS_SIZE = 80L
+    const val CORE_EVENTS_VERSION = 0L
+    const val CORE_EVENTS_INFO = 8L
+    const val CORE_EVENTS_DONE = 16L
+    const val CORE_EVENTS_PING = 24L
+    const val CORE_EVENTS_ERROR = 32L
+    const val VERSION_CORE_EVENTS = 1
+
+    /** The core's own id, which is the subject a connect-time sync names. */
+    const val ID_CORE = 0
 
     // -- registry events -----------------------------------------------------
 
@@ -170,14 +212,56 @@ internal object SpaAbi {
     const val REGISTRY_EVENTS_GLOBAL_REMOVE = 16L
     const val VERSION_REGISTRY_EVENTS = 0
 
-    /** What a global says it is. A node is what a device list is made of. */
+    /**
+     * What a global says it is, and what a proxy answers when asked what it is.
+     *
+     * A node is what a device list is made of. The other three are the proxies
+     * this backend holds or walks, and each of them declares its own name at
+     * offset zero, which is the one check a method table walk can make about
+     * the pointer it was handed before calling through it.
+     */
     const val INTERFACE_CORE = "PipeWire:Interface:Core"
+    const val INTERFACE_REGISTRY = "PipeWire:Interface:Registry"
     const val INTERFACE_NODE = "PipeWire:Interface:Node"
     const val INTERFACE_DEVICE = "PipeWire:Interface:Device"
     const val INTERFACE_METADATA = "PipeWire:Interface:Metadata"
 
     /** `struct spa_hook`, which a listener is registered through and which the caller owns. */
     const val HOOK_SIZE = 48L
+
+    // -- metadata, which is where the default device lives -------------------
+
+    /**
+     * One slot, and it reports a change rather than answering a question. A
+     * proxy bound to the metadata object is sent one property event per entry
+     * already in it, so the current value arrives without being asked for, the
+     * same shape the registry's globals have.
+     *
+     * The callback returns an int rather than nothing, which is the only place
+     * in this binding where that is true and the only reason this size is
+     * worth stating twice.
+     */
+    const val METADATA_EVENTS_SIZE = 16L
+    const val METADATA_EVENTS_VERSION = 0L
+    const val METADATA_EVENTS_PROPERTY = 8L
+    const val VERSION_METADATA_EVENTS = 0
+
+    /** The interface version a bind asks for. */
+    const val VERSION_METADATA = 3
+
+    /** Which metadata object this is. The graph carries several. */
+    const val KEY_METADATA_NAME = "metadata.name"
+
+    /** The one holding the defaults, against `settings`, `sm-objects` and the rest. */
+    const val METADATA_DEFAULT = "default"
+
+    /**
+     * What the session manager decided, against `default.configured.audio.sink`
+     * which is what a person asked for. The configured one names a device that
+     * may not be present; this one names the device audio is actually going to.
+     */
+    const val METADATA_KEY_DEFAULT_SINK = "default.audio.sink"
+    const val METADATA_KEY_DEFAULT_SOURCE = "default.audio.source"
 
     // -- properties a volume is set through ----------------------------------
 

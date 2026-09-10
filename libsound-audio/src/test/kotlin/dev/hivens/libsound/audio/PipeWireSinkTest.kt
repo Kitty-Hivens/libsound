@@ -18,7 +18,9 @@ import dev.hivens.libsound.audio.pulse.PulseAbi
 import dev.hivens.libsound.testing.AudioSinkContract
 import dev.hivens.libsound.testing.AudioSourceContract
 import io.kotest.assertions.withClue
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
@@ -264,6 +266,36 @@ class PipeWireBackendTest {
     }
 
     @Test
+    fun `a connection that has just returned already knows the graph`() {
+        // The connect-time contract, on a backend of its own: every other case
+        // here runs long after the fixture connected, so it would hold whether
+        // anything waited for the graph or not.
+        //
+        // A registry global is an event rather than a reply, so no call's
+        // returning means the list is complete. What connect waits out instead
+        // is two syncs, which the graph answers after everything it had already
+        // queued: one for the globals and one for what binding the metadata
+        // object among them asked for.
+        //
+        // A guard rather than a proof, and worth saying so. On a machine where
+        // the graph answers faster than the harness gets to the assertion this
+        // passes with no waiting at all, which was measured, so what it catches
+        // is a connection that enumerates nothing rather than one that
+        // enumerates late.
+        val fresh = checkNotNull(PipeWireBackend.connectOrNull("$APP_NAME fresh"))
+        try {
+            withClue("connect returned before the graph had been enumerated") {
+                fresh.devices().isNotEmpty() shouldBe true
+            }
+            withClue("connect returned before the default was known") {
+                fresh.defaultDevice() shouldNotBe null
+            }
+        } finally {
+            fresh.close()
+        }
+    }
+
+    @Test
     fun `a device names something a stream can actually be pointed at`() {
         // The list is only worth having if its ids work, and here an id is a
         // node.name that goes across as target.object. A device menu whose rows
@@ -279,16 +311,30 @@ class PipeWireBackendTest {
     }
 
     @Test
-    fun `which device is default is unknown rather than guessed`() {
-        // The one question this backend cannot answer. It is not a property of
-        // the graph: the session manager writes it into a metadata object, and
-        // reading that means binding a proxy. Null is what the contract says to
-        // answer when it is unknown, and answering the first device instead
-        // would be a guess a settings screen would draw a tick beside.
+    fun `which device is default is read rather than guessed`() {
+        // Not a property of the graph. The session manager writes it into a
+        // metadata object, so the answer comes from binding that object and
+        // listening to it, which is the one proxy this backend holds.
+        //
+        // Asserted against the list rather than against a name, because the
+        // name is the machine's: what has to be true is that the default is one
+        // of the devices offered, that it is marked as the default there, and
+        // that exactly one row is.
         val backend = checkNotNull(PipeWireFixture.backend)
-        backend.defaultDevice() shouldBe null
-        backend.defaultCaptureDevice() shouldBe null
-        backend.devices().none { it.isDefault } shouldBe true
+        val default = backend.defaultDevice()
+        withClue("the graph named no default sink") { default shouldNotBe null }
+        val devices = backend.devices()
+        devices.count { it.isDefault } shouldBe 1
+        devices.first().isDefault shouldBe true
+        devices.map { it.id } shouldContain checkNotNull(default).id
+        // The capture side goes through the same object and is allowed to be
+        // unknown: a graph whose only input is a sink's monitor has a default
+        // naming a node that is not in the capture list, because a monitor is
+        // not a node of its own here.
+        backend.defaultCaptureDevice()?.let { input ->
+            backend.captureDevices().map { it.id } shouldContain input.id
+            input.isDefault shouldBe true
+        }
     }
 
     @Test
