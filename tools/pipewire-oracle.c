@@ -429,6 +429,19 @@ int main(void) {
     P(offsetof(struct pw_node_methods, send_command));
     P(PW_VERSION_NODE_METHODS);
 
+    /* The info event carries whether the node is suspended, which is the other
+     * thing a device row on the libpulse side reports and this one could not. */
+    P(sizeof(struct pw_node_info));
+    P(offsetof(struct pw_node_info, id));
+    P(offsetof(struct pw_node_info, change_mask));
+    P(offsetof(struct pw_node_info, state));
+    P(offsetof(struct pw_node_info, props));
+    P(PW_NODE_STATE_ERROR);
+    P(PW_NODE_STATE_CREATING);
+    P(PW_NODE_STATE_SUSPENDED);
+    P(PW_NODE_STATE_IDLE);
+    P(PW_NODE_STATE_RUNNING);
+
     /* Reading a POD needs the array body's shape as well as the header's: an
      * array is a child size and a child type before the elements, which is what
      * makes a six element array of ids thirty two bytes rather than twenty

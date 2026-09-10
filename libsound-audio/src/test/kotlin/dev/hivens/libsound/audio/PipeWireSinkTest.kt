@@ -15,6 +15,7 @@ import dev.hivens.libsound.StreamDirection
 import dev.hivens.libsound.audio.pipewire.PipeWireBackend
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pulse.PulseAbi
+import dev.hivens.libsound.audio.pulse.PulseBackend
 import dev.hivens.libsound.testing.AudioSinkContract
 import dev.hivens.libsound.testing.AudioSourceContract
 import io.kotest.assertions.withClue
@@ -26,8 +27,12 @@ import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import kotlin.math.abs
 
 private const val APP_NAME = "libsound pipewire suite"
+
+/** One step of the pulse protocol's own volume scale is far finer than this. */
+private const val VOLUME_TOLERANCE = 0.01f
 
 private object PipeWireFixture {
     var backend: AudioBackend? = null
@@ -263,6 +268,62 @@ class PipeWireBackendTest {
         sinks.all { it.id.value.isNotBlank() && it.name.isNotBlank() } shouldBe true
         sinks.all { it.direction == StreamDirection.PLAYBACK } shouldBe true
         backend.captureDevices().all { it.direction == StreamDirection.CAPTURE } shouldBe true
+    }
+
+    @Test
+    fun `a device row carries the device's own volume, on the same scale as the shim`() {
+        // The one thing on a device row that is not on the global's property
+        // dict. It is a parameter of the node, so it costs a bind and a
+        // subscription, and it is the last of the device fields the libpulse
+        // backend reported and this one could not.
+        //
+        // The scale is asserted rather than assumed, and against the other
+        // backend rather than against a constant. Both report linear amplitude:
+        // half through the pulse protocol is a quarter of the way up a slider
+        // and reads here as an eighth, because the protocol's own scale is the
+        // cube root. A backend that reported the slider position instead would
+        // pass every test that only checked the range.
+        val backend = checkNotNull(PipeWireFixture.backend)
+        (Capability.DEVICE_VOLUME in backend.capabilities) shouldBe true
+        val devices = backend.devices()
+        withClue("no device row carried a volume") {
+            devices.any { it.volume != null } shouldBe true
+        }
+        devices.forEach { device ->
+            withClue(device.name) {
+                device.volume?.let { (it in 0f..1f) shouldBe true }
+                device.muted shouldNotBe null
+            }
+        }
+    }
+
+    @Test
+    fun `the two backends report the same device at the same volume`() {
+        // The scale, checked against the other path to the same graph rather
+        // than against a number written down here.
+        //
+        // Neither reports what a slider shows. The pulse protocol's own scale
+        // is the cube root of amplitude, and pa_sw_volume_to_linear undoes it,
+        // so a sink at half on a slider is 0.125 on both sides. A backend that
+        // passed the graph's float through where the other cubed it, or the
+        // reverse, would still be inside nought to one and would still look
+        // right in a settings screen, and this is the only place the two can
+        // disagree loudly.
+        val native = checkNotNull(PipeWireFixture.backend)
+        val shim = PulseBackend.connectOrNull("$APP_NAME shim") ?: return
+        try {
+            val theirs = shim.devices().associate { it.id to it.volume }
+            val shared = native.devices().filter { it.id in theirs && it.volume != null }
+            withClue("the two backends named no device in common") { shared.isNotEmpty() shouldBe true }
+            shared.forEach { device ->
+                val other = theirs.getValue(device.id)
+                withClue("${device.id}: native ${device.volume} against shim $other") {
+                    (abs(checkNotNull(device.volume) - checkNotNull(other)) < VOLUME_TOLERANCE) shouldBe true
+                }
+            }
+        } finally {
+            shim.close()
+        }
     }
 
     @Test

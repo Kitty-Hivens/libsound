@@ -34,8 +34,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * ## What it does not do
  *
- * A device's own volume, which is `SPA_PARAM_Props` on a bound node and needs
- * a POD reader where everything here so far only writes them.
+ * A sample cache, which is a PulseAudio idea the graph has no equivalent of,
+ * and per-application capture, which needs the registry to name a stream rather
+ * than a device.
  *
  * Everything past that is `VolumeMixer`'s: what else is playing, how loud, and
  * where. That interface answers those over the pulse protocol and is not
@@ -68,6 +69,9 @@ internal class PipeWireBackend private constructor(
                     Capability.DEVICE_ENUMERATION,
                     Capability.DEVICE_SELECTION,
                     Capability.DEVICE_EVENTS,
+                    // The device's own, not a stream's, which is what the
+                    // registry binds each audio node to reach.
+                    Capability.DEVICE_VOLUME,
                 ),
         )
     }
