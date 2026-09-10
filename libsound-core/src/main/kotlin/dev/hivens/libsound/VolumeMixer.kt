@@ -203,6 +203,12 @@ public interface VolumeMixer : AutoCloseable {
      *
      * The devices a card offers change with its profile, so a consumer redraws
      * its device list afterwards rather than assuming the old one survived.
+     *
+     * Recorded and put back by [restoreAll], and it carries the strongest
+     * version of that obligation in this interface. A volume left low is
+     * something a user can find and fix; a card left on a profile nobody chose
+     * is a machine whose speakers have stopped working with nothing on screen
+     * to explain it.
      */
     public fun setCardProfile(card: CardId, profile: String): Boolean
 
@@ -212,6 +218,10 @@ public interface VolumeMixer : AutoCloseable {
      *
      * The headphone socket against the speakers, an HDMI output that is wired
      * and idle. [AudioDevice.ports] is where the names come from.
+     *
+     * Recorded and put back by [restoreAll], for the reason
+     * [setCardProfile] is: a device left playing out of the wrong socket is
+     * silence a user has no way to attribute.
      */
     public fun setDevicePort(device: DeviceId, port: String): Boolean
 
@@ -235,6 +245,11 @@ public interface VolumeMixer : AutoCloseable {
      * inside that window can be replaced by a value nobody here chose, which
      * the server reports as a successful request all the same. A consumer that
      * needs the setting to hold asks again once the device has settled.
+     *
+     * [channels] is honoured or refused, never narrowed. A backend that cannot
+     * lay out that many channels answers null rather than handing back a
+     * device with fewer, because a caller that asked for a six-channel bus and
+     * received a stereo one finds out by hearing four of its channels vanish.
      */
     public fun createVirtualSink(name: String, channels: Int = 2): DeviceId?
 
@@ -257,9 +272,15 @@ public interface VolumeMixer : AutoCloseable {
      * around a video wants it at the end of the video, not at the end of the
      * process.
      *
-     * Devices this process created are removed before volumes are put back,
-     * and the order is load-bearing: a stream restored onto a device that is
-     * about to vanish ends up somewhere nobody chose.
+     * The order is load-bearing and runs from what makes devices exist towards
+     * what is set on them: devices this process created are removed, then card
+     * profiles go back, then device ports, then every volume and mute. A stream
+     * restored onto a device that is about to vanish ends up somewhere nobody
+     * chose, and a volume applied to a sink a profile is about to destroy is
+     * applied to nothing.
+     *
+     * Everything except [setDefaultDevice], which is a decision rather than a
+     * change made on somebody's behalf.
      */
     public fun restoreAll()
 

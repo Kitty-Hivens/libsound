@@ -50,6 +50,24 @@ package dev.hivens.libsound
  *
  * Safe to call while stopped, which is where a seek calls it.
  *
+ * ### framePosition() answers while a write is in flight
+ *
+ * A consumer's clock reads the playhead from a thread that is not the one
+ * writing, and it reads it often. So a read must not wait for the write in
+ * flight to finish. What it may wait for is one transfer to the device, which
+ * is a buffer round trip at worst; what it may never wait for is the length of
+ * the write, which at [LatencyProfile.RELAXED] is a fifth of a second and
+ * against a stopped device is forever.
+ *
+ * The same goes for [latencyNanos]. Every backend here satisfies this by
+ * construction rather than by care, because each one's long wait releases
+ * whatever it holds: `pa_threaded_mainloop_wait` gives up the mainloop lock,
+ * the WASAPI sink sleeps outside its interface lock, the CoreAudio ring parks
+ * on a condition, and JavaSound blocks inside the JDK holding nothing of ours.
+ * It is written down because a fifth backend would not get it for free, and
+ * because a consumer that could not rely on it would have to poll the playhead
+ * from the writing thread, which is the one thread that cannot.
+ *
  * ### framePosition() need not be monotonic across a flush
  *
  * Some backends reconcile their counters around a flush or a restart. The
@@ -98,6 +116,32 @@ package dev.hivens.libsound
  * wraps. A filter that hides its depth makes every consumer's synchronisation
  * wrong by exactly that much.
  *
+ * ## What shapes it takes, asked rather than caught
+ *
+ * Backends do not accept the same set. libpulse has no 64-bit float at all, the
+ * JavaSound fallback takes whatever the JVM's default line takes and no more,
+ * and the two of them differ from what a CoreAudio unit will convert. The rest
+ * of this library answers that class of question through [Capabilities] rather
+ * than by failing, and this one is no different: [acceptedEncodings] is the
+ * ladder a consumer walks down, and [accepts] is the whole question including
+ * the channel count and the layout.
+ *
+ * The two are bound to [open] by contract. `accepts(format)` is true exactly
+ * when `open(format)` would not throw for want of the shape, and the contract
+ * suite asserts the pair against every encoding. A sink whose answer and whose
+ * behaviour disagree is worse than one that only fails, because a consumer that
+ * asked first has no second question to ask.
+ *
+ * ### Beyond stereo, the layout is a separate promise
+ *
+ * [Capability.CHANNEL_PLACEMENT] says whether a sink tells the device what each
+ * channel is. Where it is present, [AudioFormat.layout] is honoured and a
+ * layout the backend cannot express is refused by [accepts]. Where it is
+ * absent, the sink hands over a channel count and nothing else, the device
+ * applies its own convention, and a 5.1 stream can come out with the rears and
+ * the sides exchanged. Mono and stereo are the same everywhere and need no
+ * question asked; past them, this is the question.
+ *
  * ## Failure policy
  *
  * Unlike the tray and notification libraries, this one does not degrade
@@ -113,6 +157,31 @@ public interface AudioSink : AutoCloseable {
     /** What this sink can do. Constant for its lifetime. */
     public val capabilities: Capabilities
 
+    /**
+     * Every encoding this sink can be opened with. Always contains
+     * [PcmEncoding.S16LE], which is the floor every backend owes.
+     *
+     * The ladder a consumer walks down when the shape it has is not on offer,
+     * and the reason it is a set rather than a probe: a decoder choosing what
+     * to produce wants to choose once, before it has anything to hand over.
+     */
+    public val acceptedEncodings: Set<PcmEncoding>
+
+    /**
+     * Whether [open] would take this shape.
+     *
+     * The whole question, where [acceptedEncodings] is one part of it: a
+     * backend may take an encoding and refuse the channel count beside it, or
+     * take both and be unable to place the channels the layout names. False
+     * here means [open] throws, and the two are asserted against each other by
+     * the contract suite.
+     *
+     * The default answers on the encoding alone, which is the whole of it for a
+     * backend that places no channels and limits no counts. A backend that
+     * knows more overrides.
+     */
+    public fun accepts(format: AudioFormat): Boolean = format.encoding in acceptedEncodings
+
     /** The format currently open, or null before the first [open] and after [close]. */
     public val format: AudioFormat?
 
@@ -125,7 +194,11 @@ public interface AudioSink : AutoCloseable {
      * rate calls this again, and the previous stream and its buffered tail are
      * dropped first. The frame position restarts at zero.
      *
-     * @throws AudioException when the device cannot be opened.
+     * @throws AudioException when the device cannot be opened, which includes
+     *   every shape [accepts] answers false for. An exception rather than an
+     *   argument check, because a consumer walking down from what the media is
+     *   catches what the contract promises, and an `IllegalArgumentException`
+     *   goes straight past that and out of the player.
      */
     public fun open(format: AudioFormat)
 
@@ -154,13 +227,19 @@ public interface AudioSink : AutoCloseable {
      * Zero when the backend cannot tell -- which is itself information, so it is
      * not an error.
      *
-     * The whole path, and this is the number a consumer needs rather than the
-     * one that is easiest to produce: what is queued here, plus what the server
-     * holds, plus the device's own. A pacer that had to add its own estimate of
-     * the server's share would get it wrong differently on every machine. It is
-     * also how a consumer finds out what its [SinkConfig.latency] request was
-     * actually granted, since a profile is a request and the graph's quantum is
-     * a floor under it.
+     * The whole path where [Capability.TOTAL_LATENCY] is present: what is
+     * queued here, plus what the server holds, plus the device's own. That is
+     * the number a pacer needs rather than the one that is easiest to produce,
+     * and it is how a consumer finds out what its [SinkConfig.latency] request
+     * was actually granted, since a profile is a request and the graph's
+     * quantum is a floor under it.
+     *
+     * Where the capability is absent this is what the client has queued and
+     * nothing else, because that backend has no way to ask the hardware. It is
+     * short by a fixed amount, and a consumer must not make that amount up:
+     * adding an estimate of the missing share is what gets it wrong differently
+     * on every machine, which is the reason this number is specified rather
+     * than left to each caller.
      */
     public fun latencyNanos(): Long
 

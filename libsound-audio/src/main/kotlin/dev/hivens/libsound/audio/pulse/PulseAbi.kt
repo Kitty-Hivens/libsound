@@ -1,5 +1,9 @@
 package dev.hivens.libsound.audio.pulse
 
+import dev.hivens.libsound.ChannelLayout
+import dev.hivens.libsound.ChannelPosition
+import dev.hivens.libsound.PcmEncoding
+
 /**
  * Constants and struct layouts for the libpulse subset this backend binds.
  *
@@ -246,8 +250,175 @@ internal object PulseAbi {
 
     // -- sample formats ------------------------------------------------------
 
+    const val SAMPLE_U8 = 0
     const val SAMPLE_S16LE = 3
     const val SAMPLE_FLOAT32LE = 5
+    const val SAMPLE_S32LE = 7
+
+    /**
+     * The packed 24-bit formats, for a device that asks for one.
+     *
+     * Not reachable from [PcmEncoding] and deliberately: FFmpeg has no 24-bit
+     * sample format, so 24-bit content arrives as S32LE with the value in the
+     * top bits, and packing it belongs next to a device that wants it packed
+     * rather than in the shape a consumer hands over.
+     */
+    const val SAMPLE_S24LE = 9
+    const val SAMPLE_S24_32LE = 11
+
+    const val SAMPLE_INVALID = -1
+
+    /**
+     * What libpulse calls the shape a consumer handed us, or null where the
+     * server has no name for it.
+     *
+     * Null is an answer rather than a gap: `pa_sample_format_t` has no 64-bit
+     * float at all, so a consumer that sends one has to be refused instead of
+     * quietly given something narrower. A sink that accepted a format and
+     * played another would be indistinguishable from one that worked.
+     */
+    fun sampleFormatOf(encoding: PcmEncoding): Int? = when (encoding) {
+        PcmEncoding.U8 -> SAMPLE_U8
+        PcmEncoding.S16LE -> SAMPLE_S16LE
+        PcmEncoding.S32LE -> SAMPLE_S32LE
+        PcmEncoding.F32LE -> SAMPLE_FLOAT32LE
+        PcmEncoding.F64LE -> null
+    }
+
+    /** The same table read the other way, for a consumer that asks before it opens. */
+    val ACCEPTED_ENCODINGS: Set<PcmEncoding> =
+        PcmEncoding.entries.filterTo(LinkedHashSet()) { sampleFormatOf(it) != null }
+
+    // -- pa_channel_map ------------------------------------------------------
+
+    /** `channels` is a byte at 0, then three of padding, then 32 ints. */
+    const val CHANNEL_MAP_CHANNELS = 0L
+    const val CHANNEL_MAP_MAP = 4L
+    const val CHANNEL_MAP_SIZE = 132L
+
+    /**
+     * `pa_channel_position_t`, printed by the oracle and not contiguous: the
+     * eleven ordinary positions run from 1 to 11 and the height ones resume at
+     * 44, with the auxiliary channels in between.
+     */
+    /** Not the same as front-centre: a mono stream is spread, a centre one is pinned. */
+    const val CHANNEL_POSITION_MONO = 0
+    const val CHANNEL_POSITION_FRONT_LEFT = 1
+    const val CHANNEL_POSITION_FRONT_RIGHT = 2
+    const val CHANNEL_POSITION_FRONT_CENTER = 3
+    const val CHANNEL_POSITION_REAR_CENTER = 4
+    const val CHANNEL_POSITION_REAR_LEFT = 5
+    const val CHANNEL_POSITION_REAR_RIGHT = 6
+    const val CHANNEL_POSITION_LFE = 7
+    const val CHANNEL_POSITION_FRONT_LEFT_OF_CENTER = 8
+    const val CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER = 9
+    const val CHANNEL_POSITION_SIDE_LEFT = 10
+    const val CHANNEL_POSITION_SIDE_RIGHT = 11
+    const val CHANNEL_POSITION_TOP_CENTER = 44
+    const val CHANNEL_POSITION_TOP_FRONT_LEFT = 45
+    const val CHANNEL_POSITION_TOP_FRONT_RIGHT = 46
+    const val CHANNEL_POSITION_TOP_FRONT_CENTER = 47
+    const val CHANNEL_POSITION_TOP_REAR_LEFT = 48
+    const val CHANNEL_POSITION_TOP_REAR_RIGHT = 49
+    const val CHANNEL_POSITION_TOP_REAR_CENTER = 50
+
+    /**
+     * What libpulse calls a position, or null where it has no name for it.
+     *
+     * Eighteen of the thirty-six positions FFmpeg names have an equivalent here.
+     * The rest are wide, downmix, binaural, a second LFE and the bottom row, and
+     * a null is what makes them a refusal rather than a channel placed
+     * somewhere nobody chose.
+     *
+     * The names differ where the concepts agree: what FFmpeg calls back is what
+     * libpulse calls rear, and the two mean the same speaker.
+     */
+    fun channelPositionOf(position: ChannelPosition): Int? = when (position) {
+        ChannelPosition.FL -> CHANNEL_POSITION_FRONT_LEFT
+        ChannelPosition.FR -> CHANNEL_POSITION_FRONT_RIGHT
+        ChannelPosition.FC -> CHANNEL_POSITION_FRONT_CENTER
+        ChannelPosition.LFE -> CHANNEL_POSITION_LFE
+        ChannelPosition.BL -> CHANNEL_POSITION_REAR_LEFT
+        ChannelPosition.BR -> CHANNEL_POSITION_REAR_RIGHT
+        ChannelPosition.BC -> CHANNEL_POSITION_REAR_CENTER
+        ChannelPosition.FLC -> CHANNEL_POSITION_FRONT_LEFT_OF_CENTER
+        ChannelPosition.FRC -> CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER
+        ChannelPosition.SL -> CHANNEL_POSITION_SIDE_LEFT
+        ChannelPosition.SR -> CHANNEL_POSITION_SIDE_RIGHT
+        ChannelPosition.TC -> CHANNEL_POSITION_TOP_CENTER
+        ChannelPosition.TFL -> CHANNEL_POSITION_TOP_FRONT_LEFT
+        ChannelPosition.TFC -> CHANNEL_POSITION_TOP_FRONT_CENTER
+        ChannelPosition.TFR -> CHANNEL_POSITION_TOP_FRONT_RIGHT
+        ChannelPosition.TBL -> CHANNEL_POSITION_TOP_REAR_LEFT
+        ChannelPosition.TBC -> CHANNEL_POSITION_TOP_REAR_CENTER
+        ChannelPosition.TBR -> CHANNEL_POSITION_TOP_REAR_RIGHT
+        ChannelPosition.DL, ChannelPosition.DR,
+        ChannelPosition.WL, ChannelPosition.WR,
+        ChannelPosition.SDL, ChannelPosition.SDR,
+        ChannelPosition.LFE2,
+        ChannelPosition.TSL, ChannelPosition.TSR,
+        ChannelPosition.BFC, ChannelPosition.BFL, ChannelPosition.BFR,
+        ChannelPosition.SSL, ChannelPosition.SSR,
+        ChannelPosition.TTL, ChannelPosition.TTR,
+        ChannelPosition.BIL, ChannelPosition.BIR,
+        -> null
+    }
+
+    /**
+     * What libpulse spells a position, printed by `pa_channel_position_to_string`.
+     *
+     * Needed as text as well as as a number, because a module argument carries
+     * a channel map as a comma-separated list of these. A name written from
+     * memory is refused at load time with a message nobody reads, and the
+     * device then simply does not exist.
+     */
+    fun channelNameOf(position: ChannelPosition): String? = when (channelPositionOf(position)) {
+        CHANNEL_POSITION_FRONT_LEFT -> "front-left"
+        CHANNEL_POSITION_FRONT_RIGHT -> "front-right"
+        CHANNEL_POSITION_FRONT_CENTER -> "front-center"
+        CHANNEL_POSITION_REAR_CENTER -> "rear-center"
+        CHANNEL_POSITION_REAR_LEFT -> "rear-left"
+        CHANNEL_POSITION_REAR_RIGHT -> "rear-right"
+        CHANNEL_POSITION_LFE -> "lfe"
+        CHANNEL_POSITION_FRONT_LEFT_OF_CENTER -> "front-left-of-center"
+        CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER -> "front-right-of-center"
+        CHANNEL_POSITION_SIDE_LEFT -> "side-left"
+        CHANNEL_POSITION_SIDE_RIGHT -> "side-right"
+        CHANNEL_POSITION_TOP_CENTER -> "top-center"
+        CHANNEL_POSITION_TOP_FRONT_LEFT -> "top-front-left"
+        CHANNEL_POSITION_TOP_FRONT_RIGHT -> "top-front-right"
+        CHANNEL_POSITION_TOP_FRONT_CENTER -> "top-front-center"
+        CHANNEL_POSITION_TOP_REAR_LEFT -> "top-rear-left"
+        CHANNEL_POSITION_TOP_REAR_RIGHT -> "top-rear-right"
+        CHANNEL_POSITION_TOP_REAR_CENTER -> "top-rear-center"
+        else -> null
+    }
+
+    /**
+     * A whole layout as the text a module argument takes, or null where a
+     * position has no name here.
+     *
+     * One channel is `mono` rather than `front-center`, the same translation
+     * [PulseChannelMap] makes for the same reason: libpulse keeps the two apart
+     * so a mono stream is spread and a centre one is pinned.
+     */
+    fun channelMapTextOf(layout: ChannelLayout): String? {
+        if (!layout.isSpecified) return null
+        if (layout.channels == 1) return "mono"
+        val names = layout.positions.map { channelNameOf(it) ?: return null }
+        return names.joinToString(",")
+    }
+
+    /**
+     * The first position this server cannot name, or null when it can name them
+     * all.
+     *
+     * What a refusal is built from: a consumer told which channel could not be
+     * placed can send the layout as a bare count and take the server's own
+     * ordering, or drop to something the server does understand.
+     */
+    fun unplaceable(layout: ChannelLayout): ChannelPosition? =
+        layout.positions.firstOrNull { channelPositionOf(it) == null }
 
     // -- context state -------------------------------------------------------
 

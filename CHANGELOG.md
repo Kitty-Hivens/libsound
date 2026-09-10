@@ -3,6 +3,169 @@
 All notable changes to libsound will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- **A stream pointer was read outside the lock that destroys it**, on both Linux
+  backends. Every reader took the field, checked it against null and only then
+  took the lock: a teardown running in that window freed the stream, and the
+  call that followed read freed memory inside the sound library, or wrote to it
+  through the volume control. The scenario is the one the sink contract
+  prescribes rather than a contrived one, since a clock reads the playhead from
+  a thread that is not the writer while a watchdog may close the sink. The read,
+  the check and the call now sit inside one locked block, and teardown claims
+  the pointer inside the same one.
+- A readiness wait with no bound. `open` on the native backend waited on a
+  condition nothing was obliged to signal, so a graph that stopped changing the
+  stream's state hung the caller for good and the timeout the code documented
+  was unreachable. It is bounded now, and a timeout throws rather than returning
+  as though the stream had started.
+- An `open` that failed left the sink open, with `isOpen` true and a format that
+  had not opened. A consumer walking down a ladder of encodings then wrote into
+  a ring nothing would drain.
+- `AudioSink.latencyNanos` on the native backend added three quantities as
+  though they shared a unit. Only one of the three is counted in the graph's
+  rate; the other two are in the stream's own, and a third part of the path was
+  not counted at all. A stream at 48 kHz on a graph at 44.1 was exactly the case
+  it got wrong.
+- `SinkConfig.realtime` was ignored by the native backend. Harmless while that
+  backend had to be asked for by name, and a silent loss once it became the
+  default: a caller whose lowest latency profile worked before got an ordinary
+  thread and no line saying why.
+- A capture period longer than the internal scratch was dropped without being
+  counted, which is the one thing `AudioSource` says must never happen. The same
+  callback also took the graph's chunk offset and length without holding them to
+  the mapping, where the playback half already did.
+- `AudioSink.underrunCount` counted the gap between `open` and the first write.
+  Opening starts the device, so every period before a consumer began feeding
+  came up short, and the number a consumer watches to decide whether it asked
+  for too little buffer reported a burst at every open and every track change.
+- Devices whose `media.class` the graph qualifies were dropped from both lists.
+  A loopback microphone is `Audio/Source/Virtual` and a device that plays and
+  records at once is `Audio/Duplex`, and neither matched the bare names.
+- `AudioSink.accepts` answered true above the channel count the graph can carry,
+  where the contract says a false answer is exactly an open that would throw.
+- The WASAPI sink claimed a 64-bit float and the audio engine refuses one, flag
+  to convert included, because the mix format is a 32-bit float. The same rule
+  broken on the other platform, and the contract suite is what caught both.
+- The native PipeWire backend answered with a backend on a machine that had
+  libpipewire installed and no graph running. Loading the library and starting a
+  thread loop reaches no server, so nothing before the first sink touched a
+  socket and there was no connection to fail. Harmless while that backend was
+  reachable only by name, and not harmless as a rung in the chain, because by
+  then the selection has committed and the rung below is gone.
+- **Anything past stereo was played with its channels in the wrong places on
+  Linux.** A `pa_sample_spec` carries a channel count and no positions, and the
+  sink connected its stream with a null channel map, so the server applied its
+  own default. That default is not a reordering of what a decoder sends: six
+  channels resolve to front-left, front-left-of-center, front-center,
+  front-right, front-right-of-center, rear-center, with no low frequency channel
+  in it at all. A 5.1 stream handed over in FFmpeg's order played its right
+  channel out of a front-left-of-center speaker and its low frequency channel
+  out of the front right at full level. Wrong from three channels upward, and
+  reported by nothing. The map now travels with the format, and what the server
+  received is asserted through `pactl` rather than through this library's own
+  binding.
+- `VolumeMixer.restoreAll` puts back the card profile and the device port. Both
+  are set through public methods, both outlive the process, and neither was
+  recorded, while the mixer's documentation said every change was. They are also
+  the two a user cannot undo from a volume slider: a card carries a profile
+  because somebody chose it, often for a reason that is not visible from the
+  outside, and a process that replaces one and exits has taken a decision away
+  without leaving anything on screen that connects the two.
+- `VolumeMixer.createVirtualSink` honours the channel count or refuses it. It
+  clamped into a table of two, so a caller asking for a six-channel bus was
+  handed a stereo one, with a successful return and a device id, and found out
+  by hearing four of its channels vanish.
+- `AudioSink.latencyNanos` means the same thing everywhere. Three backends of
+  four reported what the client had queued while the contract specified the whole
+  path, each with a comment explaining why the contract was wrong. WASAPI now
+  asks `GetStreamLatency`, which had been bound and never called, and
+  `Capability.TOTAL_LATENCY` says which kind of number a backend gives, so the
+  two that cannot report the device's share say so instead of redefining it.
+
+### Added
+- **A native PipeWire backend**, reaching the graph with no compatibility layer
+  in front of it. A stream in each direction, passing both contract suites
+  against a live graph, and it takes what the layer cannot carry: all five
+  encodings including the 64-bit float `pa_sample_format_t` has no name for, and
+  every one of the forty channel layouts FFmpeg names, four of which the
+  libpulse backend refuses. It lists devices and follows them changing, through
+  a registry connection of its own, and sets the stream's own volume as a
+  control on its node.
+
+  It reports the same capabilities as the libpulse backend on the same graph,
+  with one exception. Which device is default comes from the metadata object the
+  session manager writes it into, bound and listened to rather than guessed at.
+  A device's own volume and mute come from a parameter of its node, subscribed
+  rather than polled, so a slider somebody else moved arrives as an event; both
+  scales agree with the libpulse side without conversion. One application's
+  output can be recorded, aimed by the same id `VolumeMixer` hands out, and an
+  id naming nothing on the graph is refused rather than left to connect to
+  whatever was going anyway, which for a capture would be a microphone.
+
+  The exception is the sample cache, which is a PulseAudio protocol feature with
+  nothing behind it in the graph, and this backend says so rather than
+  pretending otherwise.
+
+  **It is what `AudioBackends.open` returns on Linux now**, with libpulse below
+  it and JavaSound below that. The rung below stays supported for the two
+  machines that need it: one running real PulseAudio, where the native path has
+  no graph to reach, and one running PipeWire without `pipewire-pulse`, which
+  would otherwise fall all the way to JavaSound.
+
+  `-Dlibsound.backend=` still pins either, and a name that matches nothing fails
+  rather than quietly selecting something else, because a run that asked for one
+  backend and measured another says nothing about either.
+- `AudioBackends.open` takes an optional set of capabilities the caller needs
+  and answers with the first backend that offers them. The two Linux rungs
+  differ by one, the sample cache, and promoting the native one without this
+  would have taken a working feature away from anyone using it. The same
+  question `capabilities` already answered, asked one step earlier, and for the
+  consumer that cannot adapt rather than the one that can. Naming something no
+  backend on the machine has answers null, because handing back one that was
+  already told it would not do is worse than saying so.
+- A connection to the graph knows what is on it before it returns. Enumeration
+  there is an event stream rather than a call, so nothing returning meant the
+  list was complete, and what stood in for that was a fixed wait. A wait long
+  enough for a quiet machine is a coin toss on a loaded one, and losing it means
+  an empty device list from a backend that says it can enumerate. It now waits
+  on a sync, which the graph answers only after everything it had already
+  queued.
+- `PcmRingBuffer.readFully`, the blocking read the capture direction needs. The
+  rule the class was written around turned out not to be about reading or
+  writing: it is about which side the device is on, and the side the consumer is
+  on can wait and must. Playback had the blocking write and capture had nothing.
+- `AudioSink.accepts` and `AudioSink.acceptedEncodings`, with the mirror on
+  `AudioSource`. Backends accept different sets and there was no way to find out
+  which but to call `open` and catch. `accepts` is true exactly when `open`
+  would not throw for want of the shape, and the contract suites assert the pair
+  against every encoding on every backend.
+- `Capability.CHANNEL_PLACEMENT`, which says whether a sink tells the device
+  what each channel is or only how many there are. Present on the libpulse,
+  WASAPI and PipeWire backends.
+- `Capability.TOTAL_LATENCY`, which says whether `latencyNanos` covers the
+  device's own path or only what this client has queued.
+
+### Changed
+- The JavaSound fallback takes `U8` and `S32LE` as well as `S16LE`. It always
+  could: the accepted set is now read out of the JVM through
+  `AudioSystem.isLineSupported`, on the same walk the open makes, rather than
+  declared here.
+- The WASAPI sink writes a `WAVEFORMATEXTENSIBLE` rather than a plain
+  `WAVEFORMATEX`, so all five encodings go across, along with how many of a
+  sample's bits carry signal and what each channel is. The plain form can say
+  none of the three.
+- A layout naming a channel position the platform cannot express is refused at
+  `open` rather than carried with that channel missing from the map. Eighteen of
+  the thirty-six positions FFmpeg names have an equivalent on both libpulse and
+  Windows. The rest are the wide pair, the downmix and binaural pairs, a second
+  low frequency channel and the bottom row. `ChannelLayout.unspecified` is the
+  documented way to send the same audio and take the platform's own ordering.
+- A crash log committed into `libsound-session` is removed from the tree. It
+  carried the machine that produced it: the command line, the environment, every
+  loaded library and the memory map.
+
 ## [0.1.0] - 2026-09-09
 
 ### Changed

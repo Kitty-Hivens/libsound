@@ -22,16 +22,23 @@ of it. A named output stream with system-level volume and device selection, the
 mixer surface for everyone else's streams, and a media session the desktop can
 see and control. It does **not** decode: that is
 [`skinema`](https://github.com/Kitty-Hivens/skinema)'s job, and duplicating it
-would be a defect. It does not resample either, because nothing here needs to:
-every backend hands the consumer's format to the platform and the platform
-converts. Effects are a separate opt-in artifact that depends on the contracts
-alone, and the seam it hangs off is documented in `AudioSink` and asserted by a
-fixture.
+would be a defect.
 
-Three things it is for, in this order. **Low latency**, because audio arriving a
-fifth of a second late is audio that arrived wrong. **PipeWire asked properly**,
-rather than treated as a PulseAudio that happens to answer. And **MPRIS**, in
-both directions.
+It does not change samples either, and that is a boundary rather than a gap.
+This library describes audio and carries it. Converting it — resampling,
+downmixing, narrowing a bit depth, an equaliser — belongs on the other side of
+a seam, in something published separately that a consumer chooses to add. Put
+that inside and the library becomes a combine harvester, and our own mistakes
+about it become unremovable without forking. The seam is the public `AudioSink`,
+documented there and asserted by a fixture, and `libsound-dsp` is the first
+thing hanging off it.
+
+Four things it is for. **Low latency**, because audio arriving a fifth of a
+second late is audio that arrived wrong. **Native sound instead of JavaSound**,
+with the stream identity, device control and capture the fallback cannot reach.
+**MPRIS**, in both directions. And **a plugin seam deep enough to build on**, so
+the sound control a phone has can be brought to the JVM without this library
+having to grow it.
 
 | Platform | Tier |
 |---|---|
@@ -39,12 +46,45 @@ both directions.
 | Windows | Experimental. Ships, reports its capabilities honestly, never blocks a release. |
 | macOS | Output only. The CoreAudio sink stays and stays tested on every push, and nothing new is added there. |
 
-Buffers default to 40 ms and a caller can ask for less by name, the writing
-thread can be promoted to real-time priority through RealtimeKit, and what the
-server actually granted is reported rather than assumed. Capture is here on
-Linux, including recording one application's output on its own, and so is the
-device half of a mixer: volume and mute on the devices themselves, card
-profiles, ports, and devices that do not exist in hardware.
+Buffers default to 40 ms on Linux and a caller can ask for less by name, the
+writing thread can be promoted to real-time priority through RealtimeKit, and
+what the server actually granted is reported rather than assumed. The other
+three backends take a caller's exact number and otherwise hold 200 ms, and say
+so by withholding `LOW_LATENCY`. Capture is here on Linux, including recording
+one application's output on its own, and so is the device half of a mixer:
+volume and mute on the devices themselves, card profiles, ports, and devices
+that do not exist in hardware, with everything it changes put back when it
+closes.
+
+A format says what the media is rather than only how wide it is: five sample
+encodings, a channel layout naming each channel, and how many of a sample's bits
+carry signal. What a given sink will take is asked through `accepts` and
+`acceptedEncodings` before an open rather than discovered by one, and whether
+the layout is honoured or only counted is `CHANNEL_PLACEMENT`.
+
+**PipeWire is spoken natively as well as through its PulseAudio server**, and
+the difference is what the compatibility layer can say rather than how fast it
+is. The layer carries eighteen of the thirty-six channel positions a decoder
+sends and has no 64-bit float at all, so four of the forty layouts FFmpeg names
+came back as the machine being unable to play the file. The native backend takes
+every one of them and passes the same contract suites. It also lists devices,
+reads which one is default out of the object the session manager writes it into,
+carries each device's own volume, and can record one application's output.
+
+On the same graph the two report the same capabilities but one: the sample cache,
+which is a feature of the PulseAudio protocol rather than of the graph.
+
+The native path is what `AudioBackends.open` returns on Linux, with libpulse
+below it for the machine running real PulseAudio and the one running PipeWire
+without `pipewire-pulse`. A consumer that needs the sample cache asks for it and
+gets the rung that has it, rather than losing it to a promotion:
+
+```kotlin
+AudioBackends.open("Example", setOf(Capability.SAMPLE_CACHE))
+```
+
+Which backend won is the first line either of them logs, and
+`-Dlibsound.backend=` pins one for anybody comparing them.
 MPRIS carries repeat, shuffle and fullscreen in both directions, each optional
 the way the specification means it: a player with no queue to repeat does not
 advertise the property, so a widget draws no button for it.
@@ -211,7 +251,8 @@ something to depend on directly.
 | Area | State |
 |---|---|
 | Contracts and core | Done. Types, sink and session contracts, ring buffer, pull pump, fake backend, contract suite. |
-| Linux audio (libpulse) | Done and exercised. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. |
+| Linux audio (PipeWire natively) | Done and exercised, and what `AudioBackends.open` returns on Linux. Streams in both directions on a `pw_stream`, a POD encoder and decoder checked against `spa_pod_builder`'s own bytes, a device list from the registry with each device's own volume, the default read out of the metadata object the session manager writes it into, and one application's output recordable on its own. Both contract suites pass against a live graph. |
+| Linux audio (libpulse) | Done and exercised, and the rung below. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. It reaches PulseAudio itself, and PipeWire on a machine that has no `pipewire-pulse`. |
 | Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events, per-stream level meters -- and everything it changes put back. |
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
 | Windows audio (WASAPI) | Runs. Device enumeration, playback, playhead and volume execute on every push against a Windows JVM under wine, and so does the sink contract suite -- the rules a consumer's clock rides on, asserted against a real WASAPI implementation rather than argued from the code. Gradle cannot run there, so the suite is started through the JUnit launcher directly. What none of it checks is hardware: real devices need [docs/TESTING.md](docs/TESTING.md). |
@@ -227,7 +268,7 @@ something to depend on directly.
 | Capture (fallback) | Done and exercised. `TargetDataLine` behind the same contract, losing the same things the fallback sink loses and one more: nothing there counts what went past unread. |
 | Capture (Windows, macOS) | Absent. `IAudioCaptureClient`'s vtable slots have not come from an oracle yet, and macOS capture needs a bundle, a signature and a live user session, which no runner can provide. |
 | Device and card control | Done on Linux and exercised. Devices carry their own volume, mute, suspended state and ports; the mixer sets all of it, moves the default, switches card profiles, and creates virtual and combined sinks that it removes again. |
-| Sample cache | Done on Linux, and probed rather than assumed: a silent frame is uploaded, looked up and removed at connect, because whether a server keeps a cache at all is a fact about the server. |
+| Sample cache | Done on the libpulse backend, and probed rather than assumed: a silent frame is uploaded, looked up and removed at connect, because whether a server keeps a cache at all is a fact about the server. It is a feature of the PulseAudio protocol with nothing behind it in the graph, so the native backend has none and says so, and a consumer that needs one names it in `AudioBackends.open`. |
 | macOS mixer | Will not exist: the platform has no per-application volume in any public API, so [`VolumeMixers.open`](libsound-audio/src/main/kotlin/dev/hivens/libsound/audio/VolumeMixers.kt) answers null there rather than pretending. |
 
 Verified against a live PipeWire server through `pipewire-pulse`: both Linux

@@ -22,6 +22,8 @@
 
 #include <initguid.h>
 #include <windows.h>
+#include <mmreg.h>
+#include <ksmedia.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
@@ -245,6 +247,62 @@ int main(void) {
     SIZE(WAVEFORMATEXTENSIBLE);
     VALUE(WAVE_FORMAT_PCM);
     HEX(WAVE_FORMAT_EXTENSIBLE);
+
+    /* What the extensible form is for. wFormatTag alone says PCM or nothing:
+     * it cannot say float, it cannot say which of the sample's bits carry
+     * signal, and it cannot say what each channel is. All three arrive through
+     * the tail below, and a client that writes only WAVEFORMATEX is a client
+     * that can send S16 and nothing else. */
+    /* Built from the header's own STATIC_ initialisers rather than referenced
+     * by name: ksmedia.h declares the two symbols and no import library defines
+     * them, so a reference does not link. The initialiser is the same text the
+     * declaration is generated from, which is what makes this a reading of the
+     * header and not a memory of it. */
+    SECTION("KSDATAFORMAT subtypes (what wFormatTag cannot say)");
+    {
+        static const GUID subtype_pcm = { STATIC_KSDATAFORMAT_SUBTYPE_PCM };
+        static const GUID subtype_float = { STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT };
+        print_guid("KSDATAFORMAT_SUBTYPE_PCM", &subtype_pcm);
+        print_guid("KSDATAFORMAT_SUBTYPE_IEEE_FLOAT", &subtype_float);
+    }
+
+    /* The channel mask. FFmpeg's own layout bits were chosen to line up with
+     * these, which is convenient and is not a reason to write them from memory:
+     * the mapping is asserted against this table by a test rather than assumed
+     * from the coincidence. */
+    SECTION("SPEAKER_* (one bit per channel position)");
+    HEX(SPEAKER_FRONT_LEFT);
+    HEX(SPEAKER_FRONT_RIGHT);
+    HEX(SPEAKER_FRONT_CENTER);
+    HEX(SPEAKER_LOW_FREQUENCY);
+    HEX(SPEAKER_BACK_LEFT);
+    HEX(SPEAKER_BACK_RIGHT);
+    HEX(SPEAKER_FRONT_LEFT_OF_CENTER);
+    HEX(SPEAKER_FRONT_RIGHT_OF_CENTER);
+    HEX(SPEAKER_BACK_CENTER);
+    HEX(SPEAKER_SIDE_LEFT);
+    HEX(SPEAKER_SIDE_RIGHT);
+    HEX(SPEAKER_TOP_CENTER);
+    HEX(SPEAKER_TOP_FRONT_LEFT);
+    HEX(SPEAKER_TOP_FRONT_CENTER);
+    HEX(SPEAKER_TOP_FRONT_RIGHT);
+    HEX(SPEAKER_TOP_BACK_LEFT);
+    HEX(SPEAKER_TOP_BACK_CENTER);
+    HEX(SPEAKER_TOP_BACK_RIGHT);
+    HEX(SPEAKER_RESERVED);
+
+    /* The named masks, which are what the per-position bits above have to add
+     * up to. A layout assembled from the bits and compared against one of these
+     * is the check that replaces believing the two orderings coincide. */
+    SECTION("KSAUDIO_SPEAKER_* (whole layouts, for the cross-check)");
+    HEX(KSAUDIO_SPEAKER_MONO);
+    HEX(KSAUDIO_SPEAKER_STEREO);
+    HEX(KSAUDIO_SPEAKER_QUAD);
+    HEX(KSAUDIO_SPEAKER_SURROUND);
+    HEX(KSAUDIO_SPEAKER_5POINT1);
+    HEX(KSAUDIO_SPEAKER_5POINT1_SURROUND);
+    HEX(KSAUDIO_SPEAKER_7POINT1);
+    HEX(KSAUDIO_SPEAKER_7POINT1_SURROUND);
 
     SECTION("PROPVARIANT / PROPERTYKEY (the friendly name)");
     OFFSET(PROPVARIANT, vt);

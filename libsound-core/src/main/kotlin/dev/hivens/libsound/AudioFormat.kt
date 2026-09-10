@@ -3,18 +3,45 @@ package dev.hivens.libsound
 /**
  * Sample encoding of the PCM a sink accepts. Interleaved, little-endian.
  *
- * S16LE is what every current consumer pushes and what every backend must
- * accept. F32LE exists because PipeWire and CoreAudio are float-native and a
- * backend may pass it through without a conversion; a backend that cannot is
- * free to reject it, which the capability query reports rather than a failure
- * at the first write.
+ * The set a decoder actually produces rather than the set that is convenient
+ * here. S16LE is the floor every backend must accept and what most consumers
+ * push. The others exist because refusing them costs a conversion somebody
+ * else then has to do, and one of them costs more than a conversion: FFmpeg
+ * has no 24-bit sample format at all, so 24-bit content arrives as S32LE with
+ * the value in the top bits, and a library without it sends every FLAC, ALAC,
+ * DTS-HD and TrueHD source down to F32LE or S16LE.
+ *
+ * Which of them a given sink takes is [AudioSink.acceptedEncodings], asked
+ * before an open rather than found out by one: a consumer walks its own ladder
+ * down from what the media is towards the floor, and it should be able to pick
+ * the rung before it has anything to hand over. [AudioSink.open] refuses the
+ * rest, because a backend that accepted a format and played something else
+ * would be indistinguishable from one that worked.
+ *
+ * How many of the bits carry signal is a separate question from how wide the
+ * sample is, and [AudioFormat.significantBits] is where it is answered.
  */
 public enum class PcmEncoding(
     /** Width of one sample of one channel. */
     public val bytesPerSample: Int,
 ) {
+    /** Unsigned, offset by 128. Old WAV and what derives from it. */
+    U8(1),
+
+    /** Signed, and the one format every backend has to accept. */
     S16LE(2),
+
+    /**
+     * Signed. Also where 24-bit content arrives, in the top 24 bits, because
+     * FFmpeg has no 24-bit sample format to send it in.
+     */
+    S32LE(4),
+
+    /** Float, and native on PipeWire and CoreAudio, which may pass it through untouched. */
     F32LE(4),
+
+    /** Double. Rare sources and some filter outputs. */
+    F64LE(8),
 }
 
 /**
@@ -33,10 +60,46 @@ public data class AudioFormat(
     public val channels: Int = 2,
     /** How each sample is written. */
     public val encoding: PcmEncoding = PcmEncoding.S16LE,
+    /**
+     * What each channel is, and therefore the order they are interleaved in.
+     *
+     * Defaults to whatever FFmpeg means by this many channels, which is what a
+     * stream that declared no layout resolves to. Counting is not enough on its
+     * own: six channels is `5.1` or `5.1(side)`, they differ in whether the
+     * last pair is the rear or the sides, and laying one out as the other turns
+     * a film's rear channels into its side ones.
+     *
+     * Whether a sink acts on this or only on [channels] is
+     * [Capability.CHANNEL_PLACEMENT], which is a question to ask past stereo
+     * and pointless below it.
+     */
+    public val layout: ChannelLayout = ChannelLayout.defaultFor(channels),
+    /**
+     * How many of the bits in each sample carry signal.
+     *
+     * Defaults to all of them, and differs from all of them exactly where it
+     * matters: FFmpeg has no 24-bit sample format, so 24-bit content arrives as
+     * [PcmEncoding.S32LE] with 24 significant bits and the value in the top
+     * ones. A backend that packs into a narrower format needs to know which of
+     * the two it has, because packing 24 real bits into 24 is free and packing
+     * 32 into 24 is a quiet loss, and nothing inside an S32LE sample tells them
+     * apart.
+     *
+     * Aimed at the integer encodings. For a float format this is the width of
+     * the container, and how much of it carries signal is a property of the
+     * mantissa rather than of the stream.
+     */
+    public val significantBits: Int = encoding.bytesPerSample * 8,
 ) {
     init {
         require(sampleRate > 0) { "sampleRate must be positive, was $sampleRate" }
         require(channels > 0) { "channels must be positive, was $channels" }
+        require(layout.channels == channels) {
+            "layout $layout carries ${layout.channels} channels, format says $channels"
+        }
+        require(significantBits in 1..(encoding.bytesPerSample * 8)) {
+            "significantBits must fit in $encoding, was $significantBits"
+        }
     }
 
     /** Bytes in one sample frame -- one sample per channel. */

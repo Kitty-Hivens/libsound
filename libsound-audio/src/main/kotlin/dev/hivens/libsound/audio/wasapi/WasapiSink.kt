@@ -124,10 +124,55 @@ internal class WasapiSink(
 
     override val isOpen: Boolean get() = client.address() != 0L && !closed.get()
 
+    /**
+     * Four of the five. The extensible form expresses them and `AUTOCONVERTPCM`
+     * has the engine convert to its own mix format.
+     *
+     * It was S16LE alone, which was true of the plain `WAVEFORMATEX` this used
+     * to write rather than of what Windows takes. Then it was all five, which
+     * was one too many: the contract suite opened each encoding in turn and the
+     * engine refused a 64-bit float outright, `AUTOCONVERTPCM` included. The
+     * mix format is a 32-bit float and the conversion the flag performs does
+     * not reach past it.
+     *
+     * Established against the audio engine the Windows job runs on rather than
+     * against hardware, which is the only Windows this repository can reach on
+     * its own. If a real device turns out to take one, this is where the
+     * measurement goes, and the contract suite is what would show it: over-
+     * claiming here is what it caught in the first place.
+     */
+    override val acceptedEncodings: Set<PcmEncoding> get() = ACCEPTED_ENCODINGS
+
+    /**
+     * The encoding, and whether every named position has a `SPEAKER_*` bit.
+     *
+     * The second half is what [Capability.CHANNEL_PLACEMENT] obliges: the mask
+     * goes across with the format, so a layout naming a channel Windows has no
+     * bit for cannot be carried honestly and is refused rather than sent with
+     * the bit missing, which would leave the engine interleaving one channel
+     * short of what was written.
+     */
+    override fun accepts(format: AudioFormat): Boolean =
+        format.encoding in ACCEPTED_ENCODINGS &&
+            (
+                !format.layout.isSpecified ||
+                    format.channels <= UNIVERSAL_CHANNELS ||
+                    WasapiAbi.channelMaskOf(format.layout) != null
+                )
+
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
-        require(format.encoding == PcmEncoding.S16LE) {
-            "WASAPI backend takes S16LE only, was ${format.encoding}"
+        // AudioException rather than an argument check, because a consumer
+        // walking a ladder catches what the contract promises.
+        if (!accepts(format)) {
+            if (format.encoding !in ACCEPTED_ENCODINGS) {
+                throw AudioException("the audio engine does not take ${format.encoding}")
+            }
+            val position = format.layout.positions.firstOrNull { WasapiAbi.speakerBitOf(it) == null }
+            throw AudioException(
+                "Windows has no speaker bit for $position in ${format.layout}; " +
+                    "send the same audio with an unspecified layout to take the engine's own ordering",
+            )
         }
         com.ensureComOnThisThread()
         releaseInterfaces()
@@ -298,17 +343,42 @@ internal class WasapiSink(
         }
     }
 
+    /**
+     * What is queued here plus what the engine adds behind it.
+     *
+     * It was the padding alone, with a comment arguing that the padding is the
+     * whole of what the contract asks. It is not: the contract asks when the
+     * frame about to be written will be heard, and the engine's own path sits
+     * between the shared buffer and the speaker. `GetStreamLatency` reports
+     * that path, has been bound at slot 5 since this backend was written, and
+     * was never called.
+     */
     override fun latencyNanos(): Long = synchronized(interfaceLock) {
         val audioClient = client
         val format = openFormat ?: return 0L
         if (audioClient.address() == 0L) return 0L
         return Arena.ofConfined().use { call ->
-            // What is queued, not what the engine adds: the contract asks how
-            // far ahead of the speaker the write head is, and the padding is
-            // exactly that.
             val padding = readPadding(call, audioClient)
-            format.nanosFor(padding.toLong())
+            format.nanosFor(padding.toLong()) + engineLatencyNanos(call, audioClient)
         }
+    }
+
+    /**
+     * The engine's own share, or zero where it would not say.
+     *
+     * A REFERENCE_TIME, so hundreds of nanoseconds rather than the microseconds
+     * it resembles. Zero on a refusal rather than a throw: a consumer asking
+     * how far ahead it is has nothing to do with a failure here, and the
+     * padding on its own is still the larger half of the answer.
+     */
+    private fun engineLatencyNanos(call: Arena, audioClient: MemorySegment): Long {
+        val out = call.allocate(ValueLayout.JAVA_LONG)
+        val result = com.method(
+            audioClient, WasapiAbi.CLIENT_GET_STREAM_LATENCY,
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+        ).invokeExact(audioClient, out) as Int
+        if (result != WasapiAbi.S_OK) return 0L
+        return out.get(ValueLayout.JAVA_LONG, 0) * WasapiAbi.NANOS_PER_REFTIME
     }
 
     /**
@@ -383,19 +453,65 @@ internal class WasapiSink(
         return out.get(ValueLayout.ADDRESS, 0)
     }
 
-    private fun initialiseClient(call: Arena, audioClient: MemorySegment, format: AudioFormat) {
-        val wfx = call.allocate(WasapiAbi.WFX_SIZE, 2)
+    /**
+     * The stream format, always as a `WAVEFORMATEXTENSIBLE`.
+     *
+     * Always, rather than only past stereo, and the reason is what the plain
+     * form cannot carry. `wFormatTag` says PCM or nothing, so a float stream
+     * has no tag; `wBitsPerSample` is the container, so a 24-bit stream in a
+     * 32-bit sample has nowhere to say which; and there is no field at all for
+     * what each channel is. The tail below answers all three, and writing one
+     * shape rather than two means there is one path to be wrong about.
+     */
+    private fun writeStreamFormat(call: Arena, format: AudioFormat): MemorySegment {
+        val wfx = call.allocate(WasapiAbi.WFXE_SIZE, 8)
         val blockAlign = format.bytesPerFrame
-        wfx.set(ValueLayout.JAVA_SHORT, WasapiAbi.WFX_FORMAT_TAG, WasapiAbi.WAVE_FORMAT_PCM.toShort())
+        val containerBits = format.encoding.bytesPerSample * 8
+        wfx.set(ValueLayout.JAVA_SHORT, WasapiAbi.WFX_FORMAT_TAG, WasapiAbi.WAVE_FORMAT_EXTENSIBLE.toShort())
         wfx.set(ValueLayout.JAVA_SHORT, WasapiAbi.WFX_CHANNELS, format.channels.toShort())
         wfx.set(ValueLayout.JAVA_INT, WasapiAbi.WFX_SAMPLES_PER_SEC, format.sampleRate)
         wfx.set(ValueLayout.JAVA_INT, WasapiAbi.WFX_AVG_BYTES_PER_SEC, format.sampleRate * blockAlign)
         wfx.set(ValueLayout.JAVA_SHORT, WasapiAbi.WFX_BLOCK_ALIGN, blockAlign.toShort())
+        wfx.set(ValueLayout.JAVA_SHORT, WasapiAbi.WFX_BITS_PER_SAMPLE, containerBits.toShort())
+        // Everything past the WAVEFORMATEX head, which is what the extensible
+        // form adds and what a client declaring the plain one leaves out.
         wfx.set(
-            ValueLayout.JAVA_SHORT, WasapiAbi.WFX_BITS_PER_SAMPLE,
-            (format.encoding.bytesPerSample * 8).toShort(),
+            ValueLayout.JAVA_SHORT, WasapiAbi.WFX_CB_SIZE,
+            (WasapiAbi.WFXE_SIZE - WasapiAbi.WFX_SIZE).toShort(),
         )
-        wfx.set(ValueLayout.JAVA_SHORT, WasapiAbi.WFX_CB_SIZE, 0)
+        // How many of the container's bits carry signal. For an integer format
+        // this is where 24-bit content in a 32-bit sample stops being a guess;
+        // for a float one the container is the answer.
+        wfx.set(
+            ValueLayout.JAVA_SHORT, WasapiAbi.WFXE_SAMPLES,
+            significantBitsOf(format).toShort(),
+        )
+        // Zero where the layout names nothing, which is what a mask of zero
+        // means: the mapping is unspecified and the engine uses its own.
+        wfx.set(
+            ValueLayout.JAVA_INT, WasapiAbi.WFXE_CHANNEL_MASK,
+            WasapiAbi.channelMaskOf(format.layout) ?: 0,
+        )
+        val subFormat = when (format.encoding) {
+            PcmEncoding.F32LE, PcmEncoding.F64LE -> WasapiAbi.KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+            PcmEncoding.U8, PcmEncoding.S16LE, PcmEncoding.S32LE -> WasapiAbi.KSDATAFORMAT_SUBTYPE_PCM
+        }
+        MemorySegment.copy(WasapiCom.guid(call, subFormat), 0L, wfx, WasapiAbi.WFXE_SUB_FORMAT, GUID_BYTES)
+        return wfx
+    }
+
+    /**
+     * How many bits the engine should read, clamped to what the container holds.
+     *
+     * `wValidBitsPerSample` has to be at most `wBitsPerSample` or the format is
+     * malformed, and [AudioFormat] already refuses the other direction, so this
+     * is a floor rather than a correction.
+     */
+    private fun significantBitsOf(format: AudioFormat): Int =
+        format.significantBits.coerceIn(1, format.encoding.bytesPerSample * 8)
+
+    private fun initialiseClient(call: Arena, audioClient: MemorySegment, format: AudioFormat) {
+        val wfx = writeStreamFormat(call, format)
 
         // The profile is not honoured here, and Capability.LOW_LATENCY is
         // absent to say so. Windows has its own path to a short buffer,
@@ -586,5 +702,20 @@ internal class WasapiSink(
 
     private companion object {
         const val DEFAULT_BUFFER_NANOS = 200_000_000L
+
+        /** Below this every platform agrees, so there is nothing to place and nothing to refuse. */
+        const val UNIVERSAL_CHANNELS = 2
+
+        /**
+         * What the engine takes, which is every encoding but the widest.
+         *
+         * A 64-bit float is refused outright, `AUTOCONVERTPCM` included: the
+         * mix format is a 32-bit float and the flag's conversion does not reach
+         * past it.
+         */
+        val ACCEPTED_ENCODINGS: Set<PcmEncoding> = PcmEncoding.entries.toSet() - PcmEncoding.F64LE
+
+        /** `GUID` is sixteen bytes, and the SubFormat field is one. */
+        const val GUID_BYTES = 16L
     }
 }

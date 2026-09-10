@@ -39,6 +39,43 @@ public enum class Capability {
      */
     DEVICE_POSITION,
 
+    /**
+     * [AudioSink.latencyNanos] is the whole path to the speaker, not only what
+     * this client has queued.
+     *
+     * The number a video pacer needs is when the frame it is about to write
+     * will be heard, which is what is queued here plus what the server holds
+     * plus the device's own delay. Some backends can report all of it and some
+     * can report only their own share: a `SourceDataLine` says how full it is
+     * and offers nothing about the hardware behind it.
+     *
+     * Absent means the answer is a fill level. It is still useful, and it is
+     * short by a fixed amount that does not go away when a flush empties the
+     * queue. A consumer that needs the whole path asks this before it decides
+     * whether to trust the number, rather than adding an estimate of the
+     * missing part, which is the one thing that gets it wrong differently on
+     * every machine.
+     */
+    TOTAL_LATENCY,
+
+    /**
+     * The sink tells the device what each channel is, so [AudioFormat.layout]
+     * is honoured rather than assumed.
+     *
+     * Absent means only a count goes across and the device applies whatever
+     * order it conventionally uses for that many channels. The two conventions
+     * are not the same: ALSA lays six channels out as front pair, rear pair,
+     * centre, LFE, and FFmpeg hands them over as front pair, centre, LFE, rear
+     * pair. A player that sends one to a device expecting the other puts a
+     * film's dialogue in the rears.
+     *
+     * Nothing to ask below three channels, where every platform agrees. Past
+     * that this is the question, and a consumer whose backend answers no either
+     * accepts the platform's ordering or downmixes to stereo, which is an
+     * addon's work rather than this library's.
+     */
+    CHANNEL_PLACEMENT,
+
     /** Every playback stream on the machine can be listed. */
     STREAM_ENUMERATION,
 

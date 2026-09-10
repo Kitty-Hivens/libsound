@@ -70,6 +70,20 @@ public interface AudioSource : AutoCloseable {
     /** What this source can do. Constant for its lifetime. */
     public val capabilities: Capabilities
 
+    /**
+     * Every encoding this source can be opened with, always including
+     * [PcmEncoding.S16LE]. [AudioSink.acceptedEncodings] reversed, and asked for
+     * the same reason: a recorder chooses what to ask for before it has
+     * anywhere to put it.
+     */
+    public val acceptedEncodings: Set<PcmEncoding>
+
+    /**
+     * Whether [open] would take this shape. False means [open] throws, and the
+     * contract suite asserts the two against each other.
+     */
+    public fun accepts(format: AudioFormat): Boolean = format.encoding in acceptedEncodings
+
     /** The format currently open, or null before the first [open] and after [close]. */
     public val format: AudioFormat?
 
@@ -80,7 +94,8 @@ public interface AudioSource : AutoCloseable {
      * Open the device for [format] and start it. Reopening replaces the stream
      * and restarts the frame position at zero.
      *
-     * @throws AudioException when the device cannot be opened.
+     * @throws AudioException when the device cannot be opened, which includes
+     *   every shape [accepts] answers false for.
      */
     public fun open(format: AudioFormat)
 
@@ -105,9 +120,14 @@ public interface AudioSource : AutoCloseable {
     public fun framePosition(): Long
 
     /**
-     * How far behind the microphone the read head is, in nanoseconds. The whole
-     * path, device included, not just what is queued here. Zero when the
-     * backend cannot tell, which is itself information rather than an error.
+     * How far behind the microphone the read head is, in nanoseconds.
+     *
+     * The whole path, device included, where [Capability.TOTAL_LATENCY] is
+     * present; what is waiting to be collected and nothing else where it is
+     * absent. Zero when the backend cannot tell at all, which is itself
+     * information rather than an error. The output side's rule reversed, and
+     * the same warning applies: a consumer must not add its own estimate of the
+     * part a backend could not report.
      */
     public fun latencyNanos(): Long
 

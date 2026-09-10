@@ -147,11 +147,36 @@ internal class CoreAudioSink(
 
     override val isOpen: Boolean get() = unit.address() != 0L && !closed.get()
 
+    /**
+     * All five, because an ASBD expresses all five and the unit converts
+     * between linear PCM formats on its input scope.
+     *
+     * Not a list written here to be believed: the macOS row of CI runs the
+     * contract suite against a real output unit, and the suite asserts this set
+     * against what [open] actually takes. A platform that refuses one of them
+     * is a red build there rather than a surprise for somebody with a Mac.
+     */
+    override val acceptedEncodings: Set<PcmEncoding> get() = PcmEncoding.entries.toSet()
+
+    /**
+     * The encoding, and nothing else.
+     *
+     * The layout is not consulted and [dev.hivens.libsound.Capability.CHANNEL_PLACEMENT] is absent:
+     * placing channels here needs `kAudioUnitProperty_AudioChannelLayout` and
+     * the `kAudioChannelLabel_*` values behind it, and those are ABI numbers
+     * that have to come from `tools/coreaudio-oracle.c` before anything is
+     * written against them. The oracle prints them and runs on the macOS row;
+     * until a run has, this backend takes a count and says so.
+     */
+    override fun accepts(format: AudioFormat): Boolean = true
+
     override fun open(format: AudioFormat) {
         if (closed.get()) throw AudioException("sink is closed")
-        require(format.encoding == PcmEncoding.S16LE || format.encoding == PcmEncoding.F32LE) {
-            "unsupported encoding ${format.encoding}"
-        }
+        // No refusal here on purpose. Every encoding is expressible as an ASBD,
+        // and whether this unit takes one is the unit's answer rather than
+        // ours: AudioUnitSetProperty refuses a format it cannot render, and
+        // checkStatus turns that into the AudioException a consumer walking a
+        // ladder is already catching.
         disposeUnit()
         // The old ring goes with the old unit. Nothing drains it any more, so a
         // producer parked on it would stay parked through a reopen that looked
@@ -304,14 +329,20 @@ internal class CoreAudioSink(
     override fun framePosition(): Long = framesRendered.get()
 
     /**
-     * What is still queued ahead of the speaker, and deliberately not the
-     * device's own propagation delay.
+     * What is still queued here, and not the device's own delay behind it.
      *
-     * `kAudioUnitProperty_Latency` would add a few more milliseconds and would
-     * be the wrong answer to the question the interface asks: how far ahead the
-     * write head is, which is a fill level. A fixed device delay does not move
-     * when a flush empties the queue, so including it would report a backlog
-     * that no longer exists.
+     * Which makes it short of what the contract asks for, and
+     * [dev.hivens.libsound.Capability.TOTAL_LATENCY] is absent to say so rather than the number
+     * being quietly redefined. This used to carry an argument that a fill level
+     * is the right answer because a fixed device delay does not move when a
+     * flush empties the queue. That is true and beside the point: the question
+     * is when the frame about to be written will be heard, and the fixed part
+     * is part of the answer.
+     *
+     * Closing it needs `kAudioUnitProperty_Latency` and the device's own safety
+     * offset, whose property values are ABI numbers like every other here and
+     * have to come from `tools/coreaudio-oracle.c` on the macOS row before
+     * anything is written against them.
      */
     override fun latencyNanos(): Long {
         val format = openFormat ?: return 0L
@@ -440,12 +471,23 @@ internal class CoreAudioSink(
 
     // -- internals ------------------------------------------------------------
 
+    /**
+     * The shape, as an ASBD.
+     *
+     * Every encoding is expressible here, and expressible is not the same as
+     * accepted: the unit answers when the property is set, and a format it
+     * will not take fails the open, which is the answer a consumer walks its
+     * ladder down from.
+     */
     private fun writeStreamFormat(asbd: MemorySegment, format: AudioFormat) {
         val bitsPerChannel = format.encoding.bytesPerSample * 8
         val flags = CoreAudioAbi.FORMAT_FLAGS_NATIVE_ENDIAN or CoreAudioAbi.FORMAT_FLAG_IS_PACKED or
             when (format.encoding) {
-                PcmEncoding.F32LE -> CoreAudioAbi.FORMAT_FLAG_IS_FLOAT
-                PcmEncoding.S16LE -> CoreAudioAbi.FORMAT_FLAG_IS_SIGNED_INTEGER
+                PcmEncoding.F32LE, PcmEncoding.F64LE -> CoreAudioAbi.FORMAT_FLAG_IS_FLOAT
+                PcmEncoding.S16LE, PcmEncoding.S32LE -> CoreAudioAbi.FORMAT_FLAG_IS_SIGNED_INTEGER
+                // Unsigned integer is the absence of both flags rather than a
+                // flag of its own, which is what linear PCM means by U8.
+                PcmEncoding.U8 -> 0
             }
         asbd.set(ValueLayout.JAVA_DOUBLE, CoreAudioAbi.ASBD_SAMPLE_RATE, format.sampleRate.toDouble())
         asbd.set(ValueLayout.JAVA_INT, CoreAudioAbi.ASBD_FORMAT_ID, CoreAudioAbi.FORMAT_LINEAR_PCM)

@@ -28,6 +28,16 @@ import java.nio.ByteOrder
  * that leaves the previous position ringing in a filter plays it for as long as
  * the filter is deep.
  *
+ * ## What a float costs the wide formats
+ *
+ * Samples are carried through [process] as floats, whose mantissa holds 24
+ * bits. That is exact for U8, S16LE and F32LE, and exact for the case S32LE
+ * actually carries, which is 24-bit content in the top bits of a 32-bit sample,
+ * because FFmpeg has no 24-bit format to send it in. It is lossy for a stream
+ * that genuinely uses all 32, and for F64LE. [AudioFormat.significantBits] is
+ * what says which of the two a stream is, and a consumer that needs the bottom
+ * bits kept should not put a decorator in that path.
+ *
  * Samples arrive at [process] as floats in roughly -1 to 1, interleaved, one
  * per channel per frame. Roughly, rather than exactly, because a decorator
  * earlier in the chain may have produced values outside it: that is what
@@ -59,6 +69,15 @@ public abstract class ProcessingSink(
 
     /** The wrapped sink's, since a decorator changes what it can do rather than what it is. */
     override val capabilities: Capabilities get() = inner.capabilities
+
+    /**
+     * The wrapped sink's. A decorator changes the samples, not the shapes the
+     * device will take, and [decode] covers every encoding there is.
+     */
+    override val acceptedEncodings: Set<PcmEncoding> get() = inner.acceptedEncodings
+
+    /** The wrapped sink's, for the reason [acceptedEncodings] is. */
+    override fun accepts(format: AudioFormat): Boolean = inner.accepts(format)
 
     /** The wrapped sink's. */
     override val format: AudioFormat? get() = inner.format
@@ -105,31 +124,52 @@ public abstract class ProcessingSink(
     private fun decode(data: ByteArray, offset: Int, length: Int, format: AudioFormat, samples: Int) {
         val buffer = ByteBuffer.wrap(data, offset, length).order(ByteOrder.LITTLE_ENDIAN)
         when (format.encoding) {
-            // 32768 rather than 32767, so that the most negative sample maps to
-            // exactly -1 and the scale stays a power of two. It costs the
-            // positive full scale a fraction of a bit and buys arithmetic that
-            // is exact in both directions.
+            // Unsigned and offset by half its range, which is the whole of what
+            // makes U8 different from the signed formats below it.
+            PcmEncoding.U8 -> for (index in 0 until samples) {
+                scratch[index] = ((buffer.get().toInt() and 0xFF) - 128) / 128f
+            }
+            // A power of two rather than the largest value, so the most
+            // negative sample maps to exactly -1 and the scale is exact in both
+            // directions. It costs the positive full scale a fraction of a bit.
             PcmEncoding.S16LE -> for (index in 0 until samples) {
                 scratch[index] = buffer.short / 32768f
             }
+            PcmEncoding.S32LE -> for (index in 0 until samples) {
+                scratch[index] = (buffer.int / 2147483648.0).toFloat()
+            }
             PcmEncoding.F32LE -> for (index in 0 until samples) {
                 scratch[index] = buffer.float
+            }
+            PcmEncoding.F64LE -> for (index in 0 until samples) {
+                scratch[index] = buffer.double.toFloat()
             }
         }
     }
 
     private fun encode(format: AudioFormat, samples: Int) {
         val buffer = ByteBuffer.wrap(encoded).order(ByteOrder.LITTLE_ENDIAN)
+        // Clamped throughout, because an integer format has no room above full
+        // scale and a sample that wrapped turns a loud passage into a click. A
+        // consumer that wants the peaks kept puts a limiter above.
         when (format.encoding) {
-            // Clamped, because an integer format has no room above full scale
-            // and wrapping a sample that went over turns a loud passage into a
-            // click. A consumer that wants the peaks kept puts a limiter above.
+            PcmEncoding.U8 -> for (index in 0 until samples) {
+                val value = (scratch[index] * 128f).toInt() + 128
+                buffer.put(value.coerceIn(0, 255).toByte())
+            }
             PcmEncoding.S16LE -> for (index in 0 until samples) {
                 val value = (scratch[index] * 32768f).toInt().coerceIn(-32768, 32767)
                 buffer.putShort(value.toShort())
             }
+            PcmEncoding.S32LE -> for (index in 0 until samples) {
+                val value = (scratch[index].toDouble() * 2147483648.0).toLong()
+                buffer.putInt(value.coerceIn(-2147483648L, 2147483647L).toInt())
+            }
             PcmEncoding.F32LE -> for (index in 0 until samples) {
                 buffer.putFloat(scratch[index])
+            }
+            PcmEncoding.F64LE -> for (index in 0 until samples) {
+                buffer.putDouble(scratch[index].toDouble())
             }
         }
     }

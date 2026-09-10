@@ -74,6 +74,13 @@ subprojects {
                 failOnWarning.set(true)
             }
         }
+        // And it runs as part of `check`, so the failure lands where every
+        // other warning-as-error does. It used to run only in a job of its own,
+        // which meant an undocumented symbol, or a link to something the
+        // published pages cannot reach, survived a green local build and every
+        // push until that job got to it. That is the pile-up the comment above
+        // objects to, arriving by a different route.
+        tasks.named("check") { dependsOn("dokkaGeneratePublicationHtml") }
     }
 
     tasks.withType<Jar>().configureEach {

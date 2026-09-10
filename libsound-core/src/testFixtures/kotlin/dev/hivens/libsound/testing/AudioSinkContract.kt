@@ -1,7 +1,12 @@
 package dev.hivens.libsound.testing
 
+import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
+import dev.hivens.libsound.Capability
+import dev.hivens.libsound.ChannelLayout
+import dev.hivens.libsound.PcmEncoding
+import io.kotest.assertions.withClue
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -99,6 +104,60 @@ public abstract class AudioSinkContract {
     }
 
     @Test
+    public fun `S16LE is on offer, because every backend owes it`() {
+        newSink().use { sink ->
+            (PcmEncoding.S16LE in sink.acceptedEncodings) shouldBe true
+            sink.accepts(AudioFormat.CD_STEREO) shouldBe true
+        }
+    }
+
+    @Test
+    public fun `what the sink says it accepts is what open takes`() {
+        // The pair this whole question rests on. A sink whose answer and whose
+        // behaviour disagree is worse than one that only fails: a consumer that
+        // asked first has no second question to ask, and it either meets an
+        // exception it was told would not come or walks past a shape that would
+        // have worked.
+        newSink().use { sink ->
+            for (encoding in PcmEncoding.entries) {
+                val shape = AudioFormat(format.sampleRate, format.channels, encoding)
+                val claimed = sink.accepts(shape)
+                val opened = runCatching { sink.open(shape) }
+                if (claimed) {
+                    withClue("accepts($encoding) was true, so open must not have thrown") {
+                        opened.exceptionOrNull() shouldBe null
+                    }
+                } else {
+                    // AudioException specifically. An argument check goes past
+                    // the catch a consumer walking its ladder has written, and
+                    // out of the player.
+                    withClue("accepts($encoding) was false, so open owes an AudioException") {
+                        (opened.exceptionOrNull() is AudioException) shouldBe true
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    public fun `a count with no layout is never refused for want of one`() {
+        // A stream that declared no channel layout is a legitimate stream: it
+        // is what FFmpeg answers for a count it has no default for, and there
+        // is nothing to place. A backend that refused it would be refusing the
+        // media rather than a shape it cannot carry.
+        newSink().use { sink ->
+            val bare = AudioFormat(
+                format.sampleRate,
+                format.channels,
+                format.encoding,
+                layout = ChannelLayout.unspecified(format.channels),
+            )
+            sink.accepts(bare) shouldBe true
+            sink.open(bare)
+        }
+    }
+
+    @Test
     public fun `open leaves the device running`() {
         // No start() anywhere in this test. If open only prepared the device,
         // the blocking write would never drain and the position would never
@@ -170,10 +229,11 @@ public abstract class AudioSinkContract {
             sink.open(format)
             writeHalfSecond(sink)
             sink.stop()
-            // A baseline, so the zero below means "emptied" and not "was never
+            // A baseline, so the drop below means "emptied" and not "was never
             // filled": a sink that buffers nothing would pass the latency
             // assertion without a flush ever doing anything.
-            sink.latencyNanos() shouldBeGreaterThan 0L
+            val queued = sink.latencyNanos()
+            queued shouldBeGreaterThan 0L
             sink.flush()
             val afterFlush = sink.framePosition()
 
@@ -182,7 +242,17 @@ public abstract class AudioSinkContract {
             // afterwards, so it cancels out of any difference -- the same
             // reason skinema's clock is immune to the JavaSound flush jump.
             // What is buffered, on the other hand, is either gone or it is not.
-            sink.latencyNanos() shouldBe 0L
+            //
+            // Zero only where the number is the client's own queue. Where it is
+            // the whole path, the device's share does not go away when the
+            // queue is emptied, and asserting zero would be asserting that the
+            // suite is running against something with no hardware behind it,
+            // which is true of a null sink and of nothing else.
+            if (Capability.TOTAL_LATENCY in sink.capabilities) {
+                (sink.latencyNanos() < queued) shouldBe true
+            } else {
+                sink.latencyNanos() shouldBe 0L
+            }
 
             // And the device runs again afterwards, fed continuously, because
             // one backend's playhead only advances while writes are flowing.
@@ -246,6 +316,50 @@ public abstract class AudioSinkContract {
             sink.open(format)
             sink.underrunCount() shouldBe 0L
         }
+    }
+
+    @Test
+    public fun `the playhead answers while a write is parked`() {
+        // A consumer's clock reads the position from a thread that is not the
+        // one writing, and it reads it often. A backend that held a lock across
+        // the whole of write would make every one of those reads wait for the
+        // device to drain, which against a stopped device is forever, and the
+        // consumer's only remaining option would be to poll from the writing
+        // thread, which is the one thread that cannot.
+        val sink = newSink()
+        sink.open(format)
+        sink.stop()
+
+        val entered = CountDownLatch(1)
+        val writer = Thread({
+            entered.countDown()
+            // Far more than any plausible device buffer, against a device that
+            // is not draining: this parks and stays parked until the close.
+            runCatching {
+                val huge = frames(format.sampleRate * 10)
+                sink.write(huge, 0, huge.size)
+            }
+        }, "contract-parked-writer")
+        writer.isDaemon = true
+        writer.start()
+        entered.await(2, TimeUnit.SECONDS) shouldBe true
+        Thread.sleep(500)   // let it fill the buffer and reach the park
+
+        // Twenty of each, because one could be answered in a window between
+        // transfers by luck. A backend that blocks here does not answer late,
+        // it does not answer at all, and the class timeout is what ends it.
+        val started = System.nanoTime()
+        repeat(READS_WHILE_PARKED) {
+            sink.framePosition()
+            sink.latencyNanos()
+        }
+        val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+        withClue("$READS_WHILE_PARKED position reads took $elapsedMillis ms against a parked write") {
+            (elapsedMillis < PARKED_READ_BUDGET_MILLIS) shouldBe true
+        }
+
+        sink.close()
+        writer.join(2_000)
     }
 
     @Test
@@ -324,5 +438,18 @@ public abstract class AudioSinkContract {
     private companion object {
         /** Slack over the nominal duration, so a loaded runner still drains. */
         const val REAL_TIME_SLACK_MILLIS = 150L
+
+        /** Enough that one lucky window between transfers cannot carry the test. */
+        const val READS_WHILE_PARKED = 20
+
+        /**
+         * Generous by two orders of magnitude, and deliberately.
+         *
+         * What is under test is the difference between waiting for one transfer
+         * and waiting for the whole write, and against a stopped device the
+         * second is unbounded. A tight budget would turn a loaded runner into a
+         * failure without telling anyone anything the class timeout would not.
+         */
+        const val PARKED_READ_BUDGET_MILLIS = 2_000L
     }
 }

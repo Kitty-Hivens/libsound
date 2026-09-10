@@ -16,11 +16,67 @@ Interleaved PCM, little-endian, one sample per channel per frame:
 AudioFormat(sampleRate = 48_000, channels = 2, encoding = PcmEncoding.S16LE)
 ```
 
-`S16LE` is what every backend must accept. `F32LE` exists because PipeWire and
-CoreAudio are float-native and can pass it through without converting, and a
-backend that cannot is free to refuse it, which `open` reports by throwing
-rather than by playing something wrong. A decoder with no reason to prefer one
-sends S16LE.
+`S16LE` is what every backend must accept, and there are four others. `U8` is
+old WAV and what derives from it. `S32LE` is where 24-bit content arrives, in
+the top 24 bits, because FFmpeg has no 24-bit sample format to send it in.
+`F32LE` is float, which PipeWire and CoreAudio can pass through without
+converting. `F64LE` is rare sources and some filter outputs. A decoder with no
+reason to prefer one sends S16LE.
+
+## Ask what it takes, do not find out
+
+Backends do not accept the same set, and the differences are not small:
+libpulse has no 64-bit float at all, and the JavaSound fallback takes whatever
+the JVM's default line takes, which is three of the five.
+
+```kotlin
+if (sink.accepts(shape)) sink.open(shape)
+sink.acceptedEncodings          // the rungs of the ladder, before you have frames
+```
+
+`accepts` is true exactly when `open` would not throw for want of the shape,
+and the two are asserted against each other on every backend. So a ladder down
+from what the media is towards the floor is a walk over `acceptedEncodings`
+rather than a sequence of calls wrapped in `catch`, and it can be walked before
+anything has been decoded.
+
+`open` still throws, and it throws `AudioException` rather than an argument
+exception, so a consumer that would rather try than ask can. What it must not
+do is treat a refusal as a bug: it is the answer to a question, and the
+question has a cheaper form.
+
+## Beyond stereo, say what the channels are
+
+`AudioFormat.layout` is what each channel is, and therefore the order they are
+interleaved in:
+
+```kotlin
+AudioFormat(48_000, 6, PcmEncoding.S16LE, ChannelLayout.SURROUND_5_1)
+```
+
+It defaults to whatever FFmpeg means by that many channels, so a stream that
+declared nothing lands where FFmpeg would have put it. Counting is not enough:
+six channels is `5.1` or `5.1(side)`, they differ in whether the last pair is
+the rear or the sides, and laying one out as the other moves a film's rear
+channels into its side ones.
+
+Ask `Capability.CHANNEL_PLACEMENT` before trusting it. Present, the backend
+tells the device what each channel is and the layout is honoured exactly.
+Absent, only the count goes across and the device applies its own convention,
+which is a different rendering rather than a failure. Nothing to ask below three
+channels, where every platform agrees.
+
+A layout naming a position the backend cannot express is refused by `accepts`
+rather than carried with a channel missing, and the refusal says what to do
+instead: send the same audio with `ChannelLayout.unspecified(n)` and take the
+platform's own ordering, which is what a stream that declared no layout gets
+anyway.
+
+`AudioFormat.significantBits` is the other half of describing a sample: how many
+of the bits carry signal, as against how wide the container is. It matters in
+exactly one place and that place is common, since 24-bit content arrives as
+S32LE with 24 significant bits, and packing 24 real bits into 24 is free while
+packing 32 into 24 is a quiet loss.
 
 `AudioFormat` carries the frame arithmetic, and it is worth using rather than
 repeating: `bytesPerFrame`, `framesIn`, `bytesFor`, `nanosFor`, `framesFor`. The
@@ -30,18 +86,27 @@ duration conversions split into whole seconds plus a remainder, because
 
 ## Nobody here resamples, so do not resample for us
 
-Open the sink at the rate the media actually is. The sound server converts to
-whatever the device wants, and it is better placed to do it than either of us.
+Open the sink at the rate the media actually is.
 
-This is measured rather than assumed, in all three backends: the PulseAudio one
-puts the rate you gave into the sample spec and the server meets it, the WASAPI
-sink sets `AUTOCONVERTPCM` because the engine otherwise refuses any format but
-its own mix format, and the CoreAudio output unit is told the rate in its stream
+The reason is not that resampling is hard or that the platform is better at it.
+It is that converting samples is an addon's work, and the addon does not exist
+yet. This library describes audio and carries it. Changing it belongs on the
+other side of the decorator seam, in something published separately that a
+consumer chooses to add. Putting a resampler in the core would make it a
+combine harvester, and it would make our own mistakes about it unremovable
+without forking the library, which is the outcome the plugin seam exists to
+prevent.
+
+Today that leaves the conversion to the sound server, which does it anyway.
+Measured rather than assumed, in all three backends: the PulseAudio one puts
+the rate you gave into the sample spec and the server meets it, the WASAPI sink
+sets `AUTOCONVERTPCM` because the engine otherwise refuses any format but its
+own mix format, and the CoreAudio output unit is told the rate in its stream
 description.
 
 So a 44.1 kHz file on a 48 kHz graph is not your problem. Decoding it to 48 kHz
-yourself means two conversions where one would do, and the second one is the
-server's whether you like it or not.
+yourself means two conversions where one would do, and the second one happens
+whether you like it or not.
 
 ## The write is the clock
 
@@ -149,15 +214,18 @@ produced have been taken by the sink it wraps.
 
 ## What is not settled yet
 
-Three things a decoder may notice, all of them named in the plan rather than
-left to be discovered.
+Named in the plan rather than left to be discovered.
 
-**Beyond stereo, channel order is a convention.** `AudioFormat` counts channels
-and does not name them, so a 5.1 stream is interleaved in whatever order both
-sides assume. Section 9.2 is the channel map that fixes it.
+**Presentation time is arithmetic you do yourself.** Where a frame will be heard
+is `framePosition` plus `latencyNanos`, converted through `AudioFormat`, and
+every consumer writes it out. Section 9.4 makes it one call.
 
-**`S24LE` and `S32LE` do not exist.** `PcmEncoding` carries two. Section 9.3
-adds the others, which is what a capture path at higher bit depth produces.
+**Channel placement stops at eighteen positions.** The ones libpulse and Windows
+both name, which is every standard layout up to 9.1.4 and not the ones with a
+second LFE, a bottom row or a wide pair. Those are refused rather than
+mis-placed, and an unspecified layout is the way through.
 
-**Presentation time is arithmetic you do yourself.** Section 9.4 makes it one
-call.
+**Two backends take a channel count and nothing more.** JavaSound has nothing to
+say it with, and CoreAudio will get it when the oracle has printed the channel
+label values. `Capability.CHANNEL_PLACEMENT` is how you find out which kind you
+were handed.
