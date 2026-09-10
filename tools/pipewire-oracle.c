@@ -313,6 +313,9 @@ int main(void) {
     printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Node", PW_TYPE_INTERFACE_Node);
     printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Device", PW_TYPE_INTERFACE_Device);
     printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Metadata", PW_TYPE_INTERFACE_Metadata);
+    /* What the registry proxy declares itself to be, which is the sanity check a
+     * walk of its method table can make before calling through it. */
+    printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Registry", PW_TYPE_INTERFACE_Registry);
 
     /* Calling a method on a proxy, which the headers do through macros. A proxy
      * pointer is cast straight to a spa_interface, whose cb.funcs points at the
@@ -350,6 +353,32 @@ int main(void) {
     P(offsetof(struct pw_core_methods, create_object));
     P(offsetof(struct pw_core_methods, destroy));
     P(PW_VERSION_CORE_METHODS);
+
+    /* The core's own events, which is where a round trip comes back. A connect
+     * has two things to wait for and no clock worth waiting on: the burst of
+     * globals the registry sends, and the properties of anything bound out of
+     * it. Both are answered by sync, whose done arrives after everything queued
+     * before it, so this is what replaces a sleep with a barrier.
+     *
+     * Measured rather than assumed: pw_proxy_add_object_listener does deliver
+     * these on a core, which is not obvious from the header, because the core
+     * also carries a listener list of its own that pw_core_add_listener
+     * reaches. Both the listener and a sync called by walking the method table
+     * were confirmed against a live graph before these numbers were used. */
+    SECTION("the core's events, which is where a round trip comes back");
+    P(PW_VERSION_CORE_EVENTS);
+    P(sizeof(struct pw_core_events));
+    P(offsetof(struct pw_core_events, version));
+    P(offsetof(struct pw_core_events, info));
+    P(offsetof(struct pw_core_events, done));
+    P(offsetof(struct pw_core_events, ping));
+    P(offsetof(struct pw_core_events, error));
+    P(offsetof(struct pw_core_events, remove_id));
+    P(offsetof(struct pw_core_events, bound_id));
+    P(offsetof(struct pw_core_events, add_mem));
+    P(offsetof(struct pw_core_events, remove_mem));
+    P(offsetof(struct pw_core_events, bound_props));
+    P(PW_ID_CORE);
 
     /* The default sink and source are not a property of the graph: they are a
      * value the session manager writes into a metadata object, so reading them
