@@ -39,9 +39,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * ## What it does not do
  *
- * A sample cache, which is a PulseAudio idea the graph has no equivalent of,
- * and per-application capture, which needs the registry to name a stream rather
- * than a device.
+ * A sample cache, which is a PulseAudio idea the graph has no equivalent of.
  *
  * Everything past that is `VolumeMixer`'s: what else is playing, how loud, and
  * where. That interface answers those over the pulse protocol and is not
@@ -71,9 +69,8 @@ internal class PipeWireBackend private constructor(
     private val sources = CopyOnWriteArrayList<PipeWireSource>()
 
     override fun createSink(config: SinkConfig): AudioSink {
-        if (closed.get()) throw AudioException("backend is closed")
         val sink = PipeWireSink(loop, config, SINK_CAPABILITIES)
-        sinks.add(sink)
+        register(sinks, sink)
         return sink
     }
 
@@ -91,9 +88,9 @@ internal class PipeWireBackend private constructor(
      * What the session manager currently calls the default output, or null.
      *
      * Not a property of the graph: it is a value written into a metadata
-     * object, so answering it means binding that object and listening to it,
-     * which is the one proxy this backend holds. Null is still a real answer
-     * and covers a graph with no session manager on it at all.
+     * object, so answering it means binding that object and listening to it.
+     * Null is still a real answer and covers a graph with no session manager on
+     * it at all.
      */
     override fun defaultDevice(): AudioDevice? =
         if (closed.get()) null else registry.defaultDevice(StreamDirection.PLAYBACK)
@@ -107,9 +104,8 @@ internal class PipeWireBackend private constructor(
      * compatibility layer has no words for.
      */
     override fun createSource(config: SourceConfig): AudioSource {
-        if (closed.get()) throw AudioException("backend is closed")
         val source = PipeWireSource(loop, config, sourceCapabilities, registry)
-        sources.add(source)
+        register(sources, source)
         return source
     }
 
@@ -141,8 +137,35 @@ internal class PipeWireBackend private constructor(
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit =
         registry.onChanged(handler)
 
+    /**
+     * Take the new channel onto the list, or refuse it because the backend has
+     * gone.
+     *
+     * Checking `closed` and then adding leaves a window: close can run whole
+     * between the two, empty the list, stop the loop and release the arena the
+     * library was looked up through. The channel handed back would then call
+     * into a library that is no longer mapped. Both happen under one lock here,
+     * and close takes the same one, so a channel is either on the list close
+     * will walk or was never made.
+     */
+    private fun <T : AutoCloseable> register(into: MutableList<T>, channel: T) {
+        val accepted = synchronized(lifecycle) {
+            if (closed.get()) false else into.add(channel)
+        }
+        if (!accepted) {
+            runCatching { channel.close() }
+            throw AudioException("backend is closed")
+        }
+    }
+
+    /** Guards the window between deciding this backend is open and acting on it. */
+    private val lifecycle = Any()
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        // Let any create that is already past its own check finish and land on
+        // the list, so what follows walks a list nothing is still adding to.
+        synchronized(lifecycle) { }
         sinks.forEach { runCatching { it.close() } }
         sinks.clear()
         sources.forEach { runCatching { it.close() } }
@@ -219,13 +242,20 @@ internal class PipeWireBackend private constructor(
          */
         fun connectOrNull(applicationName: String): AudioBackend? {
             val loop = PipeWireLoop.startOrNull(applicationName) ?: return null
+            var opened: PipeWireRegistry? = null
             return runCatching {
                 val registry = PipeWireRegistry.openOrNull(applicationName)
                     ?: throw IllegalStateException("no graph answered")
+                opened = registry
                 log.info("pipewire {} reached natively", loop.lib.version() ?: "?")
                 PipeWireBackend(loop, registry)
             }.getOrElse {
                 log.debug("no PipeWire graph reachable: {}", it.message)
+                // The registry holds a connection and a loop of its own, so a
+                // throw after it opened has to unwind that too. Closing only
+                // the streams' loop would leave a second one running for the
+                // life of the process.
+                opened?.let { registry -> runCatching { registry.close() } }
                 loop.close()
                 null
             }

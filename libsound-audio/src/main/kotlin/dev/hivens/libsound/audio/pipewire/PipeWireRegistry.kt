@@ -76,7 +76,16 @@ internal class PipeWireRegistry private constructor(
      * is what makes it concurrent rather than guarded: a device list is a
      * snapshot and a consumer that wants to know about a change subscribes.
      */
-    private val nodes = ConcurrentHashMap<Int, AudioDevice>()
+    private val nodes = ConcurrentHashMap<Int, GraphNode>()
+
+    /**
+     * One audio node, and which lists it belongs on.
+     *
+     * A set rather than the device's own field because the graph has nodes that
+     * are both: `Audio/Duplex` is one device that plays and records, and it has
+     * to appear in each list with that list's direction stamped on it.
+     */
+    private data class GraphNode(val device: AudioDevice, val directions: Set<StreamDirection>)
 
     /**
      * What the session manager currently calls the default, by `node.name`.
@@ -131,6 +140,10 @@ internal class PipeWireRegistry private constructor(
     @Volatile
     private var syncDone = false
 
+    /** Set when the round trip ended because the graph refused it, not because it answered. */
+    @Volatile
+    private var syncFailed = false
+
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     /**
@@ -157,8 +170,8 @@ internal class PipeWireRegistry private constructor(
     fun devices(direction: StreamDirection): List<AudioDevice> {
         val default = defaultName(direction)
         return nodes.values.asSequence()
-            .filter { it.direction == direction }
-            .map { if (it.id.value == default) it.copy(isDefault = true) else it }
+            .filter { direction in it.directions }
+            .map { it.device.copy(direction = direction, isDefault = it.device.id.value == default) }
             .sortedWith(compareByDescending<AudioDevice> { it.isDefault }.thenBy { it.name })
             .toList()
     }
@@ -175,8 +188,9 @@ internal class PipeWireRegistry private constructor(
      */
     fun defaultDevice(direction: StreamDirection): AudioDevice? {
         val default = defaultName(direction) ?: return null
-        return nodes.values.firstOrNull { it.direction == direction && it.id.value == default }
-            ?.copy(isDefault = true)
+        return nodes.values
+            .firstOrNull { direction in it.directions && it.device.id.value == default }
+            ?.device?.copy(direction = direction, isDefault = true)
     }
 
     /**
@@ -314,17 +328,20 @@ internal class PipeWireRegistry private constructor(
         runCatching {
             if (id != SpaAbi.PARAM_PROPS) return
             val node = data.address().toInt()
-            val current = nodes[node] ?: return
+            val held = nodes[node] ?: return
+            val current = held.device
             val props = SpaPodReader.objectProperties(param)
             val channels = props[SpaAbi.PROP_CHANNEL_VOLUMES] as? FloatArray
             val volume = channels?.maxOrNull() ?: props[SpaAbi.PROP_VOLUME] as? Float
             val muted = props[SpaAbi.PROP_MUTE] as? Boolean
             if (volume == null && muted == null) return
-            nodes[node] = current.copy(
-                // What the node did not say keeps what it said last, because a
-                // parameter arrives whole only the first time.
-                volume = volume?.coerceIn(0f, 1f) ?: current.volume,
-                muted = muted ?: current.muted,
+            nodes[node] = held.copy(
+                device = current.copy(
+                    // What the node did not say keeps what it said last,
+                    // because a parameter arrives whole only the first time.
+                    volume = volume?.coerceIn(0f, 1f) ?: current.volume,
+                    muted = muted ?: current.muted,
+                ),
             )
             fire()
         }.onFailure { log.debug("node param threw: {}", it.message) }
@@ -342,12 +359,12 @@ internal class PipeWireRegistry private constructor(
         runCatching {
             if (info.address() == 0L) return
             val node = data.address().toInt()
-            val current = nodes[node] ?: return
+            val held = nodes[node] ?: return
             val state = info.reinterpret(SpaAbi.NODE_INFO_SIZE)
                 .get(ValueLayout.JAVA_INT, SpaAbi.NODE_INFO_STATE)
             val suspended = state == SpaAbi.NODE_STATE_SUSPENDED
-            if (suspended == current.isSuspended) return
-            nodes[node] = current.copy(isSuspended = suspended)
+            if (suspended == held.device.isSuspended) return
+            nodes[node] = held.copy(device = held.device.copy(isSuspended = suspended))
             fire()
         }.onFailure { log.debug("node info threw: {}", it.message) }
     }
@@ -378,13 +395,18 @@ internal class PipeWireRegistry private constructor(
     fun onCoreError(
         unusedData: MemorySegment,
         id: Int,
-        unusedSeq: Int,
+        seq: Int,
         result: Int,
         message: MemorySegment,
     ) {
         runCatching {
             log.debug("the graph refused id {}: {} ({})", id, message.readCString(), result)
-            if (id != SpaAbi.ID_CORE) return
+            // Only the request the barrier is waiting for ends it. Ending on
+            // any core error at all would let an unrelated refusal, on another
+            // object, cut the wait short and leave settle satisfied with a
+            // device list the graph had not finished sending, silently.
+            if (id != SpaAbi.ID_CORE || seq != pendingSeq) return
+            syncFailed = true
             syncDone = true
             loop.signal()
         }
@@ -398,22 +420,20 @@ internal class PipeWireRegistry private constructor(
     }
 
     private fun addNode(id: Int, entries: Map<String, String>) {
-        val direction = when (entries[SpaAbi.KEY_MEDIA_CLASS]) {
-            SpaAbi.MEDIA_CLASS_SINK -> StreamDirection.PLAYBACK
-            SpaAbi.MEDIA_CLASS_SOURCE -> StreamDirection.CAPTURE
-            // Somebody playing rather than something to play to. Kept for one
-            // question, which is whether a stream a caller asked to record is
-            // still there, and kept out of the device list for the reason the
-            // rest of this is: a device menu offering a running application as
-            // an output is a menu with a broken row.
-            SpaAbi.MEDIA_CLASS_STREAM_OUTPUT -> {
-                entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull()?.let { playing[it] = id }
-                return
-            }
-            // A filter, a video node, or a capture stream, and none of them is
-            // anything this answers a question about.
-            else -> return
+        val mediaClass = entries[SpaAbi.KEY_MEDIA_CLASS] ?: return
+        // Somebody playing rather than something to play to. Kept for one
+        // question, which is whether a stream a caller asked to record is still
+        // there, and kept out of the device list for the reason the rest of
+        // this is: a device menu offering a running application as an output is
+        // a menu with a broken row.
+        if (mediaClass == SpaAbi.MEDIA_CLASS_STREAM_OUTPUT) {
+            entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull()?.let { playing[it] = id }
+            return
         }
+        val directions = directionsOf(mediaClass)
+        // A filter, a video node, or a capture stream, and none of them is
+        // anything this answers a question about.
+        if (directions.isEmpty()) return
         // node.name is the stable identity a target.object is named by, and
         // the description is what a person reads. Falling back to the name
         // is ugly and unique, which beats an empty row in a device menu.
@@ -422,9 +442,36 @@ internal class PipeWireRegistry private constructor(
             ?: entries[SpaAbi.KEY_NODE_NICK]
             ?: entries[SpaAbi.KEY_DEVICE_DESCRIPTION]
             ?: name
-        nodes[id] = AudioDevice(id = DeviceId(name), name = label, direction = direction)
+        nodes[id] = GraphNode(
+            // isMonitor stays false and that is not a default standing in for
+            // the unknown. A sink's monitor is ports on the sink's own node
+            // here rather than a node of its own, so there is nothing in this
+            // list that is one: what `pipewire-pulse` presents as
+            // `<sink>.monitor` it synthesises, and the graph carries no such
+            // object. Measured on a graph whose only node was a null sink,
+            // where the pulse protocol listed a monitor source and the node
+            // list had none.
+            device = AudioDevice(id = DeviceId(name), name = label),
+            directions = directions,
+        )
         bindNode(id)
         fire()
+    }
+
+    /**
+     * Which lists a `media.class` puts a node on.
+     *
+     * Prefix rather than equality, because the graph qualifies these: a
+     * loopback microphone is `Audio/Source/Virtual`, and matching the bare name
+     * whole leaves it out of the capture list on a machine that has one.
+     * `Audio/Duplex` is one node on both lists.
+     */
+    private fun directionsOf(mediaClass: String): Set<StreamDirection> = when {
+        mediaClass == SpaAbi.MEDIA_CLASS_DUPLEX ->
+            setOf(StreamDirection.PLAYBACK, StreamDirection.CAPTURE)
+        mediaClass.startsWith(SpaAbi.MEDIA_CLASS_SINK) -> setOf(StreamDirection.PLAYBACK)
+        mediaClass.startsWith(SpaAbi.MEDIA_CLASS_SOURCE) -> setOf(StreamDirection.CAPTURE)
+        else -> emptySet()
     }
 
     /**
@@ -908,6 +955,7 @@ internal class PipeWireRegistry private constructor(
             ),
         )
         syncDone = false
+        syncFailed = false
         // The sequence the server will answer with is the one sync returns, not
         // the one it was handed: the protocol assigns its own and the two are
         // only equal by accident.
@@ -919,7 +967,7 @@ internal class PipeWireRegistry private constructor(
             // why the flag is re-read rather than the wake being trusted.
             if (!loop.awaitFor(ROUND_TRIP_SECONDS)) return@locked false
         }
-        true
+        !syncFailed
     }
 
     /**
