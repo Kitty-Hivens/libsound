@@ -30,6 +30,19 @@ import dev.hivens.libsound.audio.VolumeMixers
 @Suppress("unused", "UNUSED_PARAMETER")
 internal object AudioSamples {
 
+    // -- choosing a rung by what it can do -----------------------------------
+
+    /**
+     * For the consumer that cannot adapt to a capability being absent.
+     *
+     * On Linux the native rung and the libpulse one below it differ by exactly
+     * this, so naming it here is what decides which one answers.
+     */
+    fun needingASampleCache(): AudioBackend? {
+        val backend = AudioBackends.open("Example", setOf(Capability.SAMPLE_CACHE))
+        return backend
+    }
+
     // -- playing something ---------------------------------------------------
 
     fun play(pcm: ByteArray) {
