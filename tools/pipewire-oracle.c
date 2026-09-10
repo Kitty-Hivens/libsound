@@ -29,6 +29,8 @@
  */
 
 #include <pipewire/pipewire.h>
+/* Metadata is an extension rather than core, and the default sink lives in it. */
+#include <pipewire/extensions/metadata.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
 #include <spa/param/latency-utils.h>
@@ -295,6 +297,80 @@ int main(void) {
     P(offsetof(struct spa_dict_item, key));
     P(offsetof(struct spa_dict_item, value));
 
+    /* The registry, which is how a client finds out what is on the graph. Every
+     * global arrives as an id, a type string and a property dict, and a device
+     * list is that stream filtered by media.class. The events struct is a
+     * vtable like pw_stream's and has the same rule: handed over whole, so the
+     * size is as load bearing as the offsets. */
+    SECTION("registry and proxies");
+    P(PW_VERSION_REGISTRY);
+    P(PW_VERSION_REGISTRY_EVENTS);
+    P(sizeof(struct pw_registry_events));
+    P(offsetof(struct pw_registry_events, version));
+    P(offsetof(struct pw_registry_events, global));
+    P(offsetof(struct pw_registry_events, global_remove));
+    P(PW_VERSION_CORE);
+    printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Node", PW_TYPE_INTERFACE_Node);
+    printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Device", PW_TYPE_INTERFACE_Device);
+    printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Metadata", PW_TYPE_INTERFACE_Metadata);
+
+    /* Calling a method on a proxy, which the headers do through macros. A proxy
+     * pointer is cast straight to a spa_interface, whose cb.funcs points at the
+     * interface's method table, and the macro reads a function out of it. Panama
+     * cannot call the macro, so the layout is what a binding walks by hand: the
+     * same discipline the WASAPI vtable indices are held to.
+     *
+     * Not used yet. The device list needs no method call at all, because a
+     * registry global arrives with its whole property dict attached. Binding a
+     * global does, and binding is what the default device and a node's volume
+     * are behind, so the numbers are printed now and the code that needs them
+     * is a named follow-up rather than a guess later. */
+    SECTION("calling a proxy method by hand");
+    P(sizeof(struct spa_interface));
+    P(offsetof(struct spa_interface, type));
+    P(offsetof(struct spa_interface, version));
+    P(offsetof(struct spa_interface, cb));
+    P(sizeof(struct spa_callbacks));
+    P(offsetof(struct spa_callbacks, funcs));
+    P(offsetof(struct spa_callbacks, data));
+    P(sizeof(struct pw_registry_methods));
+    P(offsetof(struct pw_registry_methods, version));
+    P(offsetof(struct pw_registry_methods, add_listener));
+    P(offsetof(struct pw_registry_methods, bind));
+    P(offsetof(struct pw_registry_methods, destroy));
+    P(PW_VERSION_REGISTRY_METHODS);
+    P(sizeof(struct pw_core_methods));
+    P(offsetof(struct pw_core_methods, version));
+    P(offsetof(struct pw_core_methods, add_listener));
+    P(offsetof(struct pw_core_methods, hello));
+    P(offsetof(struct pw_core_methods, sync));
+    P(offsetof(struct pw_core_methods, pong));
+    P(offsetof(struct pw_core_methods, error));
+    P(offsetof(struct pw_core_methods, get_registry));
+    P(offsetof(struct pw_core_methods, create_object));
+    P(offsetof(struct pw_core_methods, destroy));
+    P(PW_VERSION_CORE_METHODS);
+
+    /* The default sink and source are not a property of the graph: they are a
+     * value the session manager writes into a metadata object, so reading them
+     * means binding that object and listening to it. */
+    SECTION("metadata, which is where the default device lives");
+    P(PW_VERSION_METADATA);
+    P(PW_VERSION_METADATA_EVENTS);
+    P(sizeof(struct pw_metadata_events));
+    P(offsetof(struct pw_metadata_events, version));
+    P(offsetof(struct pw_metadata_events, property));
+    printf("  %-44s = %s\n", "PW_KEY_METADATA_NAME", PW_KEY_METADATA_NAME);
+
+    /* A stream's own volume, which is a control on its node rather than
+     * anything pw_stream carries directly. */
+    SECTION("SPA_PROP, which is what a volume is");
+    P(SPA_TYPE_OBJECT_Props);
+    P(SPA_PARAM_Props);
+    P(SPA_PROP_volume);
+    P(SPA_PROP_mute);
+    P(SPA_PROP_channelVolumes);
+
     SECTION("the property keys a node is named and placed by");
     printf("  %-30s = %s\n", "PW_KEY_MEDIA_TYPE", PW_KEY_MEDIA_TYPE);
     printf("  %-30s = %s\n", "PW_KEY_MEDIA_CATEGORY", PW_KEY_MEDIA_CATEGORY);
@@ -310,6 +386,13 @@ int main(void) {
     printf("  %-30s = %s\n", "PW_KEY_NODE_AUTOCONNECT", PW_KEY_NODE_AUTOCONNECT);
     printf("  %-30s = %s\n", "PW_KEY_TARGET_OBJECT", PW_KEY_TARGET_OBJECT);
     printf("  %-30s = %s\n", "PW_KEY_STREAM_CAPTURE_SINK", PW_KEY_STREAM_CAPTURE_SINK);
+    /* What a registry global says it is, which is the whole of a device list:
+     * Audio/Sink and Audio/Source are devices, Stream/Output/Audio and its
+     * sibling are somebody playing. */
+    printf("  %-30s = %s\n", "PW_KEY_MEDIA_CLASS", PW_KEY_MEDIA_CLASS);
+    printf("  %-30s = %s\n", "PW_KEY_OBJECT_SERIAL", PW_KEY_OBJECT_SERIAL);
+    printf("  %-30s = %s\n", "PW_KEY_NODE_NICK", PW_KEY_NODE_NICK);
+    printf("  %-30s = %s\n", "PW_KEY_DEVICE_DESCRIPTION", PW_KEY_DEVICE_DESCRIPTION);
 
     return 0;
 }

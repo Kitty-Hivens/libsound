@@ -116,7 +116,7 @@ publishes and reads media sessions.
 | Processing | Done. `libsound-dsp`, depending on `libsound-core` alone: a gain, a biquad, a limiter and a tap, each passing the decorator fixture, and the stack of them passing it too. |
 | What a format says | Done. Five encodings, a channel layout naming each channel, and significant bits. What a sink accepts is asked through `accepts` before an open rather than caught after one, and the pair is asserted against every backend. |
 | Channel placement | Done on Pulse, WASAPI and PipeWire, all from oracle tables. Absent on JavaSound, which has nothing to say it with, and on CoreAudio until the oracle prints the channel labels. |
-| PipeWire, natively | A stream in each direction, passing both contract suites against a live graph. No device list, no mixer, no registry: section 13.8 says why. Not on the selection path until it passes what the libpulse backend passes, and reachable through `-Dlibsound.backend=pipewire` meanwhile. |
+| PipeWire, natively | A stream in each direction passing both contract suites against a live graph, a device list from the registry, device events, and the stream's own volume as a control on its node. Missing: which device is default, and a device's own volume, both behind binding a proxy. Not on the selection path until it passes what the libpulse backend passes, and reachable through `-Dlibsound.backend=pipewire` meanwhile. |
 | Publication | 0.1.0 on Maven Central, five artifacts under `dev.hivens`. |
 
 ---
@@ -1236,12 +1236,27 @@ Where a consumer has already chosen, `SinkConfig.device` becomes
 `PW_KEY_TARGET_OBJECT` rather than a device name in a connect call. Same
 meaning, one property.
 
-**Enumerating the graph and making links is deliberately not in this section.**
-A node list with ports and arbitrary links is a second interface the size of
-`VolumeMixer`, and `VolumeMixer` already covers the level a mixer needs:
-what is playing, how loud, on which device, and moving it. If a consumer turns
-up that needs port-level links, it gets its own section rather than being
-smuggled into this one.
+**A device list is small and is in. Arbitrary port links are not.**
+
+An earlier draft of this paragraph excluded both together, and they are not the
+same size. A registry global arrives carrying the object's whole property dict,
+so listing the audio nodes is a filter over an event stream and needs no method
+call at all: two hundred lines, and without it this backend could never stand
+first. Port-level links are the thing that is a second interface the size of
+`VolumeMixer`, and `VolumeMixer` already covers the level a mixer needs, which
+is what is playing, how loud, on which device, and moving it.
+
+So the registry is here, with a connection of its own, for the reason the
+libpulse mixer takes a second one: a stream of every object on the machine has
+no business on the socket carrying audio timing.
+
+One question it does not answer, and it is worth naming rather than letting a
+consumer find it. Which device is default is not a property of the graph. The
+session manager writes it into a metadata object, so reading it means binding
+that object, and binding is a proxy method the headers reach through a macro.
+`defaultDevice` answers null, which the contract already defines as unknown, and
+`tools/pipewire-oracle.c` prints the offsets a walk would need. A device's own
+volume is behind the same door.
 
 **Creating devices is not in this section either.** `createVirtualSink` and
 `combineSinks` load server modules through the pulse protocol today, and they

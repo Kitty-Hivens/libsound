@@ -12,6 +12,7 @@ import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.StreamDirection
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -19,29 +20,60 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * The graph itself, with no compatibility layer in front of it.
  *
- * Deliberately narrow, and section 13 of the plan says why each piece is out
- * rather than not yet in. A `pw_stream` is a node with the buffer handling
- * done, which is the whole playback path; everything this backend does not
- * offer needs the registry, which is a second interface the size of
- * `VolumeMixer` for questions `VolumeMixer` already answers over the pulse
- * protocol.
+ * A stream in each direction, a device list, and the events that keep it
+ * current. What it has that the shim cannot carry is twenty-six channel
+ * positions against eighteen, a 64-bit float, and a `node.latency` the node
+ * asks for rather than one translated on its behalf.
  *
- * So this is a stream in each direction and nothing else, it reports exactly
- * that, and a consumer that wants a device list or a mixer asks the libpulse
- * backend, which is still the one the selection reaches first. What this one
- * has instead is what the shim cannot carry: twenty-six channel positions
- * against eighteen, a 64-bit float, and a latency the node asks for rather than
- * one translated on its behalf.
+ * ## Two connections, on purpose
+ *
+ * Streams get one and the registry another, which is the arrangement the
+ * libpulse backend and its mixer already have and for the same stated reason: a
+ * registry reports every object on the machine, and that traffic has no
+ * business on the connection carrying audio timing.
+ *
+ * ## What is still missing, and it is one question
+ *
+ * Which device is default. That is not a property of the graph but a value the
+ * session manager writes into a metadata object, so reading it means binding
+ * that object, and binding is a proxy method the headers reach through a macro.
+ * `SpaAbi` carries the offsets a walk would need and section 13 names it as the
+ * next thing. A device's own volume is behind the same door.
+ *
+ * Everything else this does not do is `VolumeMixer`'s: what else is playing,
+ * how loud, and where. That interface answers those over the pulse protocol and
+ * is not duplicated here.
  */
 internal class PipeWireBackend private constructor(
     private val loop: PipeWireLoop,
+    private val registry: PipeWireRegistry?,
 ) : AudioBackend {
 
     private val log = LoggerFactory.getLogger("libsound.PipeWire")
 
     override val name: String = "pipewire"
 
-    override val capabilities: Capabilities = BACKEND_CAPABILITIES
+    /**
+     * What the graph turned out to offer, rather than what this code hoped.
+     *
+     * Enumeration is the one entry decided by asking: a registry is a second
+     * connection and it can fail to open, on a graph that refuses one or on a
+     * machine where the first connection was the last thing that worked. A
+     * backend that claimed a device list and answered an empty one would be the
+     * discovered-by-failing case this enum exists to prevent.
+     */
+    override val capabilities: Capabilities = if (registry == null) {
+        STREAM_CAPABILITIES
+    } else {
+        Capabilities(
+            STREAM_CAPABILITIES.supported +
+                setOf(
+                    Capability.DEVICE_ENUMERATION,
+                    Capability.DEVICE_SELECTION,
+                    Capability.DEVICE_EVENTS,
+                ),
+        )
+    }
 
     private val closed = AtomicBoolean(false)
 
@@ -56,16 +88,25 @@ internal class PipeWireBackend private constructor(
     }
 
     /**
-     * Empty, and [Capability.DEVICE_ENUMERATION] is absent to say so.
+     * Every audio sink on the graph, as the registry has been told about them.
      *
-     * Listing the graph's nodes means the registry and a proxy for every global
-     * on it. Section 13.8 leaves that out of the first cut on purpose: the
-     * questions a consumer actually asks a device list, which are what exists
-     * and how loud it is and where a stream is playing, are `VolumeMixer`'s and
-     * it answers them over the pulse protocol already.
+     * No round trip: a global arrives with its whole property dict attached, so
+     * the answer is already here and a list is a filter over what has been
+     * heard rather than a call and a wait.
      */
-    override fun devices(): List<AudioDevice> = emptyList()
+    override fun devices(): List<AudioDevice> =
+        if (closed.get()) emptyList() else registry?.devices(StreamDirection.PLAYBACK).orEmpty()
 
+    /**
+     * Null, always, and it is the one question this backend cannot answer yet.
+     *
+     * Which device is default is not a property of the graph. It is a value the
+     * session manager writes into a metadata object, so reading it means
+     * binding that object, and binding is a proxy method the headers reach
+     * through a macro. Section 13 names it as the next thing rather than
+     * leaving it as a surprise, and the contract already allows null for
+     * unknown, so a consumer meeting one is told rather than misled.
+     */
     override fun defaultDevice(): AudioDevice? = null
 
     /**
@@ -83,8 +124,10 @@ internal class PipeWireBackend private constructor(
         return source
     }
 
-    override fun captureDevices(): List<AudioDevice> = emptyList()
+    override fun captureDevices(): List<AudioDevice> =
+        if (closed.get()) emptyList() else registry?.devices(StreamDirection.CAPTURE).orEmpty()
 
+    /** Null, for the reason [defaultDevice] is. */
     override fun defaultCaptureDevice(): AudioDevice? = null
 
     /** A server-side sample cache is a PulseAudio idea with no equivalent here. */
@@ -92,8 +135,15 @@ internal class PipeWireBackend private constructor(
 
     override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean = false
 
-    /** Nothing to subscribe to without the registry, and the capability says so. */
-    override fun onDevicesChanged(handler: () -> Unit): () -> Unit = {}
+    /**
+     * Free once the registry is listening: the same event stream that fills the
+     * device list says when it changed.
+     *
+     * Deliberately coarse, like every other backend's: it says something moved
+     * rather than what, and every consumer re-reads the list anyway.
+     */
+    override fun onDevicesChanged(handler: () -> Unit): () -> Unit =
+        registry?.onChanged(handler) ?: {}
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -101,6 +151,7 @@ internal class PipeWireBackend private constructor(
         sinks.clear()
         sources.forEach { runCatching { it.close() } }
         sources.clear()
+        registry?.let { runCatching { it.close() } }
         // Every stream is destroyed before the loop is stopped, and the loop is
         // stopped before the arena holding the upcall stubs is freed.
         loop.close()
@@ -109,15 +160,12 @@ internal class PipeWireBackend private constructor(
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.PipeWire")
 
-        /**
-         * What a sink here can do.
-         *
-         * No `STREAM_VOLUME`: a node's volume is a control reached through the
-         * registry, which this backend does not open, so claiming it would
-         * offer a slider that moves nothing.
-         */
+        /** What a sink here can do. */
         private val SINK_CAPABILITIES = Capabilities.of(
             Capability.STREAM_IDENTITY,
+            // A control on the node, so the desktop's mixer shows it and
+            // follows it rather than the samples being scaled behind its back.
+            Capability.STREAM_VOLUME,
             Capability.DEVICE_POSITION,
             Capability.UNDERRUN_COUNT,
             // The node asks the graph for a quantum and keeps it, which is the
@@ -139,7 +187,8 @@ internal class PipeWireBackend private constructor(
             SINK_CAPABILITIES.supported + Capability.CAPTURE,
         )
 
-        private val BACKEND_CAPABILITIES = SOURCE_CAPABILITIES
+        /** Everything a stream can do, before the registry is asked for. */
+        private val STREAM_CAPABILITIES = SOURCE_CAPABILITIES
 
         /**
          * Start a loop and return the backend, or null where there is no graph.
@@ -152,7 +201,12 @@ internal class PipeWireBackend private constructor(
             val loop = PipeWireLoop.startOrNull(applicationName) ?: return null
             return runCatching {
                 log.info("pipewire {} reached natively", loop.lib.version() ?: "?")
-                PipeWireBackend(loop)
+                // A second connection, and its absence is survivable: a backend
+                // with no registry still plays, and says so by withholding the
+                // three capabilities that depend on one.
+                val registry = PipeWireRegistry.openOrNull(applicationName)
+                if (registry == null) log.info("no registry connection; this backend lists no devices")
+                PipeWireBackend(loop, registry)
             }.getOrElse {
                 log.debug("PipeWire backend setup failed: {}", it.message)
                 loop.close()
