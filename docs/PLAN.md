@@ -1021,7 +1021,8 @@ seam is public so somebody else's project can go further.
 | Does the peak-detect path work on a real source as it does on a monitor? | 5.6 `CAPTURE_METERING` | **Answered, in the negative.** `pa_stream_set_monitor_stream` narrows a monitor to one sink input because a monitor carries everything its sink plays. A real source has no equivalent call, so the only level available for a capture row is the device's own, shared by everything reading it. A row that moved because somebody else was talking would be worse than no meter, so the capability is absent. |
 | Where does the processing module live? | 5.5 | **Answered: a fifth module in this repository, depending on `libsound-core` only.** Not inside `libsound-audio`, which binds libpulse, because then everyone who wants to play a sound carries filters they never use, and the seam needs no privileged access: it is the public `AudioSink`. Not a repository of its own either, because "separately published" is about the artifact, and a second repository is a second version to keep in step and a second CI for a module whose whole surface is one interface. `libsound-dbus` was reasoned about the same way and stayed here. |
 | Does `streams()` returning both directions break a consumer badly enough to warrant a separate call? | 5.3 | **Answered: no.** It returns both, rows carry a direction, and stream ids now name the facility they came from, because a sink input and a source output can hold the same index at once. |
-| Is a native PipeWire binding worth a second complete implementation? | 7.7, 13 | **Answered: yes, and it is a purpose rather than an option.** `tools/pipewire-oracle.c` measured what the shim costs: eight channel positions, the 64-bit and packed 24-bit formats, and the latency the node asked for. Those are refusals this library currently reports as its own. Section 13 specifies the backend. |
+| Is a native PipeWire binding worth a second complete implementation? | 7.7, 13 | **Answered: yes, and it is a purpose rather than an option.** `tools/pipewire-oracle.c` measured what the shim costs: eight channel positions, the 64-bit and packed 24-bit formats, and the latency the node asked for. Those are refusals this library currently reports as its own. Section 13 specifies the backend, and it is built and passing the contract suites. |
+| Should the native backend go first on a machine that has both? | 13.9 | **Open, and now a trade with one item on each side rather than a list.** The two backends report the same capabilities except the sample cache, which the graph has no equivalent of. Until that is decided the native path is reached with `-Dlibsound.backend=pipewire`. |
 | Does `latencyNanos` returning zero mean unmeasurable or empty? | 4.7 | **Open, and narrowed.** `Capability.TOTAL_LATENCY` now says whether the number covers the device or only the client's queue, which was the larger half of the confusion. It does not separate a backend that cannot measure from a device with nothing queued, which `UNDERRUN_COUNT` does for its own number. |
 
 ---
@@ -1190,10 +1191,12 @@ consumer writes and must. Capture puts the device on the other side, so the
 rule turns out not to be about reading or writing at all. It is about which
 side the device is on, and `readFully` is the half that was missing.
 
-`stream.capture.sink` is a property rather than a separate call, so recording
-one application would be a node property here where it is
-`pa_stream_set_monitor_stream` on the other side. Not wired yet: choosing which
-application needs the registry to name one.
+Recording one application is a property here where it is
+`pa_stream_set_monitor_stream` on the other side: a capture stream naming
+another node in `target.object` is linked to that node's output rather than to a
+device, which was confirmed by reading the links on a live graph rather than by
+hearing audio, because a fallback carries the same audio. Section 13.8 says how
+the id is resolved and why it is checked first.
 
 ### 13.6 Latency, said once and kept
 
@@ -1250,13 +1253,39 @@ So the registry is here, with a connection of its own, for the reason the
 libpulse mixer takes a second one: a stream of every object on the machine has
 no business on the socket carrying audio timing.
 
-One question it does not answer, and it is worth naming rather than letting a
-consumer find it. Which device is default is not a property of the graph. The
-session manager writes it into a metadata object, so reading it means binding
-that object, and binding is a proxy method the headers reach through a macro.
-`defaultDevice` answers null, which the contract already defines as unknown, and
-`tools/pipewire-oracle.c` prints the offsets a walk would need. A device's own
-volume is behind the same door.
+**Two things are behind a bind, and both are now built.** Neither is on the
+global's own property dict, so neither could be answered by listening alone.
+
+Which device is default is not a property of the graph at all: the session
+manager writes it into a metadata object. So that object is bound, chosen out of
+the several the graph carries by `metadata.name`, and its property events fill in
+the default sink and source. A device's own volume is a parameter of its node,
+so each audio node is bound and subscribed to that one parameter, which is why a
+slider somebody else moved arrives as an event rather than at the next re-read.
+Both scales agree with the libpulse side without conversion, measured: a sink set
+to half through the pulse protocol reads 0.125 on both, because the protocol's
+own scale is the cube root of amplitude.
+
+`pw_registry_bind` is a macro like `pw_core_get_registry`, so it is the same walk
+of the proxy's method table, and every offset comes from the oracle.
+
+**Recording one application is a property here rather than a call**, and that
+changes what going wrong looks like. `pa_stream_set_monitor_stream` fails when it
+fails; a `target.object` the graph does not recognise is a stream that connects
+to whatever was going anyway, which for a capture is a microphone in a room. So
+the id is resolved before it is used. It arrives from `VolumeMixer`, which speaks
+the pulse protocol whichever backend is playing, and its number is the object
+serial, measured against `pactl` on pipewire-pulse 1.6.8. A serial is monotonic
+and never reused, so it names the application meant or names nothing, and one the
+registry cannot find is refused rather than left to the graph to resolve.
+
+**A connect waits for an answer rather than for a clock.** A registry global is
+an event, so nothing a client calls returns to say the graph has finished
+describing itself. What does is a sync on the core, answered after everything the
+server had already queued. Two of them: the first covers the burst of globals,
+the second covers what binding the metadata object inside that burst asked for.
+Measured to be load bearing rather than assumed, on a graph with one sink, where
+the default read after the first sync was null and after the second was the sink.
 
 **Creating devices is not in this section either.** `createVirtualSink` and
 `combineSinks` load server modules through the pulse protocol today, and they
@@ -1284,11 +1313,35 @@ with the answer. A property forces either, because the first person to hit a
 difference between them needs to be able to tell which side it is on without
 rebuilding.
 
+**The distance left, measured rather than estimated.** Against
+`pipewire-pulse` 1.6.8 on the same graph, the two backends now report the same
+capability set with one exception:
+
+| | libpulse | native |
+|---|---|---|
+| `STREAM_VOLUME`, `STREAM_IDENTITY`, `DEVICE_POSITION`, `UNDERRUN_COUNT` | yes | yes |
+| `DEVICE_ENUMERATION`, `DEVICE_SELECTION`, `DEVICE_EVENTS`, `DEVICE_VOLUME` | yes | yes |
+| `LOW_LATENCY`, `TOTAL_LATENCY`, `CHANNEL_PLACEMENT`, `CAPTURE` | yes | yes |
+| `PER_STREAM_CAPTURE` | yes | yes |
+| `SAMPLE_CACHE` | yes | **no** |
+
+The sample cache is a PulseAudio idea with nothing behind it in the graph:
+uploading a sound the server answers to by name is a protocol feature, not a
+node. Borrowing libpulse for those two calls was considered and rejected,
+because it would make the capability depend on `pipewire-pulse` being installed,
+and a machine that has the graph and not the shim is one of the two machines the
+rung below exists for. So the honest answer is that the native backend has no
+sample cache and says so, which is what `Capability` is for.
+
+That leaves the promotion as a trade rather than an upgrade, and it is the one
+open decision in this section: four exotic layouts, a 64-bit float and a node's
+own latency, against a working sample cache on the default path.
+
 ### 13.10 Open questions
 
 | Question | Answer |
 |---|---|
-| Does a Kotlin POD builder emit the same bytes as `spa_pod_builder`? | Unknown, and the reference dumps in the oracle are how it gets answered rather than argued. This is the first thing to write and the thing that decides whether the rest is cheap or awful. |
+| Does a Kotlin POD builder emit the same bytes as `spa_pod_builder`? | **Answered: yes, on the first run, and it stays answered.** The oracle dumps a 5.1 format, a latency request and a Props object, and the tests compare against all three. The reader is checked the same way, against the same dumps, which is what stops the encoder and the decoder agreeing about something they both have wrong. |
 | What does `pw_stream_get_time_n` report through an underrun? | Unmeasured. Every other backend's clock had this trap and each one needed a different correction, so assume it has one until a stream fed half a second and left alone says otherwise. |
 | Is `PW_STREAM_FLAG_RT_PROCESS` worth taking? | It promises the callback runs on the graph's real-time thread, which is what section 4.5 asks RealtimeKit for on the writing thread. Whether a JVM callback belongs there at all is a different question from whether a JVM write loop does, and the answer involves what a garbage collection pause does to the graph rather than to one stream. |
-| How much of `PulseBackend` survives? | The device list, the mixer and the sample cache are the pulse protocol's, not the graph's, and this section replaces neither. A machine on the native backend still opens a libpulse connection for `VolumeMixer`, which is two connections where there was one, and whether that is acceptable or whether the mixer needs a native half is unanswered. |
+| How much of `PulseBackend` survives? | **Narrowed to two things.** The device list is the graph's after all and is native now, and so is a device's volume, which took a bind rather than a protocol. What is left is the mixer, which stays on the pulse protocol, and the sample cache, which has nothing behind it in the graph at all. A machine on the native backend still opens a libpulse connection for `VolumeMixer`, which is two connections where there was one, and whether the mixer needs a native half is still unanswered. |
