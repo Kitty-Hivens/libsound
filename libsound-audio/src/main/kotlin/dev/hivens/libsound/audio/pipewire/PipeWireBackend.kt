@@ -32,6 +32,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * registry reports every object on the machine, and that traffic has no
  * business on the connection carrying audio timing.
  *
+ * The registry's is also the one that answers whether there is a graph at all.
+ * Loading the library and starting a loop touches no socket, so on a machine
+ * with libpipewire installed and nothing running they both succeed, and without
+ * a connection to fail there is nothing to fall back from.
+ *
  * ## What it does not do
  *
  * A sample cache, which is a PulseAudio idea the graph has no equivalent of,
@@ -44,53 +49,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal class PipeWireBackend private constructor(
     private val loop: PipeWireLoop,
-    private val registry: PipeWireRegistry?,
+    private val registry: PipeWireRegistry,
 ) : AudioBackend {
 
     private val log = LoggerFactory.getLogger("libsound.PipeWire")
 
     override val name: String = "pipewire"
 
-    /**
-     * What the graph turned out to offer, rather than what this code hoped.
-     *
-     * Enumeration is the one entry decided by asking: a registry is a second
-     * connection and it can fail to open, on a graph that refuses one or on a
-     * machine where the first connection was the last thing that worked. A
-     * backend that claimed a device list and answered an empty one would be the
-     * discovered-by-failing case this enum exists to prevent.
-     */
-    override val capabilities: Capabilities = if (registry == null) {
-        STREAM_CAPABILITIES
-    } else {
-        Capabilities(
-            STREAM_CAPABILITIES.supported +
-                setOf(
-                    Capability.DEVICE_ENUMERATION,
-                    Capability.DEVICE_SELECTION,
-                    Capability.DEVICE_EVENTS,
-                    // The device's own, not a stream's, which is what the
-                    // registry binds each audio node to reach.
-                    Capability.DEVICE_VOLUME,
-                    // Recording one application means naming its node, and
-                    // knowing which node is the registry's answer.
-                    Capability.PER_STREAM_CAPTURE,
-                ),
-        )
-    }
+    override val capabilities: Capabilities = Capabilities(
+        SOURCE_CAPABILITIES.supported + REGISTRY_CAPABILITIES,
+    )
 
     private val closed = AtomicBoolean(false)
 
-    /**
-     * A source's, which is the backend's own minus what a source cannot do.
-     *
-     * Recording one application rather than a device is the one entry that
-     * depends on the second connection, because aiming at a stream means
-     * checking that the stream is there.
-     */
+    /** A source's, which is the backend's own minus what only a backend can do. */
     private val sourceCapabilities: Capabilities = Capabilities(
-        SOURCE_CAPABILITIES.supported +
-            if (registry == null) emptySet() else setOf(Capability.PER_STREAM_CAPTURE),
+        SOURCE_CAPABILITIES.supported + Capability.PER_STREAM_CAPTURE,
     )
 
     private val sinks = CopyOnWriteArrayList<PipeWireSink>()
@@ -111,7 +85,7 @@ internal class PipeWireBackend private constructor(
      * heard rather than a call and a wait.
      */
     override fun devices(): List<AudioDevice> =
-        if (closed.get()) emptyList() else registry?.devices(StreamDirection.PLAYBACK).orEmpty()
+        if (closed.get()) emptyList() else registry.devices(StreamDirection.PLAYBACK)
 
     /**
      * What the session manager currently calls the default output, or null.
@@ -122,7 +96,7 @@ internal class PipeWireBackend private constructor(
      * and covers a graph with no session manager on it at all.
      */
     override fun defaultDevice(): AudioDevice? =
-        if (closed.get()) null else registry?.defaultDevice(StreamDirection.PLAYBACK)
+        if (closed.get()) null else registry.defaultDevice(StreamDirection.PLAYBACK)
 
     /**
      * The same stream with the direction reversed, which is how `pw_stream`
@@ -140,7 +114,7 @@ internal class PipeWireBackend private constructor(
     }
 
     override fun captureDevices(): List<AudioDevice> =
-        if (closed.get()) emptyList() else registry?.devices(StreamDirection.CAPTURE).orEmpty()
+        if (closed.get()) emptyList() else registry.devices(StreamDirection.CAPTURE)
 
     /**
      * The default input, read out of the same metadata object.
@@ -150,7 +124,7 @@ internal class PipeWireBackend private constructor(
      * in this list, because a monitor is not a node of its own here.
      */
     override fun defaultCaptureDevice(): AudioDevice? =
-        if (closed.get()) null else registry?.defaultDevice(StreamDirection.CAPTURE)
+        if (closed.get()) null else registry.defaultDevice(StreamDirection.CAPTURE)
 
     /** A server-side sample cache is a PulseAudio idea with no equivalent here. */
     override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
@@ -165,7 +139,7 @@ internal class PipeWireBackend private constructor(
      * rather than what, and every consumer re-reads the list anyway.
      */
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit =
-        registry?.onChanged(handler) ?: {}
+        registry.onChanged(handler)
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -173,7 +147,7 @@ internal class PipeWireBackend private constructor(
         sinks.clear()
         sources.forEach { runCatching { it.close() } }
         sources.clear()
-        registry?.let { runCatching { it.close() } }
+        runCatching { registry.close() }
         // Every stream is destroyed before the loop is stopped, and the loop is
         // stopped before the arena holding the upcall stubs is freed.
         loop.close()
@@ -209,8 +183,18 @@ internal class PipeWireBackend private constructor(
             SINK_CAPABILITIES.supported + Capability.CAPTURE,
         )
 
-        /** Everything a stream can do, before the registry is asked for. */
-        private val STREAM_CAPABILITIES = SOURCE_CAPABILITIES
+        /** What the second connection adds on top of what a stream can do. */
+        private val REGISTRY_CAPABILITIES = setOf(
+            Capability.DEVICE_ENUMERATION,
+            Capability.DEVICE_SELECTION,
+            Capability.DEVICE_EVENTS,
+            // The device's own, not a stream's, which is what the registry
+            // binds each audio node to reach.
+            Capability.DEVICE_VOLUME,
+            // Recording one application means naming its node, and knowing
+            // which node is the registry's answer.
+            Capability.PER_STREAM_CAPTURE,
+        )
 
         /**
          * Start a loop and return the backend, or null where there is no graph.
@@ -218,19 +202,30 @@ internal class PipeWireBackend private constructor(
          * Null on a machine running real PulseAudio, on one with no sound
          * server, and on one where libpipewire is not on the search path. All
          * three are ordinary answers the selection falls back on.
+         *
+         * ## The registry is the test for a graph, not an extra
+         *
+         * Loading the library and starting a thread loop reaches no server: a
+         * machine with libpipewire installed and no graph running gets through
+         * both without touching a socket, and the first thing that would have
+         * found out is a sink failing to connect, by which time the selection
+         * has already committed to this backend and the rung below it is gone.
+         *
+         * So the registry's connect is what answers whether there is a graph,
+         * and a backend is handed back only when there is. An earlier version
+         * treated a missing registry as survivable and reported it by
+         * withholding capabilities, which was a reasonable-looking way of
+         * returning a backend that could not play at all.
          */
         fun connectOrNull(applicationName: String): AudioBackend? {
             val loop = PipeWireLoop.startOrNull(applicationName) ?: return null
             return runCatching {
-                log.info("pipewire {} reached natively", loop.lib.version() ?: "?")
-                // A second connection, and its absence is survivable: a backend
-                // with no registry still plays, and says so by withholding the
-                // three capabilities that depend on one.
                 val registry = PipeWireRegistry.openOrNull(applicationName)
-                if (registry == null) log.info("no registry connection; this backend lists no devices")
+                    ?: throw IllegalStateException("no graph answered")
+                log.info("pipewire {} reached natively", loop.lib.version() ?: "?")
                 PipeWireBackend(loop, registry)
             }.getOrElse {
-                log.debug("PipeWire backend setup failed: {}", it.message)
+                log.debug("no PipeWire graph reachable: {}", it.message)
                 loop.close()
                 null
             }
