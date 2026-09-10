@@ -54,6 +54,21 @@ headless, or a container with no device. "No sound server" is not that case: the
 JavaSound fallback covers it, and reports through its capabilities what it lost
 on the way.
 
+On Linux it tries PipeWire natively, then PipeWire or PulseAudio through
+libpulse, then JavaSound. The two upper rungs report the same capabilities on
+the same graph but one, `SAMPLE_CACHE`, which is a feature of the PulseAudio
+protocol with nothing behind it in the graph. A consumer that uses it says so
+and gets the rung that has it:
+
+```kotlin
+val backend = AudioBackends.open("Example", setOf(Capability.SAMPLE_CACHE))
+```
+
+That is the same question `capabilities` answers, asked one step earlier, and it
+is for the consumer that cannot adapt: one that can should open plainly and hide
+what is missing. A capability nothing on the machine offers returns null rather
+than a backend that was already told it would not do.
+
 The identity fields are not decoration. A stream with a name, an icon and a role
 is a row a user recognises in their mixer and a target an EasyEffects rule can
 address. Without them you are an anonymous client labelled with the JVM's
