@@ -67,7 +67,7 @@ internal class PipeWireLoop private constructor(
 
     /** Wake everyone parked in [await]. Safe from any thread that holds the lock. */
     fun signal() {
-        lib.handle("pw_thread_loop_signal").invokeExact(threadLoop, 0) as Unit
+        lib.handle("pw_thread_loop_signal").invokeExact(threadLoop, false) as Unit
     }
 
     inline fun <T> locked(body: () -> T): T {

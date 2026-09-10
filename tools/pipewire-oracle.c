@@ -110,6 +110,11 @@ int main(void) {
     printf("  %d of the 36 positions FFmpeg names have a SPA constant here\n", named);
     printf("  (pa_channel_position_t names 18 of them, which is the shim's ceiling)\n");
 
+    /* The ceiling a format has to be refused above. accepts() promises that a
+     * false answer is exactly an open that would throw, so it needs the number
+     * rather than finding out from a connect that fails. */
+    P(SPA_AUDIO_MAX_CHANNELS);
+
     SECTION("sample formats, including the one the pulse protocol has no name for");
     P(SPA_AUDIO_FORMAT_U8);
     P(SPA_AUDIO_FORMAT_S16_LE);

@@ -115,7 +115,14 @@ internal object SpaAbi {
      */
     const val STREAM_FLAG_DONT_RECONNECT = 0x0000_0080
 
-    /** `PW_ID_ANY`, which is how a stream says it does not name a target. */
+    /**
+     * `PW_ID_ANY`, which is how a stream says it does not name a target.
+     *
+     * The oracle prints it as 4294967295 because the header gives it as an
+     * unsigned word. It travels as a 32-bit argument either way, and the two
+     * are the same bits, but a person checking the table against the printout
+     * will see two different numbers and should know why.
+     */
     const val ID_ANY = -1
 
     // -- buffers, which is where the audio actually is -----------------------
@@ -123,7 +130,17 @@ internal object SpaAbi {
     const val PW_BUFFER_BUFFER = 0L
     const val PW_BUFFER_SIZE = 16L
     const val PW_BUFFER_REQUESTED = 24L
-    const val PW_BUFFER_HEAD = 32L
+
+    /**
+     * The whole of `pw_buffer`, and the whole of it on purpose.
+     *
+     * It was thirty two, which is exactly the end of the last field this reads
+     * and eight short of the struct. Correct today and a trap tomorrow: the
+     * next field along is `time`, and reaching for it would have read one byte
+     * past the window, inside the process callback, in real time. Every other
+     * `_HEAD` and `_SIZE` here is a `sizeof`, and this one is now too.
+     */
+    const val PW_BUFFER_HEAD = 40L
 
     const val SPA_BUFFER_N_DATAS = 4L
     const val SPA_BUFFER_DATAS = 16L
@@ -147,11 +164,21 @@ internal object SpaAbi {
     const val TIME_RATE_DENOM = 12L
     const val TIME_TICKS = 16L
 
-    /** The graph's own share, in the units [TIME_RATE_NUM] and its denominator give. */
+    /**
+     * The path from this stream to the device, in the units [TIME_RATE_NUM] and
+     * its denominator give. The one field of the three that is in the graph's
+     * rate rather than the stream's.
+     */
     const val TIME_DELAY = 24L
 
-    /** Frames handed over and not yet played, which is this client's share. */
+    /**
+     * The sum of the `size` fields of the buffers this client has queued, which
+     * this client fills with frames of its own format, so it counts in the
+     * stream's rate and not the graph's.
+     */
     const val TIME_QUEUED = 32L
+
+    /** Frames held in the resampler, on the stream's side of the rate change. */
     const val TIME_BUFFERED = 40L
 
     // -- calling a proxy method by hand --------------------------------------
@@ -334,8 +361,19 @@ internal object SpaAbi {
      * its sibling are somebody playing or recording.
      */
     const val KEY_MEDIA_CLASS = "media.class"
+
+    /**
+     * What a node says it is, and none of these is matched whole.
+     *
+     * The graph qualifies them: a virtual microphone is `Audio/Source/Virtual`
+     * and a device that is both at once is `Audio/Duplex`. Comparing for
+     * equality against the two bare names drops every qualified node on the
+     * floor, and a device menu on a machine with a loopback source then has a
+     * row missing with nothing to say it is missing.
+     */
     const val MEDIA_CLASS_SINK = "Audio/Sink"
     const val MEDIA_CLASS_SOURCE = "Audio/Source"
+    const val MEDIA_CLASS_DUPLEX = "Audio/Duplex"
 
     /** Somebody playing, which is what recording one application aims at. */
     const val MEDIA_CLASS_STREAM_OUTPUT = "Stream/Output/Audio"
@@ -427,6 +465,16 @@ internal object SpaAbi {
 
     // -- sample formats ------------------------------------------------------
 
+    /**
+     * The most channels a raw audio format can name.
+     *
+     * Needed because [dev.hivens.libsound.AudioSink.accepts] promises that a
+     * false answer is exactly an open that would throw. Without it a hundred
+     * channel format is accepted here and refused by the connect, which is the
+     * one thing that contract forbids.
+     */
+    const val MAX_CHANNELS = 64
+
     const val AUDIO_FORMAT_UNKNOWN = 0
     const val AUDIO_FORMAT_U8 = 258
     const val AUDIO_FORMAT_S16_LE = 259
@@ -493,7 +541,7 @@ internal object SpaAbi {
      * `pipewire-pulse`. The eight the compatibility layer costs are the wide
      * pair, the second low frequency channel, the top side pair and the bottom
      * row, and between them they are the difference between carrying `9.1.6`,
-     * `7.2.3` and `hexadecagonal` and refusing them.
+     * `7.2.3`, `hexadecagonal` and `22.2` and refusing all four.
      *
      * The names differ where the concepts agree, as they do everywhere else
      * here: what FFmpeg calls back the graph calls rear, and what FFmpeg calls
