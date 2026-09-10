@@ -63,8 +63,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   would not throw for want of the shape, and the contract suites assert the pair
   against every encoding on every backend.
 - `Capability.CHANNEL_PLACEMENT`, which says whether a sink tells the device
-  what each channel is or only how many there are. Present on the libpulse and
-  WASAPI backends.
+  what each channel is or only how many there are. Present on the libpulse,
+  WASAPI and PipeWire backends.
 - `Capability.TOTAL_LATENCY`, which says whether `latencyNanos` covers the
   device's own path or only what this client has queued.
 
