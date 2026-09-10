@@ -501,8 +501,8 @@ backend closes the sinks it handed out. Closing a mixer restores what it changed
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
-| Output | libpulse (PulseAudio and PipeWire) | WASAPI | CoreAudio |
-| Capture | libpulse, and JavaSound everywhere | **not yet** | **no** -- a bundle, a signature and a live session |
+| Output | libpulse (PulseAudio and PipeWire), and PipeWire natively | WASAPI | CoreAudio |
+| Capture | libpulse, PipeWire natively, and JavaSound everywhere | **not yet** | **no** -- a bundle, a signature and a live session |
 | Latency profiles honoured | yes | **not yet** -- IAudioClient3 | **not yet** |
 | Real-time writing thread | yes, through RealtimeKit | **no** | **no** |
 | Volume the system shows | yes | yes | **no** -- applied inside the audio unit |

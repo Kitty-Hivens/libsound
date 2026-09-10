@@ -67,8 +67,14 @@ the difference is what the compatibility layer can say rather than how fast it
 is. The layer carries eighteen of the thirty-six channel positions a decoder
 sends and has no 64-bit float at all, so four of the forty layouts FFmpeg names
 came back as the machine being unable to play the file. The native backend takes
-every one of them, passes the same contract suites, and is reached with
-`-Dlibsound.backend=pipewire` until it covers everything the libpulse one does.
+every one of them and passes the same contract suites. It also lists devices,
+reads which one is default out of the object the session manager writes it into,
+carries each device's own volume, and can record one application's output.
+
+On the same graph the two now report the same capabilities but one: the sample
+cache, which is a feature of the PulseAudio protocol rather than of the graph.
+So the native path is reached with `-Dlibsound.backend=pipewire`, and which
+backend won is the first line either of them logs.
 MPRIS carries repeat, shuffle and fullscreen in both directions, each optional
 the way the specification means it: a player with no queue to repeat does not
 advertise the property, so a widget draws no button for it.
