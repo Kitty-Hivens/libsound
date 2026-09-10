@@ -85,7 +85,19 @@ internal class PipeWireRegistry private constructor(
      * are both: `Audio/Duplex` is one device that plays and records, and it has
      * to appear in each list with that list's direction stamped on it.
      */
-    private data class GraphNode(val device: AudioDevice, val directions: Set<StreamDirection>)
+    private data class GraphNode(
+        val device: AudioDevice,
+        val directions: Set<StreamDirection>,
+        /**
+         * How many channels the node's volume has, as its own parameter
+         * reported it, or zero until one has arrived.
+         *
+         * Kept because writing a volume back means writing one per channel, and
+         * a two entry array sent to a six channel node sets two of its channels
+         * and leaves four where they were.
+         */
+        val volumeChannels: Int = 0,
+    )
 
     /**
      * What the session manager currently calls the default, by `node.name`.
@@ -342,6 +354,7 @@ internal class PipeWireRegistry private constructor(
                     volume = volume?.coerceIn(0f, 1f) ?: current.volume,
                     muted = muted ?: current.muted,
                 ),
+                volumeChannels = channels?.size ?: held.volumeChannels,
             )
             fire()
         }.onFailure { log.debug("node param threw: {}", it.message) }
@@ -510,6 +523,58 @@ internal class PipeWireRegistry private constructor(
             .invokeExact(proxy, hook, nodeEvents, MemorySegment.ofAddress(id.toLong())) as Unit
         runCatching { subscribeProps(proxy) }
             .onFailure { log.debug("subscribe_params on node {} threw: {}", id, it.message) }
+    }
+
+    /**
+     * Write a volume, a mute, or both onto one node, by the name it is listed
+     * under.
+     *
+     * The other direction of the parameter this already subscribes to. A node
+     * that has not answered with its own properties yet has no channel count to
+     * write back, so it is refused rather than written with a guess: a two entry
+     * array sent to a six channel device sets two of its channels and silently
+     * leaves the rest.
+     *
+     * True means the graph took the request, not that the value stuck. A session
+     * manager may have its own opinion a moment later, which is the same caveat
+     * the libpulse side carries and the reason a caller that needs the value to
+     * hold reads it back.
+     */
+    fun setNodeProps(name: String, volume: Float?, muted: Boolean?): Boolean {
+        if (closed.get()) return false
+        return loop.locked {
+            val entry = nodes.entries.firstOrNull { it.value.device.id.value == name } ?: return@locked false
+            val proxy = nodeProxies[entry.key] ?: return@locked false
+            val channels = entry.value.volumeChannels
+            if (volume != null && channels <= 0) return@locked false
+            val pod = SpaPod.props(
+                channelVolumes = volume?.let { level -> FloatArray(channels) { level.coerceIn(0f, 1f) } },
+                mute = muted,
+            )
+            runCatching { setParam(proxy, SpaAbi.PARAM_PROPS, pod) }
+                .onFailure { log.debug("set_param on {} threw: {}", name, it.message) }
+                .getOrDefault(false)
+        }
+    }
+
+    /**
+     * `pw_node_set_param`, walked for the reason every other proxy method here
+     * is. The loop lock must be held.
+     */
+    private fun setParam(proxy: MemorySegment, paramId: Int, pod: ByteArray): Boolean {
+        val method = interfaceMethod(proxy, SpaAbi.NODE_METHOD_SET_PARAM, "set_param")
+        val call = Linker.nativeLinker().downcallHandle(
+            method,
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+            ),
+        )
+        return Arena.ofConfined().use { call2 ->
+            val segment = call2.allocate(pod.size.toLong(), SpaAbi.POD_ALIGN.toLong())
+            MemorySegment.copy(pod, 0, segment, ValueLayout.JAVA_BYTE, 0L, pod.size)
+            (call.invokeExact(interfaceData(proxy), paramId, 0, segment) as Int) >= 0
+        }
     }
 
     /** Drop one node's proxy and put its hook back. The loop lock must be held. */

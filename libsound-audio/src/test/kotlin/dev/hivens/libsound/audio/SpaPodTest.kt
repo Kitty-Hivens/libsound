@@ -118,6 +118,34 @@ class SpaPodTest {
     }
 
     @Test
+    fun `the props object matches what PipeWire's own builder emits`() {
+        // The object a volume is set with, against the same authority the
+        // format and the latency objects are checked against. It carries the
+        // three types neither of those has: a float, a boolean and an array of
+        // floats, and the boolean is the one worth having a reference for,
+        // since a builder is free to write it one byte wide and this one does
+        // not.
+        SpaPod.props(
+            volume = 0.25f,
+            channelVolumes = floatArrayOf(0.25f, 0.5f),
+            mute = true,
+        ).toHex() shouldBe PROPS_VOLUME
+    }
+
+    @Test
+    fun `a property nobody asked to change is left out rather than defaulted`() {
+        // The graph merges what it is given, so an object carrying a mute the
+        // caller never mentioned would set it to whatever this filled in. A
+        // volume-only object has to be shorter than one that carries both.
+        val volumeOnly = SpaPod.props(channelVolumes = floatArrayOf(1f, 1f))
+        val withMute = SpaPod.props(channelVolumes = floatArrayOf(1f, 1f), mute = false)
+        (volumeOnly.size < withMute.size) shouldBe true
+        SpaPodReader.objectProperties(volumeOnly).keys shouldBe setOf(SpaAbi.PROP_CHANNEL_VOLUMES)
+        SpaPodReader.objectProperties(withMute).keys shouldBe
+            setOf(SpaAbi.PROP_MUTE, SpaAbi.PROP_CHANNEL_VOLUMES)
+    }
+
+    @Test
     fun `the reader takes a float, a boolean and a float array, which is what a volume is`() {
         // A device's own volume is a Props object the graph wrote, carrying a
         // float per channel and a mute beside it. This dump is spa_pod_builder's
