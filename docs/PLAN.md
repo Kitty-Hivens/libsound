@@ -1165,13 +1165,18 @@ contract suite it has to pass is the one that already exists, and that is the
 whole point of the contract suite.
 
 ```
-pw_thread_loop_new / _start / _lock / _unlock / _wait / _signal / _stop / _destroy
+pw_thread_loop_new / _start / _lock / _unlock / _wait / _timed_wait / _signal / _stop / _destroy
 pw_context_new / _connect / _destroy
 pw_stream_new_simple / _connect / _disconnect / _destroy
-pw_stream_set_active / _flush / _get_time_n / _get_state / _update_params
-pw_stream_dequeue_buffer / _queue_buffer
-pw_properties_new / _set / _setf
+pw_stream_set_active / _flush / _get_time_n / _get_state
+pw_stream_dequeue_buffer / _queue_buffer / _set_control
+pw_properties_new_dict / _free
+pw_proxy_add_object_listener / _destroy
 ```
+
+`pw_properties_new` and `pw_properties_setf` are not in that list and will not
+be: both are variadic, a Panama downcall to a variadic function needs a
+descriptor per call shape, and a `spa_dict` needs none.
 
 The playhead is `pw_stream_get_time_n`, whose `spa_io_position` carries frames
 the graph has actually consumed. The same trap as everywhere else applies and
@@ -1195,14 +1200,24 @@ Recording one application is a property here where it is
 `pa_stream_set_monitor_stream` on the other side: a capture stream naming
 another node in `target.object` is linked to that node's output rather than to a
 device, which was confirmed by reading the links on a live graph rather than by
-hearing audio, because a fallback carries the same audio. Section 13.8 says how
-the id is resolved and why it is checked first.
+hearing audio: the links were read on a live graph and the recorder's input
+ports were joined to the application's output ports rather than to the sink's
+monitor. The shipped test does test by ear and does discriminate, by aiming at a
+silent application while a loud one plays into the same sink. Section 13.8 says
+how the id is resolved and why it is checked first.
 
 ### 13.6 Latency, said once and kept
 
-`node.latency` as `<quantum>/<rate>` in the properties at connect, and
-`SPA_PARAM_Latency` through `pw_stream_update_params` afterwards. The oracle
-dumps that POD too.
+`node.latency` as `<quantum>/<rate>` in the properties at connect. That is what
+is built and what `Capability.LOW_LATENCY` rests on.
+
+`SPA_PARAM_Latency` through `pw_stream_update_params` was written here as though
+it were part of the same sentence, and it is not built: the object is encoded and
+byte-checked against the oracle's dump, and nothing sends it. The two do
+different jobs, which is why leaving it out costs nothing yet. The property is
+what this node asks the graph for. The parameter is what this node would tell
+the graph about latency of its own, for the graph to add up along a chain, and
+this node adds none that the graph cannot already see.
 
 What this changes against 4.3 is not the number a client gets, which the shim
 already shortens correctly. It is that the number is the node's own. A consumer
@@ -1368,6 +1383,56 @@ a graph now, rather than an extra a backend could do without.
 | Question | Answer |
 |---|---|
 | Does a Kotlin POD builder emit the same bytes as `spa_pod_builder`? | **Answered: yes, on the first run, and it stays answered.** The oracle dumps a 5.1 format, a latency request and a Props object, and the tests compare against all three. The reader is checked the same way, against the same dumps, which is what stops the encoder and the decoder agreeing about something they both have wrong. |
-| What does `pw_stream_get_time_n` report through an underrun? | Unmeasured. Every other backend's clock had this trap and each one needed a different correction, so assume it has one until a stream fed half a second and left alone says otherwise. |
-| Is `PW_STREAM_FLAG_RT_PROCESS` worth taking? | It promises the callback runs on the graph's real-time thread, which is what section 4.5 asks RealtimeKit for on the writing thread. Whether a JVM callback belongs there at all is a different question from whether a JVM write loop does, and the answer involves what a garbage collection pause does to the graph rather than to one stream. |
-| How much of `PulseBackend` survives? | **Narrowed to two things.** The device list is the graph's after all and is native now, and so is a device's volume, which took a bind rather than a protocol. What is left is the mixer, which stays on the pulse protocol, and the sample cache, which has nothing behind it in the graph at all. A machine on the native backend still opens a libpulse connection for `VolumeMixer`, which is two connections where there was one, and whether the mixer needs a native half is still unanswered. |
+| What does `pw_stream_get_time_n` report through an underrun? | Unmeasured, and the sink no longer implies otherwise. Every other backend's clock had this trap and each one needed a different correction, so assume it has one until a stream fed half a second and left alone says otherwise. Nothing depends on the answer: the playhead is the count of frames the callback took out of the ring, which is right whichever way this turns out. |
+| Is `PW_STREAM_FLAG_RT_PROCESS` worth taking? | Still open, and now the only half of 4.5 that is. The writing thread asks RealtimeKit here the way it does on the libpulse rung, which is what a caller setting `realtime` was silently not getting. The flag is the other half: it promises the callback runs on the graph's real-time thread, and whether a JVM callback belongs there at all is a different question from whether a JVM write loop does. The answer involves what a garbage collection pause does to the graph rather than to one stream. |
+| How much of `PulseBackend` survives? | **Narrowed to one thing.** The device list is the graph's after all and is native now, and so is a device's volume and recording one application. What is left of the backend is the sample cache, which has nothing behind it in the graph at all. |
+| Does the mixer need a native half? | **Answered: yes.** See 13.11. |
+
+### 13.11 The mixer's native half
+
+The question 13.10 left open has an answer, and the review that closed it also
+showed why the answer is not optional.
+
+`VolumeMixers.open` returns a `PulseMixer` on every Linux machine, whichever
+backend is playing. That is fine where `pipewire-pulse` is installed and it is
+nothing at all where it is not, and a machine running PipeWire without the shim
+is one of the two the rung below `AudioBackends` exists for. So on that machine
+today: a backend that plays, and no mixer.
+
+It is also where a capability stopped being honest. The native backend reads
+each device's own volume off its node, so `AudioDevice.volume` is filled in, and
+`Capability.DEVICE_VOLUME` says the volume can be read **and set**. Setting it is
+`VolumeMixer`'s, and on that machine there is no `VolumeMixer`. A settings screen
+that asked the capability and drew a slider would draw one that moves nothing.
+
+**What the native half covers.** The graph owns all of it, and each piece is a
+mechanism this backend already uses:
+
+| | How |
+|---|---|
+| `streams()` | The registry already keeps the `Stream/Output/Audio` nodes and their serials. Their properties come with the global; their volume is the same bound-node `SPA_PARAM_Props` a device's is. |
+| `setVolume`, `setMuted`, `setDeviceVolume`, `setDeviceMuted` | `pw_node_set_param` with a Props object. The encoder writes one already and the oracle dumps a reference to check it against. |
+| `moveTo` | `target.object` on the node, which is what a capture stream is already aimed with. |
+| `setDefaultDevice` | `pw_metadata_set_property` on the object this already binds to read the default from. |
+| `onStreamsChanged` | The registry's own event stream, filtered the way the device list is. |
+| `meter` | A capture stream aimed at the node, which is what per-application capture already builds. |
+
+**What it does not cover, and this is the reason it is a half.** Cards, profiles
+and ports are the `Device` interface with its `Profile` and `Route` parameters,
+which is a second object type and a second parameter vocabulary. Virtual and
+combined sinks load server modules, and 13.8 already says those keep going
+through the pulse protocol: a null sink is a system-wide object with a restore
+obligation on it, which is a different subject from a stream this process plays
+through.
+
+**Which means selection has the shape 13.9 already worked out.** The pulse mixer
+covers more, the native one covers what the graph owns, and neither is a subset
+of the other in the way that matters, so `VolumeMixers.open` takes the same
+optional set of capabilities `AudioBackends.open` does and answers with the
+first that offers them. The machine with no shim gets a mixer for the first
+time, and nothing anywhere loses one.
+
+**Not in this pull request.** The work that is in it is a backend and the repair
+a review found it needed, and a second interface the size of `VolumeMixer` on
+top of that would be one change nobody could read. The decision is recorded here
+so the next one starts from it rather than from the question.
