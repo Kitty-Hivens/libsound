@@ -117,6 +117,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `-Dlibsound.backend=` still pins either, and a name that matches nothing fails
   rather than quietly selecting something else, because a run that asked for one
   backend and measured another says nothing about either.
+- **A mixer read off the graph**, for the machine that had none. `VolumeMixers.open`
+  answered with a libpulse mixer on every Linux machine, which is nothing at all
+  on one running PipeWire without `pipewire-pulse`, and that is one of the two
+  machines the libpulse backend stays for. It is also where a capability stopped
+  being honest, since the native backend reads each device's volume and the
+  capability covering that says the volume can be read and set.
+
+  It covers what the graph owns: every stream in both directions with its
+  volume, mute and device, moving one, each device's own volume and mute,
+  choosing the default, devices that do not exist in hardware, a level meter,
+  and stream events worked out from the one coarse signal the graph gives.
+  Cards, profiles and ports are absent and said to be absent.
+
+  A device it creates belongs to its connection rather than to the server, which
+  is a different lifetime from the module the libpulse mixer loads and the one
+  this call's own obligation wants: a virtual sink left behind is a device
+  somebody finds in their settings and cannot account for.
+- `VolumeMixers.open` takes an optional set of capabilities the caller needs, the
+  same way the backend selection does. The two Linux mixers differ by cards,
+  profiles, ports and combined devices, so a panel whose feature is a card's
+  profile names that and gets the mixer that has it. Widest first here, which is
+  the opposite order from the backends and for a reason that does not apply
+  there: those differed by one capability and these differ by four.
 - `AudioBackends.open` takes an optional set of capabilities the caller needs
   and answers with the first backend that offers them. The two Linux rungs
   differ by one, the sample cache, and promoting the native one without this
