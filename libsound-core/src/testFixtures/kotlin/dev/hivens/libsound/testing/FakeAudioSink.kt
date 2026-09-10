@@ -5,6 +5,7 @@ import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capabilities
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.PcmEncoding
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -31,6 +32,12 @@ public class FakeAudioSink(
         Capability.DEVICE_POSITION,
         Capability.UNDERRUN_COUNT,
     ),
+    /**
+     * Everything, by default, because a fake exists to let a test drive the
+     * shape it wants. A test about a refusal narrows it and the sink then
+     * refuses exactly what it said it would.
+     */
+    override val acceptedEncodings: Set<PcmEncoding> = PcmEncoding.entries.toSet(),
 ) : AudioSink {
 
     private val lock = ReentrantLock()
@@ -99,6 +106,9 @@ public class FakeAudioSink(
     override fun open(format: AudioFormat) {
         lock.withLock {
             if (closed) throw AudioException("sink is closed")
+            // The same refusal a real backend owes, so a suite driving this
+            // fake meets the shape it would meet against hardware.
+            if (!accepts(format)) throw AudioException("this fake takes $acceptedEncodings, not ${format.encoding}")
             openFormat = format
             // A reopen drops the previous stream and its tail, and the position
             // restarts -- the two rules a re-anchoring clock depends on.

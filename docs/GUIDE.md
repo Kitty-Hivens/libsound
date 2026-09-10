@@ -54,6 +54,21 @@ headless, or a container with no device. "No sound server" is not that case: the
 JavaSound fallback covers it, and reports through its capabilities what it lost
 on the way.
 
+On Linux it tries PipeWire natively, then PipeWire or PulseAudio through
+libpulse, then JavaSound. The two upper rungs report the same capabilities on
+the same graph but one, `SAMPLE_CACHE`, which is a feature of the PulseAudio
+protocol with nothing behind it in the graph. A consumer that uses it says so
+and gets the rung that has it:
+
+```kotlin
+val backend = AudioBackends.open("Example", setOf(Capability.SAMPLE_CACHE))
+```
+
+That is the same question `capabilities` answers, asked one step earlier, and it
+is for the consumer that cannot adapt: one that can should open plainly and hide
+what is missing. A capability nothing on the machine offers returns null rather
+than a backend that was already told it would not do.
+
 The identity fields are not decoration. A stream with a name, an icon and a role
 is a row a user recognises in their mixer and a target an EasyEffects rule can
 address. Without them you are an anonymous client labelled with the JVM's
@@ -95,8 +110,11 @@ quantum is a floor: a client asking for less than `clock.quantum` gets the
 quantum, and the default of 1024 frames is 21 ms. Measured against
 pipewire-pulse on a 48 kHz graph, a 200 ms request came back as 150 ms, 40 ms
 as 30, and 10 ms as 16, which was that machine's quantum. The sink logs what it
-asked for and what it was granted at open, and `latencyNanos` reports the whole
-path at any time.
+asked for and what it was granted at open, and `latencyNanos` reports it at any
+time. Whether that number covers the device's own path or only what this client
+has queued is `Capability.TOTAL_LATENCY`: the libpulse and WASAPI backends
+report the whole path, and the other two have no way to ask the hardware and
+say so by withholding it.
 
 **`realtime` asks the system for a writing thread that wakes on time.** It is
 off by default because the grant is process-wide: RealtimeKit requires a limit
@@ -498,8 +516,8 @@ backend closes the sinks it handed out. Closing a mixer restores what it changed
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
-| Output | libpulse (PulseAudio and PipeWire) | WASAPI | CoreAudio |
-| Capture | libpulse, and JavaSound everywhere | **not yet** | **no** -- a bundle, a signature and a live session |
+| Output | libpulse (PulseAudio and PipeWire), and PipeWire natively | WASAPI | CoreAudio |
+| Capture | libpulse, PipeWire natively, and JavaSound everywhere | **not yet** | **no** -- a bundle, a signature and a live session |
 | Latency profiles honoured | yes | **not yet** -- IAudioClient3 | **not yet** |
 | Real-time writing thread | yes, through RealtimeKit | **no** | **no** |
 | Volume the system shows | yes | yes | **no** -- applied inside the audio unit |

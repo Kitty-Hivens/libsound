@@ -180,6 +180,51 @@ int main(void) {
     P(kAudioUnitScope_Output);
     P(kHALOutputParam_Volume);
 
+    /* What each channel is, which an ASBD does not carry: it counts channels
+     * and stops there, so a unit told six lays them out by Apple's own
+     * convention. The property below is how a client says otherwise, and the
+     * labels are what it says it with. Printed here because CHANNEL_PLACEMENT
+     * is claimed on the two platforms whose numbers could be measured, and this
+     * is the run that would let it be claimed here too. */
+    SECTION("channel layout");
+    P(kAudioUnitProperty_AudioChannelLayout);
+    P(kAudioChannelLayoutTag_UseChannelDescriptions);
+    P(sizeof(AudioChannelDescription));
+    P(offsetof(AudioChannelDescription, mChannelLabel));
+    P(offsetof(AudioChannelDescription, mChannelFlags));
+    P(offsetof(AudioChannelDescription, mCoordinates));
+    P(offsetof(AudioChannelLayout, mChannelLayoutTag));
+    P(offsetof(AudioChannelLayout, mChannelBitmap));
+    P(offsetof(AudioChannelLayout, mNumberChannelDescriptions));
+    P(offsetof(AudioChannelLayout, mChannelDescriptions));
+    P(sizeof(AudioChannelLayout));
+
+    SECTION("kAudioChannelLabel_* (one per position)");
+    P(kAudioChannelLabel_Left);
+    P(kAudioChannelLabel_Right);
+    P(kAudioChannelLabel_Center);
+    P(kAudioChannelLabel_LFEScreen);
+    P(kAudioChannelLabel_LeftSurround);
+    P(kAudioChannelLabel_RightSurround);
+    P(kAudioChannelLabel_LeftCenter);
+    P(kAudioChannelLabel_RightCenter);
+    P(kAudioChannelLabel_CenterSurround);
+    P(kAudioChannelLabel_LeftSurroundDirect);
+    P(kAudioChannelLabel_RightSurroundDirect);
+    P(kAudioChannelLabel_TopCenterSurround);
+    P(kAudioChannelLabel_VerticalHeightLeft);
+    P(kAudioChannelLabel_VerticalHeightCenter);
+    P(kAudioChannelLabel_VerticalHeightRight);
+    P(kAudioChannelLabel_TopBackLeft);
+    P(kAudioChannelLabel_TopBackCenter);
+    P(kAudioChannelLabel_TopBackRight);
+    /* The pair most easily confused, and the reason this list is printed rather
+     * than written: Apple's LeftSurround is the rear of a 5.1 and its
+     * LeftSurroundDirect is the side, which is the opposite of the reading a
+     * name like "surround" invites. */
+    P(kAudioChannelLabel_Unknown);
+    P(kAudioChannelLabel_Unused);
+
     SECTION("render action flags");
     P(kAudioUnitRenderAction_OutputIsSilence);
 

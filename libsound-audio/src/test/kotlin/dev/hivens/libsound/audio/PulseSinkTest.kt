@@ -1,14 +1,19 @@
 package dev.hivens.libsound.audio
 
 import dev.hivens.libsound.AudioBackend
+import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.LatencyProfile
 import dev.hivens.libsound.MediaRole
+import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import dev.hivens.libsound.testing.AudioSinkContract
+import io.kotest.assertions.throwables.shouldThrow
+import io.kotest.assertions.withClue
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterAll
@@ -90,6 +95,108 @@ class PulseBackendTest {
 
     @BeforeEach
     fun gate() = PulseFixture.gate()
+
+    @Test
+    fun `the encodings the server has a name for are the encodings it accepts`() {
+        PulseFixture.gate()
+        // The point of the wider set, and the reason it is asked of the ABI
+        // table rather than listed at the call site: a pair written here went
+        // stale the moment the encodings grew and refused formats libpulse
+        // takes. S32LE is the one that matters, because FFmpeg has no 24-bit
+        // sample format and every 24-bit source arrives in it.
+        listOf(PcmEncoding.U8, PcmEncoding.S16LE, PcmEncoding.S32LE, PcmEncoding.F32LE).forEach { encoding ->
+            val sink = PulseFixture.backend!!.createSink(PulseFixture.config())
+            sink.use {
+                it.open(AudioFormat(48_000, 2, encoding))
+                it.isOpen shouldBe true
+                it.format?.encoding shouldBe encoding
+                val frame = ByteArray(480 * AudioFormat(48_000, 2, encoding).bytesPerFrame)
+                it.write(frame, 0, frame.size)
+            }
+        }
+    }
+
+    @Test
+    fun `a shape the server cannot name is refused, and refused the way the contract promises`() {
+        PulseFixture.gate()
+        // pa_sample_format_t has no 64-bit float at all. A backend that took it
+        // and played something narrower would be indistinguishable from one
+        // that worked, and a consumer walking a ladder down from what the media
+        // is catches AudioException rather than whatever an argument check
+        // happens to throw.
+        val sink = PulseFixture.backend!!.createSink(PulseFixture.config())
+        sink.use {
+            shouldThrow<AudioException> { it.open(AudioFormat(48_000, 2, PcmEncoding.F64LE)) }
+            it.isOpen shouldBe false
+        }
+    }
+
+    @Test
+    fun `a surround stream opens with the layout it was given`() {
+        PulseFixture.gate()
+        // The case the channel map exists for. Before it, this opened with a
+        // null map and the server applied its own default, which the oracle
+        // prints as front-left front-left-of-center front-center front-right
+        // front-right-of-center rear-center for six channels: the right channel
+        // came out of a near-front speaker and the LFE out of the front right,
+        // at full level, with nothing anywhere reporting it.
+        listOf("5.1", "5.1(side)", "7.1", "quad").forEach { name ->
+            val layout = ChannelLayout.STANDARD.getValue(name)
+            val shape = AudioFormat(48_000, layout.channels, PcmEncoding.S16LE, layout)
+            val sink = PulseFixture.backend!!.createSink(PulseFixture.config())
+            sink.use {
+                withClue(name) { it.accepts(shape) shouldBe true }
+                it.open(shape)
+                it.format?.layout shouldBe layout
+                val frame = ByteArray(480 * shape.bytesPerFrame)
+                it.write(frame, 0, frame.size)
+            }
+        }
+    }
+
+    @Test
+    fun `the server reports back the channel map that was sent`() {
+        // Asked of pactl rather than of our own binding, for the reason the
+        // MPRIS suite asks gdbus: a round trip through the code under test
+        // proves the code agrees with itself. This is the server saying what it
+        // received.
+        val layout = ChannelLayout.SURROUND_5_1
+        val shape = AudioFormat(48_000, layout.channels, PcmEncoding.S16LE, layout)
+        val backend = checkNotNull(PulseFixture.backend)
+        backend.createSink(PulseFixture.config()).use { sink ->
+            sink.open(shape)
+            val frame = ByteArray(480 * shape.bytesPerFrame)
+            sink.write(frame, 0, frame.size)
+
+            val listing = pactlSinkInputs()
+            Assumptions.assumeTrue(listing.contains(APP_NAME), "pactl did not list this stream")
+            // libpulse prints a map as its own position names. This is 5.1 in
+            // FFmpeg's interleaving order, which is what was handed over; the
+            // default a null map would have produced has no LFE in it at all.
+            listing.contains("front-left,front-right,front-center,lfe,rear-left,rear-right") shouldBe true
+        }
+    }
+
+    @Test
+    fun `a layout this server cannot place is refused rather than played somewhere else`() {
+        PulseFixture.gate()
+        // 22.2 names a second LFE and a bottom row, and pa_channel_position_t
+        // has neither. Sending it with those channels dropped from the map
+        // would leave the server interleaving by a shape nobody agreed on, so
+        // the answer is no, and the message says what to send instead.
+        val layout = ChannelLayout.STANDARD.getValue("22.2")
+        val shape = AudioFormat(48_000, layout.channels, PcmEncoding.S16LE, layout)
+        val sink = PulseFixture.backend!!.createSink(PulseFixture.config())
+        sink.use {
+            it.accepts(shape) shouldBe false
+            shouldThrow<AudioException> { it.open(shape) }
+            // And the escape hatch it names actually works: the same count with
+            // nothing claimed about the channels takes the server's ordering,
+            // which is what a stream that declared no layout gets anyway.
+            val bare = AudioFormat(48_000, layout.channels, PcmEncoding.S16LE, ChannelLayout.unspecified(layout.channels))
+            it.accepts(bare) shouldBe true
+        }
+    }
 
     @Test
     fun `the server lists devices with names worth showing`() {

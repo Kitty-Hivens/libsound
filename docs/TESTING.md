@@ -128,6 +128,56 @@ LIBSOUND_REQUIRE=rtkit ./gradlew test
 Worth running on a machine with the service, because what it asserts is the
 kernel's own answer read back out of `/proc` rather than the daemon's reply.
 
+## Do not run the suite against a machine you are using
+
+Run it against a sound server of its own, not the one your desktop is on. The
+suite creates and removes devices a dozen times over, moves streams between
+them, and asks for channel layouts a real card may not carry. A session manager
+reacts to all three, and what it does about them is not this library's to
+predict.
+
+A full run against a live desktop graph has broken the audio on that desktop.
+What exactly it broke was never established, which is the point rather than a
+missing detail: nothing in the suite writes to a card, so there was no single
+call to find, and the search went through a card profile that turned out to
+have been the owner's deliberate choice all along. A tool that disturbs a
+running system in ways nobody can attribute afterwards is a tool to keep off
+running systems.
+
+On Linux that means a second server with no device monitor in it, so it cannot
+see a card at all:
+
+```
+export XDG_RUNTIME_DIR=/run/user/$(id -u)/libsound-test
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+pipewire &
+wireplumber -p libsound-test &      # a profile with hardware.audio disabled
+pipewire-pulse &
+pactl load-module module-null-sink sink_name=libsound_test
+```
+
+Two details are load-bearing. `XDG_RUNTIME_DIR` rather than only
+`PIPEWIRE_RUNTIME_DIR`, because pipewire-pulse takes its socket path from the
+first and ignores the second, and a daemon that cannot bind leaves every client
+on the machine's own server. And the path has to be short: a unix socket is
+capped at 108 bytes, and a longer one fails to bind with the same result.
+
+The CI rows do this by having nothing else on the runner. A desktop does not
+have that luxury.
+
+## The card profile check, which needs a card
+
+`PulseDeviceControlTest` has one case no CI row can run: switching a card to
+another profile and asserting the mixer puts it back when it closes. Every
+runner's only device is a null sink, which belongs to no card, so the case skips
+there and the obligation it covers goes unexercised.
+
+It runs by itself on a machine with real hardware. If you have one, `./gradlew
+:libsound-audio:test --tests '*PulseDeviceControlTest*'` exercises it, and what
+matters is the state afterwards: `pactl list cards` should show the same active
+profile it showed before. Please report it if it does not, and say which profile
+it was on and which one it ended up on.
+
 ## If it will not start at all
 
 - `error: invalid source release: 22` or similar means the JDK is too old.

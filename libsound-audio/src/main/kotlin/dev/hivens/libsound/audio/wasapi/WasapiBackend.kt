@@ -459,6 +459,8 @@ internal class WasapiBackend private constructor(
             Capability.DEVICE_SELECTION,
             Capability.DEVICE_EVENTS,
             Capability.DEVICE_POSITION,
+            Capability.TOTAL_LATENCY,
+            Capability.CHANNEL_PLACEMENT,
         )
 
         private const val STGM_READ = 0
@@ -470,6 +472,12 @@ internal class WasapiBackend private constructor(
             Capability.STREAM_VOLUME,
             Capability.STREAM_IDENTITY,
             Capability.DEVICE_POSITION,
+            // GetStreamLatency is asked as well as the padding, so the number is
+            // the whole path rather than the client's own share.
+            Capability.TOTAL_LATENCY,
+            // dwChannelMask travels with the format, so the layout a decoder
+            // interleaved to is the layout the engine reads.
+            Capability.CHANNEL_PLACEMENT,
         )
 
         /**

@@ -7,6 +7,7 @@ import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.audio.pulse.PulseBackend
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -130,6 +131,38 @@ class PulseDeviceControlTest {
     }
 
     @Test
+    fun `a card profile this process changed is put back`() {
+        // The obligation that was missing, and the one with the worst failure
+        // when it is: a card left on a profile nobody chose is a machine whose
+        // speakers have stopped working with nothing on screen to explain it,
+        // and a profile is not something a person can put back from a volume
+        // slider the way they can put back a volume.
+        //
+        // No CI row can satisfy this. Every Linux row's only device is a null
+        // sink, which belongs to no card, so a runner reports an empty card
+        // list. docs/TESTING.md carries it as a check for somebody with
+        // hardware, which is the same place the Windows gaps live.
+        val mixer = checkNotNull(mixer)
+        val card = mixer.cards().firstOrNull { card ->
+            card.activeProfile != null && card.profiles.count { it.available } > 1
+        }
+        Assumptions.assumeTrue(card != null, "no card here with a second profile to switch to")
+        checkNotNull(card)
+
+        val original = checkNotNull(card.activeProfile)
+        val other = checkNotNull(card.profiles.firstOrNull { it.available && it.name != original })
+        mixer.setCardProfile(card.id, other.name) shouldBe true
+        eventually("card ${card.id} on ${other.name}") {
+            mixer.cards().firstOrNull { it.id == card.id }?.activeProfile == other.name
+        }
+
+        mixer.restoreAll()
+        eventually("card ${card.id} back on $original") {
+            mixer.cards().firstOrNull { it.id == card.id }?.activeProfile == original
+        }
+    }
+
+    @Test
     fun `a virtual sink appears, takes a volume, and goes away again`() {
         val mixer = checkNotNull(mixer)
         val id = mixer.createVirtualSink(name)
@@ -207,6 +240,29 @@ class PulseDeviceControlTest {
         // And it is still there, which is the half that would matter if the
         // check above were ever inverted.
         devices().any { it.id == existing.id } shouldBe true
+    }
+
+    @Test
+    fun `a channel count is honoured or refused, never narrowed`() {
+        val mixer = checkNotNull(mixer)
+        // Six channels used to clamp to a table of two and hand back a stereo
+        // device with a true return, so a caller found out by hearing four of
+        // its channels vanish.
+        val surround = checkNotNull(mixer.createVirtualSink("${name}_51", channels = 6)) {
+            "a six-channel null sink is something this server can make"
+        }
+        eventually("a six-channel device") {
+            checkNotNull(backend).devices().any { it.id == surround }
+        }
+        val listing = ProcessBuilder("pactl", "list", "sinks").redirectErrorStream(true).start()
+            .inputStream.readAllBytes().decodeToString()
+        Assumptions.assumeTrue(listing.contains(surround.value), "pactl did not list the device")
+        listing.split("Sink #").first { it.contains(surround.value) }
+            .contains("front-left,front-right,front-center,lfe,rear-left,rear-right") shouldBe true
+
+        // And a count the server has no layout for is null rather than
+        // something narrower wearing the name that was asked for.
+        mixer.createVirtualSink("${name}_wide", channels = 9) shouldBe null
     }
 
     @Test

@@ -13,7 +13,6 @@ import javax.sound.sampled.LineUnavailableException
 import javax.sound.sampled.SourceDataLine
 import kotlin.math.log10
 import kotlin.math.max
-import javax.sound.sampled.AudioFormat as JavaAudioFormat
 
 /**
  * The fallback that exists everywhere.
@@ -76,11 +75,34 @@ internal class JavaSoundSink(
 
     override val isOpen: Boolean get() = line != null && !closed
 
+    /**
+     * Read out of the JVM rather than declared, because the JVM already knows.
+     *
+     * Computed once: the answer cannot change while a runtime runs, and the
+     * probe walks every mixer it has.
+     */
+    override val acceptedEncodings: Set<PcmEncoding> by lazy {
+        JavaSoundFormats.acceptedFor(SourceDataLine::class.java, JavaSoundFormats.PROBE)
+    }
+
+    /**
+     * The same walk [open] makes, which is what keeps the two from drifting.
+     *
+     * The layout is not consulted, and [Capability.CHANNEL_PLACEMENT] is absent
+     * to say so: a JavaSound line takes a channel count and offers nothing to
+     * name the channels with.
+     */
+    override fun accepts(format: AudioFormat): Boolean = JavaSoundFormats.supportedForPlayback(format)
+
     override fun open(format: AudioFormat) {
         if (closed) throw AudioException("sink is closed")
-        require(format.encoding == PcmEncoding.S16LE) {
-            "JavaSound backend takes S16LE only, was ${format.encoding}"
-        }
+        // AudioException rather than the argument check this used to be. A
+        // consumer walks a ladder down from what the media is and catches what
+        // the contract promises; an IllegalArgumentException goes straight past
+        // it and out of the player.
+        val javaFormat = JavaSoundFormats.javaFormatOf(format)
+            ?: throw AudioException("JavaSound has no encoding for ${format.encoding}")
+        if (!accepts(format)) throw AudioException("no JavaSound output line takes $format")
         // A reopen drops the old line first; without this the previous line
         // keeps the device and its buffered tail.
         line?.let { old ->
@@ -94,13 +116,6 @@ internal class JavaSoundSink(
         line = null
         openFormat = null
         flushCredit = 0
-        val javaFormat = JavaAudioFormat(
-            format.sampleRate.toFloat(),
-            format.encoding.bytesPerSample * 8,
-            format.channels,
-            true,
-            false,
-        )
         val bufferBytes = (format.bytesFor(format.framesFor(bufferNanos))).toInt()
             .coerceAtLeast(format.bytesPerFrame)
         val fresh = try {
@@ -186,6 +201,14 @@ internal class JavaSoundSink(
         return max(0L, raw - flushCredit)
     }
 
+    /**
+     * How full the line is, which is all a `SourceDataLine` can say.
+     *
+     * Short of the whole path by whatever the hardware behind it adds, and
+     * [Capability.TOTAL_LATENCY] is absent to say so. There is nothing in
+     * JavaSound to ask: the line reports its own fill and the API carries no
+     * notion of a device at all.
+     */
     override fun latencyNanos(): Long {
         val current = line ?: return 0L
         val format = openFormat ?: return 0L

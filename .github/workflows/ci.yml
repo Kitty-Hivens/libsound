@@ -131,7 +131,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,SpaPod,ChannelPlacement,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       # The publishable artifacts, built before a release depends on them. The
@@ -228,7 +228,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,JavaSound,JavaSoundSource,SpaPod,ChannelPlacement,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure
@@ -273,9 +273,19 @@ jobs:
         env:
           # No javasound named here, and the omission is the point: routing
           # ALSA's default into the graph is a second thing to configure, and
-          # the rows above already require that suite. What this row is for is
-          # the pulse protocol reaching a PipeWire server.
-          LIBSOUND_REQUIRE: pulse,dbus
+          # the rows above already require that suite.
+          #
+          # Both PipeWire paths, which is what makes this the row that tells
+          # them apart. `pulse` is the compatibility layer reaching a PipeWire
+          # server, and `pipewire` is libpipewire reaching the same graph with
+          # nothing in between. The second is where the layouts and the 64-bit
+          # float that the first refuses are asserted, so a run where the native
+          # backend quietly failed to load would leave those cases skipped and
+          # the row green.
+          #
+          # pipewire-capture as well, because a runner's default input is a null
+          # sink's monitor and there is nothing there to overhear.
+          LIBSOUND_REQUIRE: pulse,pipewire,pipewire-capture,dbus
         run: |
           export XDG_RUNTIME_DIR=/tmp/libsound-runtime
           mkdir -p "$XDG_RUNTIME_DIR"
@@ -305,7 +315,7 @@ jobs:
       - name: What each suite actually did
         if: always()
         env:
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,PulseDeviceControl,PulsePerStreamCapture,PulseSampleCache,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,PulseDeviceControl,PulsePerStreamCapture,PulseSampleCache,PipeWireSinkContract,PipeWireSourceContract,PipeWireBackend,PipeWirePerStreamCapture,SpaPod,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure
@@ -390,7 +400,7 @@ jobs:
           # JDK's own native and needs a routing config a bare container has no
           # reason to carry. The Linux and musl rows require it, so it is not
           # unwatched -- it is simply not what is being asked here.
-          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,MprisSession,MprisReader,DBusConnection
+          LIBSOUND_EXPECT: PulseSink,PulseMixer,PulseBackend,PulseSource,PulseCapture,SpaPod,ChannelPlacement,MprisSession,MprisReader,DBusConnection
         run: python3 .github/test-summary.py
 
       - name: Upload test report on failure

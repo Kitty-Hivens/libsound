@@ -1,0 +1,589 @@
+package dev.hivens.libsound.audio.pipewire
+
+import dev.hivens.libsound.ChannelPosition
+import dev.hivens.libsound.PcmEncoding
+
+/**
+ * Constants and layouts for the PipeWire subset a native backend binds.
+ *
+ * Every number here was printed by `tools/pipewire-oracle.c` against the
+ * installed headers, none of it is remembered, and one part of it can be
+ * checked rather than merely transcribed: the oracle also builds two real PODs
+ * with the library's own builder and dumps the bytes, so [SpaPod] is right when
+ * it emits the same ones. That is the only oracle in this repository whose
+ * output is executable, and it exists because the alternative is worse than
+ * usual here.
+ *
+ * ## Why a POD has to be written by hand at all
+ *
+ * PipeWire negotiates formats with serialised objects, and the API for building
+ * them is inline C macros over a `spa_pod_builder`. Panama can call a function
+ * and cannot call a macro, so a binding emits the bytes itself. There is no
+ * symbol to bind that would do it, which is what makes this different from
+ * every other table here.
+ *
+ * Taken from pipewire 1.6.8, x86_64.
+ */
+internal object SpaAbi {
+
+    // -- POD layout ----------------------------------------------------------
+
+    /** `struct spa_pod` is a size and a type, and every body is padded to [POD_ALIGN]. */
+    const val POD_HEADER_SIZE = 8
+    const val POD_SIZE_OFFSET = 0
+    const val POD_TYPE_OFFSET = 4
+
+    /** An object's body starts with its own type and an id, then the properties. */
+    const val POD_OBJECT_BODY_SIZE = 8
+
+    /** A property is a key, flags, and one value pod. Not itself a pod. */
+    const val POD_PROP_HEADER_SIZE = 8
+
+    /**
+     * An array's body carries the size and type of one element before the
+     * elements themselves, which is why an array of six ids is thirty two bytes
+     * rather than twenty four. A reader that assumes otherwise walks off the
+     * front of the data rather than the end of it.
+     */
+    const val POD_ARRAY_BODY_SIZE = 8
+
+    const val POD_ALIGN = 8
+
+    // -- spa_dict, which is how properties cross without varargs -------------
+
+    /**
+     * `pw_properties_new` is variadic, and a Panama downcall to a variadic
+     * function needs a descriptor per call shape. A dict needs none, so the
+     * properties are built as one and handed to `pw_properties_new_dict`.
+     */
+    const val DICT_SIZE = 16L
+    const val DICT_FLAGS = 0L
+    const val DICT_N_ITEMS = 4L
+    const val DICT_ITEMS = 8L
+
+    const val DICT_ITEM_SIZE = 16L
+    const val DICT_ITEM_KEY = 0L
+    const val DICT_ITEM_VALUE = 8L
+
+    // -- pw_stream_events, a vtable by another name --------------------------
+
+    /**
+     * Handed over whole, and the library calls whatever is in it. So the size
+     * is as load bearing as the offsets: a struct shorter than this leaves the
+     * loop calling through whatever memory follows the allocation, and the
+     * offsets are deliberately not eight apart everywhere, which is what a
+     * hand-counted version of this table gets wrong.
+     */
+    const val STREAM_EVENTS_SIZE = 96L
+    const val STREAM_EVENTS_VERSION = 0L
+    const val STREAM_EVENTS_DESTROY = 8L
+    const val STREAM_EVENTS_STATE_CHANGED = 16L
+    const val STREAM_EVENTS_CONTROL_INFO = 24L
+    const val STREAM_EVENTS_IO_CHANGED = 32L
+    const val STREAM_EVENTS_PARAM_CHANGED = 40L
+    const val STREAM_EVENTS_ADD_BUFFER = 48L
+    const val STREAM_EVENTS_REMOVE_BUFFER = 56L
+    const val STREAM_EVENTS_PROCESS = 64L
+    const val STREAM_EVENTS_DRAINED = 72L
+    const val STREAM_EVENTS_COMMAND = 80L
+    const val STREAM_EVENTS_TRIGGER_DONE = 88L
+
+    /** The version the struct declares, which the library checks before calling anything. */
+    const val VERSION_STREAM_EVENTS = 2
+
+    // -- stream states and flags ---------------------------------------------
+
+    const val STREAM_STATE_ERROR = -1
+    const val STREAM_STATE_UNCONNECTED = 0
+    const val STREAM_STATE_CONNECTING = 1
+    const val STREAM_STATE_PAUSED = 2
+    const val STREAM_STATE_STREAMING = 3
+
+    const val STREAM_FLAG_AUTOCONNECT = 0x0000_0001
+    const val STREAM_FLAG_INACTIVE = 0x0000_0002
+    const val STREAM_FLAG_MAP_BUFFERS = 0x0000_0004
+    const val STREAM_FLAG_RT_PROCESS = 0x0000_0010
+
+    /**
+     * Keeps a stream on the object it was aimed at.
+     *
+     * Recording one application means naming its node, and a stream that
+     * reconnected when that node went would quietly start recording whatever
+     * the graph offered instead. The same trap `PA_STREAM_DONT_MOVE` answers on
+     * the other side, and worth more here because what it would record instead
+     * is a microphone.
+     */
+    const val STREAM_FLAG_DONT_RECONNECT = 0x0000_0080
+
+    /**
+     * `PW_ID_ANY`, which is how a stream says it does not name a target.
+     *
+     * The oracle prints it as 4294967295 because the header gives it as an
+     * unsigned word. It travels as a 32-bit argument either way, and the two
+     * are the same bits, but a person checking the table against the printout
+     * will see two different numbers and should know why.
+     */
+    const val ID_ANY = -1
+
+    // -- buffers, which is where the audio actually is -----------------------
+
+    const val PW_BUFFER_BUFFER = 0L
+    const val PW_BUFFER_SIZE = 16L
+    const val PW_BUFFER_REQUESTED = 24L
+
+    /**
+     * The whole of `pw_buffer`, and the whole of it on purpose.
+     *
+     * It was thirty two, which is exactly the end of the last field this reads
+     * and eight short of the struct. Correct today and a trap tomorrow: the
+     * next field along is `time`, and reaching for it would have read one byte
+     * past the window, inside the process callback, in real time. Every other
+     * `_HEAD` and `_SIZE` here is a `sizeof`, and this one is now too.
+     */
+    const val PW_BUFFER_HEAD = 40L
+
+    const val SPA_BUFFER_N_DATAS = 4L
+    const val SPA_BUFFER_DATAS = 16L
+    const val SPA_BUFFER_HEAD = 24L
+
+    const val SPA_DATA_SIZE = 40L
+    const val SPA_DATA_MAXSIZE = 20L
+    const val SPA_DATA_DATA = 24L
+    const val SPA_DATA_CHUNK = 32L
+
+    const val SPA_CHUNK_SIZE = 16L
+    const val SPA_CHUNK_OFFSET = 0L
+    const val SPA_CHUNK_LENGTH = 4L
+    const val SPA_CHUNK_STRIDE = 8L
+
+    // -- pw_time, the playhead and the latency -------------------------------
+
+    const val TIME_SIZE = 64L
+    const val TIME_NOW = 0L
+    const val TIME_RATE_NUM = 8L
+    const val TIME_RATE_DENOM = 12L
+    const val TIME_TICKS = 16L
+
+    /**
+     * The path from this stream to the device, in the units [TIME_RATE_NUM] and
+     * its denominator give. The one field of the three that is in the graph's
+     * rate rather than the stream's.
+     */
+    const val TIME_DELAY = 24L
+
+    /**
+     * The sum of the `size` fields of the buffers this client has queued, which
+     * this client fills with frames of its own format, so it counts in the
+     * stream's rate and not the graph's.
+     */
+    const val TIME_QUEUED = 32L
+
+    /** Frames held in the resampler, on the stream's side of the rate change. */
+    const val TIME_BUFFERED = 40L
+
+    // -- calling a proxy method by hand --------------------------------------
+
+    /**
+     * A proxy pointer is a `spa_interface`, whose callbacks point at the
+     * interface's method table, and the headers read a function out of it
+     * through a macro. Panama cannot call a macro, so a binding walks the
+     * layout: the same discipline the WASAPI vtable indices are held to, and
+     * the same failure when it is wrong, which is a call through a function
+     * that is not the one meant.
+     */
+    const val INTERFACE_SIZE = 32L
+    const val INTERFACE_TYPE = 0L
+    const val INTERFACE_VERSION = 8L
+    const val INTERFACE_CB_FUNCS = 16L
+
+    /**
+     * The interface's own data, which is the first argument every method on it
+     * takes.
+     *
+     * Measured on 1.6.8 rather than assumed: for every proxy pipewire hands
+     * out, this field holds the proxy itself, so passing one where the other
+     * belongs is currently indistinguishable. The field is read anyway because
+     * that is what the macro does and nothing promises the two keep coinciding,
+     * least of all for an interface that is not a proxy.
+     */
+    const val INTERFACE_CB_DATA = 24L
+
+    /** `pw_core_methods`, where `sync` and `get_registry` live. */
+    const val CORE_METHOD_SYNC = 24L
+    const val CORE_METHOD_GET_REGISTRY = 48L
+
+    /** `pw_registry_methods`, where `bind` lives. */
+    const val REGISTRY_METHOD_BIND = 16L
+    const val REGISTRY_METHOD_DESTROY = 24L
+
+    const val VERSION_CORE = 4
+    const val VERSION_REGISTRY = 3
+
+    // -- core events, which is where a round trip comes back -----------------
+
+    /**
+     * Ten slots, of which two are filled. Handed over whole like every other
+     * events struct here, so the size matters as much as the offsets.
+     *
+     * This is what makes a connect wait for an answer rather than for a clock.
+     * `sync` is replied to only after everything the server had already queued,
+     * so a `done` carrying the seq a sync returned means the burst of globals
+     * is delivered and anything bound out of it has answered.
+     *
+     * That `pw_proxy_add_object_listener` delivers these on a core was measured
+     * against a live graph rather than read off the header, which carries a
+     * second listener list for the core that a different call reaches.
+     */
+    const val CORE_EVENTS_SIZE = 80L
+    const val CORE_EVENTS_VERSION = 0L
+    const val CORE_EVENTS_INFO = 8L
+    const val CORE_EVENTS_DONE = 16L
+    const val CORE_EVENTS_PING = 24L
+    const val CORE_EVENTS_ERROR = 32L
+    const val VERSION_CORE_EVENTS = 1
+
+    /** The core's own id, which is the subject a connect-time sync names. */
+    const val ID_CORE = 0
+
+    // -- registry events -----------------------------------------------------
+
+    /**
+     * Three slots. A global arrives with its whole property dict attached,
+     * which is what makes a device list need no method call at all: the answer
+     * is in the event.
+     */
+    const val REGISTRY_EVENTS_SIZE = 24L
+    const val REGISTRY_EVENTS_VERSION = 0L
+    const val REGISTRY_EVENTS_GLOBAL = 8L
+    const val REGISTRY_EVENTS_GLOBAL_REMOVE = 16L
+    const val VERSION_REGISTRY_EVENTS = 0
+
+    /**
+     * What a global says it is, and what a proxy answers when asked what it is.
+     *
+     * A node is what a device list is made of. The other three are the proxies
+     * this backend holds or walks, and each of them declares its own name at
+     * offset zero, which is the one check a method table walk can make about
+     * the pointer it was handed before calling through it.
+     */
+    const val INTERFACE_CORE = "PipeWire:Interface:Core"
+    const val INTERFACE_REGISTRY = "PipeWire:Interface:Registry"
+    const val INTERFACE_NODE = "PipeWire:Interface:Node"
+    const val INTERFACE_DEVICE = "PipeWire:Interface:Device"
+    const val INTERFACE_METADATA = "PipeWire:Interface:Metadata"
+
+    /** `struct spa_hook`, which a listener is registered through and which the caller owns. */
+    const val HOOK_SIZE = 48L
+
+    // -- the node, which is where a device's own volume lives ----------------
+
+    /**
+     * Two slots. `param` answers a subscription and carries the object, and
+     * `info` carries the node's state.
+     *
+     * A device's volume is not on the global's property dict, so this is the
+     * one thing on a device row that a bind is the only way to reach. The
+     * libpulse side gets it in the same struct as the name, which is the shape
+     * difference between an introspection protocol and a graph.
+     */
+    const val NODE_EVENTS_SIZE = 24L
+    const val NODE_EVENTS_VERSION = 0L
+    const val NODE_EVENTS_INFO = 8L
+    const val NODE_EVENTS_PARAM = 16L
+    const val VERSION_NODE_EVENTS = 0
+
+    /** The interface version a bind asks for. */
+    const val VERSION_NODE = 3
+
+    /** `pw_node_methods`, where asking to be told about a parameter lives. */
+    const val NODE_METHOD_SUBSCRIBE_PARAMS = 16L
+    const val NODE_METHOD_ENUM_PARAMS = 24L
+    const val NODE_METHOD_SET_PARAM = 32L
+
+    /** `pw_node_info`, of which one field is read. */
+    const val NODE_INFO_SIZE = 72L
+    const val NODE_INFO_STATE = 32L
+
+    /**
+     * A node the server has closed the hardware for because nothing is using
+     * it. An ordinary resting state rather than a fault, and the one the
+     * libpulse side reports as suspended.
+     */
+    const val NODE_STATE_SUSPENDED = 1
+
+    // -- metadata, which is where the default device lives -------------------
+
+    /**
+     * One slot, and it reports a change rather than answering a question. A
+     * proxy bound to the metadata object is sent one property event per entry
+     * already in it, so the current value arrives without being asked for, the
+     * same shape the registry's globals have.
+     *
+     * The callback returns an int rather than nothing, which is the only place
+     * in this binding where that is true and the only reason this size is
+     * worth stating twice.
+     */
+    const val METADATA_EVENTS_SIZE = 16L
+    const val METADATA_EVENTS_VERSION = 0L
+    const val METADATA_EVENTS_PROPERTY = 8L
+    const val VERSION_METADATA_EVENTS = 0
+
+    /** The interface version a bind asks for. */
+    const val VERSION_METADATA = 3
+
+    /** Which metadata object this is. The graph carries several. */
+    const val KEY_METADATA_NAME = "metadata.name"
+
+    /** The one holding the defaults, against `settings`, `sm-objects` and the rest. */
+    const val METADATA_DEFAULT = "default"
+
+    /**
+     * What the session manager decided, against `default.configured.audio.sink`
+     * which is what a person asked for. The configured one names a device that
+     * may not be present; this one names the device audio is actually going to.
+     */
+    const val METADATA_KEY_DEFAULT_SINK = "default.audio.sink"
+    const val METADATA_KEY_DEFAULT_SOURCE = "default.audio.source"
+
+    // -- properties a volume is set through ----------------------------------
+
+    const val OBJECT_PROPS = 262_146
+    const val PARAM_PROPS = 2
+    const val PROP_VOLUME = 65_539
+    const val PROP_MUTE = 65_540
+    const val PROP_CHANNEL_VOLUMES = 65_544
+
+    // -- property keys -------------------------------------------------------
+
+    /**
+     * What a node says it is, and the whole of what a device list filters on.
+     * `Audio/Sink` and `Audio/Source` are devices; `Stream/Output/Audio` and
+     * its sibling are somebody playing or recording.
+     */
+    const val KEY_MEDIA_CLASS = "media.class"
+
+    /**
+     * What a node says it is, and none of these is matched whole.
+     *
+     * The graph qualifies them: a virtual microphone is `Audio/Source/Virtual`
+     * and a device that is both at once is `Audio/Duplex`. Comparing for
+     * equality against the two bare names drops every qualified node on the
+     * floor, and a device menu on a machine with a loopback source then has a
+     * row missing with nothing to say it is missing.
+     */
+    const val MEDIA_CLASS_SINK = "Audio/Sink"
+    const val MEDIA_CLASS_SOURCE = "Audio/Source"
+    const val MEDIA_CLASS_DUPLEX = "Audio/Duplex"
+
+    /** Somebody playing, which is what recording one application aims at. */
+    const val MEDIA_CLASS_STREAM_OUTPUT = "Stream/Output/Audio"
+
+    /**
+     * A number that names one object for the life of the graph.
+     *
+     * Not the global id, which is recycled, and that difference is what makes
+     * this the safe thing to aim a capture at: a serial is monotonic and never
+     * reused, so it either names the object meant or names nothing.
+     *
+     * It is also the index `pipewire-pulse` gives that object, measured on
+     * 1.6.8 against `pactl list short sink-inputs`, which is what lets an id
+     * from the mixer be resolved here at all.
+     */
+    const val KEY_OBJECT_SERIAL = "object.serial"
+    const val KEY_NODE_NICK = "node.nick"
+    const val KEY_DEVICE_DESCRIPTION = "device.description"
+
+    const val KEY_MEDIA_TYPE = "media.type"
+    const val KEY_MEDIA_CATEGORY = "media.category"
+    const val KEY_MEDIA_ROLE = "media.role"
+    const val KEY_APP_NAME = "application.name"
+    const val KEY_APP_ID = "application.id"
+    const val KEY_APP_ICON_NAME = "application.icon-name"
+    const val KEY_NODE_NAME = "node.name"
+    const val KEY_NODE_DESCRIPTION = "node.description"
+
+    /**
+     * The lever section 4.4 measured `pipewire-pulse` overwriting. A node sets
+     * it and keeps it; a pulse client sets it and has the shim recompute it
+     * from the buffer size that client asked for.
+     */
+    const val KEY_NODE_LATENCY = "node.latency"
+    const val KEY_NODE_RATE = "node.rate"
+    const val KEY_TARGET_OBJECT = "target.object"
+
+    // -- POD types -----------------------------------------------------------
+
+    const val TYPE_NONE = 1
+    const val TYPE_BOOL = 2
+    const val TYPE_ID = 3
+    const val TYPE_INT = 4
+    const val TYPE_LONG = 5
+    const val TYPE_FLOAT = 6
+    const val TYPE_STRING = 8
+    const val TYPE_BYTES = 9
+    const val TYPE_ARRAY = 13
+    const val TYPE_OBJECT = 15
+
+    /**
+     * Object types, which are not small integers and are the ones worth
+     * distrusting: a wrong one is an object the server does not recognise,
+     * which it answers by ignoring rather than by complaining.
+     */
+    const val OBJECT_FORMAT = 262_147
+    const val OBJECT_PARAM_LATENCY = 262_155
+
+    // -- parameter ids -------------------------------------------------------
+
+    const val PARAM_ENUM_FORMAT = 3
+    const val PARAM_FORMAT = 4
+    const val PARAM_LATENCY = 15
+
+    // -- format keys ---------------------------------------------------------
+
+    const val FORMAT_MEDIA_TYPE = 1
+    const val FORMAT_MEDIA_SUBTYPE = 2
+    const val FORMAT_AUDIO_FORMAT = 65_537
+    const val FORMAT_AUDIO_RATE = 65_539
+    const val FORMAT_AUDIO_CHANNELS = 65_540
+    const val FORMAT_AUDIO_POSITION = 65_541
+
+    const val MEDIA_TYPE_AUDIO = 1
+    const val MEDIA_SUBTYPE_RAW = 1
+
+    // -- latency keys --------------------------------------------------------
+
+    const val LATENCY_DIRECTION = 1
+    const val LATENCY_MIN_QUANTUM = 2
+    const val LATENCY_MAX_QUANTUM = 3
+    const val LATENCY_MIN_RATE = 4
+    const val LATENCY_MAX_RATE = 5
+    const val LATENCY_MIN_NS = 6
+    const val LATENCY_MAX_NS = 7
+
+    const val DIRECTION_INPUT = 0
+    const val DIRECTION_OUTPUT = 1
+
+    // -- sample formats ------------------------------------------------------
+
+    /**
+     * The most channels a raw audio format can name.
+     *
+     * Needed because [dev.hivens.libsound.AudioSink.accepts] promises that a
+     * false answer is exactly an open that would throw. Without it a hundred
+     * channel format is accepted here and refused by the connect, which is the
+     * one thing that contract forbids.
+     */
+    const val MAX_CHANNELS = 64
+
+    const val AUDIO_FORMAT_UNKNOWN = 0
+    const val AUDIO_FORMAT_U8 = 258
+    const val AUDIO_FORMAT_S16_LE = 259
+    const val AUDIO_FORMAT_S24_32_LE = 263
+    const val AUDIO_FORMAT_S32_LE = 267
+    const val AUDIO_FORMAT_S24_LE = 271
+    const val AUDIO_FORMAT_F32_LE = 283
+    const val AUDIO_FORMAT_F64_LE = 285
+
+    /**
+     * What the graph calls the shape a consumer handed us.
+     *
+     * Total, with no null in it, which is the difference this backend exists
+     * for. The libpulse path has to refuse [PcmEncoding.F64LE] because
+     * `pa_sample_format_t` has no 64-bit float at all, and that refusal is the
+     * compatibility layer's rather than the platform's.
+     *
+     * The packed 24-bit formats are named above and unreachable from here for
+     * the reason they are unreachable from the libpulse table: FFmpeg has no
+     * 24-bit sample format, so nothing produces one to send.
+     */
+    fun audioFormatOf(encoding: PcmEncoding): Int = when (encoding) {
+        PcmEncoding.U8 -> AUDIO_FORMAT_U8
+        PcmEncoding.S16LE -> AUDIO_FORMAT_S16_LE
+        PcmEncoding.S32LE -> AUDIO_FORMAT_S32_LE
+        PcmEncoding.F32LE -> AUDIO_FORMAT_F32_LE
+        PcmEncoding.F64LE -> AUDIO_FORMAT_F64_LE
+    }
+
+    // -- channel positions ---------------------------------------------------
+
+    const val CHANNEL_UNKNOWN = 0
+    const val CHANNEL_FL = 3
+    const val CHANNEL_FR = 4
+    const val CHANNEL_FC = 5
+    const val CHANNEL_LFE = 6
+    const val CHANNEL_SL = 7
+    const val CHANNEL_SR = 8
+    const val CHANNEL_FLC = 9
+    const val CHANNEL_FRC = 10
+    const val CHANNEL_RC = 11
+    const val CHANNEL_RL = 12
+    const val CHANNEL_RR = 13
+    const val CHANNEL_TC = 14
+    const val CHANNEL_TFL = 15
+    const val CHANNEL_TFC = 16
+    const val CHANNEL_TFR = 17
+    const val CHANNEL_TRL = 18
+    const val CHANNEL_TRC = 19
+    const val CHANNEL_TRR = 20
+    const val CHANNEL_FLW = 23
+    const val CHANNEL_FRW = 24
+    const val CHANNEL_LFE2 = 25
+    const val CHANNEL_TSL = 31
+    const val CHANNEL_TSR = 32
+    const val CHANNEL_BC = 35
+    const val CHANNEL_BLC = 36
+    const val CHANNEL_BRC = 37
+
+    /**
+     * What the graph calls a position, or null where it has no name for it.
+     *
+     * Twenty-six of the thirty-six FFmpeg names, against eighteen through
+     * `pipewire-pulse`. The eight the compatibility layer costs are the wide
+     * pair, the second low frequency channel, the top side pair and the bottom
+     * row, and between them they are the difference between carrying `9.1.6`,
+     * `7.2.3`, `hexadecagonal` and `22.2` and refusing all four.
+     *
+     * The names differ where the concepts agree, as they do everywhere else
+     * here: what FFmpeg calls back the graph calls rear, and what FFmpeg calls
+     * bottom-front the graph calls bottom.
+     *
+     * The ten with no equivalent are the downmix pair, surround direct, side
+     * surround, top surround and binaural. Nothing in the graph's list stands
+     * for any of them, and a position placed as its nearest neighbour would be
+     * the quiet mis-placement this whole mechanism exists to stop.
+     */
+    fun channelOf(position: ChannelPosition): Int? = when (position) {
+        ChannelPosition.FL -> CHANNEL_FL
+        ChannelPosition.FR -> CHANNEL_FR
+        ChannelPosition.FC -> CHANNEL_FC
+        ChannelPosition.LFE -> CHANNEL_LFE
+        ChannelPosition.SL -> CHANNEL_SL
+        ChannelPosition.SR -> CHANNEL_SR
+        ChannelPosition.FLC -> CHANNEL_FLC
+        ChannelPosition.FRC -> CHANNEL_FRC
+        ChannelPosition.BC -> CHANNEL_RC
+        ChannelPosition.BL -> CHANNEL_RL
+        ChannelPosition.BR -> CHANNEL_RR
+        ChannelPosition.TC -> CHANNEL_TC
+        ChannelPosition.TFL -> CHANNEL_TFL
+        ChannelPosition.TFC -> CHANNEL_TFC
+        ChannelPosition.TFR -> CHANNEL_TFR
+        ChannelPosition.TBL -> CHANNEL_TRL
+        ChannelPosition.TBC -> CHANNEL_TRC
+        ChannelPosition.TBR -> CHANNEL_TRR
+        ChannelPosition.WL -> CHANNEL_FLW
+        ChannelPosition.WR -> CHANNEL_FRW
+        ChannelPosition.LFE2 -> CHANNEL_LFE2
+        ChannelPosition.TSL -> CHANNEL_TSL
+        ChannelPosition.TSR -> CHANNEL_TSR
+        ChannelPosition.BFC -> CHANNEL_BC
+        ChannelPosition.BFL -> CHANNEL_BLC
+        ChannelPosition.BFR -> CHANNEL_BRC
+        ChannelPosition.DL, ChannelPosition.DR,
+        ChannelPosition.SDL, ChannelPosition.SDR,
+        ChannelPosition.SSL, ChannelPosition.SSR,
+        ChannelPosition.TTL, ChannelPosition.TTR,
+        ChannelPosition.BIL, ChannelPosition.BIR,
+        -> null
+    }
+}

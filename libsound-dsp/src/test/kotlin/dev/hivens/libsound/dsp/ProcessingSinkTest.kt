@@ -28,6 +28,28 @@ class ProcessingSinkTest {
         return buffer.array()
     }
 
+    private fun int32(vararg samples: Int): ByteArray {
+        val buffer = ByteBuffer.allocate(samples.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        samples.forEach { buffer.putInt(it) }
+        return buffer.array()
+    }
+
+    private fun float32(vararg samples: Float): ByteArray {
+        val buffer = ByteBuffer.allocate(samples.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        samples.forEach { buffer.putFloat(it) }
+        return buffer.array()
+    }
+
+    private fun float64(vararg samples: Double): ByteArray {
+        val buffer = ByteBuffer.allocate(samples.size * 8).order(ByteOrder.LITTLE_ENDIAN)
+        samples.forEach { buffer.putDouble(it) }
+        return buffer.array()
+    }
+
+    private fun withClue(clue: Any?, body: () -> Unit) {
+        runCatching(body).onFailure { throw AssertionError("$clue", it) }
+    }
+
     private fun captured(): ShortArray {
         val bytes = device.capturedBytes()
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -156,6 +178,45 @@ class ProcessingSinkTest {
         // What the visualiser would draw, and what the device got, unchanged.
         (abs(loudest - 10_000f / 32_768f) < 0.001f) shouldBe true
         device.capturedBytes() shouldBe original
+    }
+
+    @Test
+    fun `every encoding survives a gain of one, as far as a float can carry it`() {
+        // Decode and encode have to be each other's inverse, or a consumer that
+        // inserts a decorator it is not using pays for it in the samples. The
+        // limit is real and documented rather than idealised: the carrier is a
+        // float, whose mantissa holds 24 bits.
+        val exact = mapOf(
+            PcmEncoding.U8 to byteArrayOf(0, 1, 127, -128, -1, 64),
+            PcmEncoding.S16LE to pcm(0, 1, -1, 32_767, -32_768, 12_345, -12_345, 7),
+            // 24-bit content in the top bits, which is what FFmpeg actually
+            // sends and the case a float carries exactly.
+            PcmEncoding.S32LE to int32(0, 256, -256, 0x7FFFFF00, -0x7FFFFF00, 0x123456_00),
+            PcmEncoding.F32LE to float32(0.25f, -0.5f, 1f, -1f, 0f),
+            PcmEncoding.F64LE to float64(0.25, -0.5, 1.0, -1.0, 0.0),
+        )
+        exact.forEach { (encoding, bytes) ->
+            val device = FakeAudioSink(bufferFrames = 48_000)
+            GainSink(device, gain = 1f).use { sink ->
+                sink.open(AudioFormat(48_000, 1, encoding))
+                sink.write(bytes, 0, bytes.size)
+            }
+            withClue(encoding) { device.capturedBytes() shouldBe bytes }
+        }
+    }
+
+    @Test
+    fun `a sample using all thirty-two bits does not survive, which is why significantBits exists`() {
+        // The other side of the same limit, asserted rather than hoped for. A
+        // value with bits below the top 24 comes back changed, and a consumer
+        // that needs them kept has to keep the decorator out of that path.
+        val device = FakeAudioSink(bufferFrames = 48_000)
+        val bytes = int32(0x12345678, 0x7FFFFFFF)
+        GainSink(device, gain = 1f).use { sink ->
+            sink.open(AudioFormat(48_000, 1, PcmEncoding.S32LE))
+            sink.write(bytes, 0, bytes.size)
+        }
+        (device.capturedBytes() contentEquals bytes) shouldBe false
     }
 
     @Test
