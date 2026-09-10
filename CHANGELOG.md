@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- The native PipeWire backend answered with a backend on a machine that had
+  libpipewire installed and no graph running. Loading the library and starting a
+  thread loop reaches no server, so nothing before the first sink touched a
+  socket and there was no connection to fail. Harmless while that backend was
+  reachable only by name, and not harmless as a rung in the chain, because by
+  then the selection has committed and the rung below is gone.
 - **Anything past stereo was played with its channels in the wrong places on
   Linux.** A `pa_sample_spec` carries a channel count and no positions, and the
   sink connected its stream with a null channel map, so the server applied its
@@ -60,11 +66,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   nothing behind it in the graph, and this backend says so rather than
   pretending otherwise.
 
-  Not on the selection path. It goes first once it passes everything the
-  libpulse backend passes, and until then `-Dlibsound.backend=pipewire` reaches
-  it. A name that matches nothing fails rather than quietly selecting something
-  else, because a run that asked for one backend and measured another says
-  nothing about either.
+  **It is what `AudioBackends.open` returns on Linux now**, with libpulse below
+  it and JavaSound below that. The rung below stays supported for the two
+  machines that need it: one running real PulseAudio, where the native path has
+  no graph to reach, and one running PipeWire without `pipewire-pulse`, which
+  would otherwise fall all the way to JavaSound.
+
+  `-Dlibsound.backend=` still pins either, and a name that matches nothing fails
+  rather than quietly selecting something else, because a run that asked for one
+  backend and measured another says nothing about either.
+- `AudioBackends.open` takes an optional set of capabilities the caller needs
+  and answers with the first backend that offers them. The two Linux rungs
+  differ by one, the sample cache, and promoting the native one without this
+  would have taken a working feature away from anyone using it. The same
+  question `capabilities` already answered, asked one step earlier, and for the
+  consumer that cannot adapt rather than the one that can. Naming something no
+  backend on the machine has answers null, because handing back one that was
+  already told it would not do is worse than saying so.
 - A connection to the graph knows what is on it before it returns. Enumeration
   there is an event stream rather than a call, so nothing returning meant the
   list was complete, and what stood in for that was a fixed wait. A wait long
