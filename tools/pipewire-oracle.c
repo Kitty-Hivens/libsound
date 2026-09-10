@@ -452,6 +452,12 @@ int main(void) {
     P(offsetof(struct pw_node_info, change_mask));
     P(offsetof(struct pw_node_info, state));
     P(offsetof(struct pw_node_info, props));
+    /* Which fields of the info struct the event actually refreshed. The props
+     * pointer is only good when its bit is set, and the props on the info are a
+     * larger set than the ones the registry global carries: an application's
+     * process id is on one and not the other. */
+    HEX(PW_NODE_CHANGE_MASK_PROPS);
+    HEX(PW_NODE_CHANGE_MASK_STATE);
     P(PW_NODE_STATE_ERROR);
     P(PW_NODE_STATE_CREATING);
     P(PW_NODE_STATE_SUSPENDED);
@@ -480,6 +486,9 @@ int main(void) {
     printf("  %-30s = %s\n", "PW_KEY_LINK_INPUT_NODE", PW_KEY_LINK_INPUT_NODE);
     printf("  %-30s = %s\n", "PW_KEY_MEDIA_NAME", PW_KEY_MEDIA_NAME);
     printf("  %-30s = %s\n", "PW_KEY_CLIENT_ID", PW_KEY_CLIENT_ID);
+    /* Which process a node belongs to, which is how a mixer marks its own rows
+     * without needing to know its own client id on a second connection. */
+    printf("  %-30s = %s\n", "PW_KEY_APP_PROCESS_ID", PW_KEY_APP_PROCESS_ID);
     printf("  %-30s = %s\n", "MEDIA_CLASS Stream/Input/Audio", "Stream/Input/Audio");
 
     /* A stream's own volume, which is a control on its node rather than
