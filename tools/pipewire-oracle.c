@@ -391,6 +391,40 @@ int main(void) {
     P(offsetof(struct pw_metadata_events, property));
     printf("  %-44s = %s\n", "PW_KEY_METADATA_NAME", PW_KEY_METADATA_NAME);
 
+    /* A device's own volume is a parameter of its node, which means binding
+     * the node, subscribing to the parameter, and reading the object that comes
+     * back. So this is the one place a binding needs to read a POD rather than
+     * write one: everything else here is a format or a latency this library
+     * sends. */
+    SECTION("the node, whose parameters carry a device's own volume");
+    P(PW_VERSION_NODE);
+    P(PW_VERSION_NODE_EVENTS);
+    P(sizeof(struct pw_node_events));
+    P(offsetof(struct pw_node_events, version));
+    P(offsetof(struct pw_node_events, info));
+    P(offsetof(struct pw_node_events, param));
+    P(sizeof(struct pw_node_methods));
+    P(offsetof(struct pw_node_methods, version));
+    P(offsetof(struct pw_node_methods, add_listener));
+    P(offsetof(struct pw_node_methods, subscribe_params));
+    P(offsetof(struct pw_node_methods, enum_params));
+    P(offsetof(struct pw_node_methods, set_param));
+    P(offsetof(struct pw_node_methods, send_command));
+    P(PW_VERSION_NODE_METHODS);
+
+    /* Reading a POD needs the array body's shape as well as the header's: an
+     * array is a child size and a child type before the elements, which is what
+     * makes a six element array of ids thirty two bytes rather than twenty
+     * four. Writing one already depends on this and gets it checked by the
+     * reference dumps above; reading one depends on it in the other direction. */
+    SECTION("POD array and struct bodies, which reading one needs");
+    P(sizeof(struct spa_pod_array));
+    P(offsetof(struct spa_pod_array, body));
+    P(sizeof(struct spa_pod_array_body));
+    P(offsetof(struct spa_pod_array_body, child));
+    P(sizeof(struct spa_pod_bool));
+    P(sizeof(struct spa_pod_float));
+
     /* A stream's own volume, which is a control on its node rather than
      * anything pw_stream carries directly. */
     SECTION("SPA_PROP, which is what a volume is");
