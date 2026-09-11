@@ -114,24 +114,29 @@ class PipeWireMixerTest {
     }
 
     @Test
-    fun `a volume set on a row is read back off the graph`() {
+    fun `a volume set on a row is readable the moment the setter answers`() {
         val mixer = checkNotNull(mixer)
         play()
         val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
-        // Retried rather than asserted once. A node's global arrives before its
-        // parameters do, and a volume cannot be written until the channel count
-        // has, so a row is settable a moment after it appears rather than at
-        // the instant it does.
+        // Retried rather than asserted once. This binding asks a node about its
+        // parameters when the node's global arrives, so there is a moment after
+        // a row appears in which the channel count a volume is written with has
+        // not come back yet. That is this code's own sequencing rather than
+        // anything the graph does, and it ends on its own.
         eventually("the row to become settable") { mixer.setVolume(row.id, 0.25f).takeIf { it } }
-        val quiet = eventually("the volume to come back") {
-            mixer.streams().firstOrNull { it.id == row.id }?.takeIf { abs(it.volume - 0.25f) < TOLERANCE }
+        // Read at once, and that is the assertion. The interface asks a setter
+        // for the server's answer rather than for the fact that a request went
+        // out, and the parameter carrying the new value back is queued ahead of
+        // that answer, so a true that is not yet readable is a setter reporting
+        // the socket.
+        val quiet = checkNotNull(mixer.streams().firstOrNull { it.id == row.id }) { "the row went away" }
+        withClue("the setter answered before the graph did") {
+            (abs(quiet.volume - 0.25f) < TOLERANCE) shouldBe true
         }
-        (abs(quiet.volume - 0.25f) < TOLERANCE) shouldBe true
 
         eventually("the mute to be taken") { mixer.setMuted(row.id, true).takeIf { it } }
-        eventually("the mute to come back") {
-            mixer.streams().firstOrNull { it.id == row.id }?.takeIf { it.muted }
-        }
+        val muted = checkNotNull(mixer.streams().firstOrNull { it.id == row.id }) { "the row went away" }
+        withClue("the mute answered before the graph did") { muted.muted shouldBe true }
     }
 
     @Test
