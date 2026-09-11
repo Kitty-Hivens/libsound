@@ -23,9 +23,9 @@ dev.hivens:libsound-session:0.1.0    media sessions, both directions
 dev.hivens:libsound-dsp:0.1.0        gain, filter, limiter, tap
 ```
 
-Feeding this from a decoder is a narrower question with its own page:
-[docs/PCM.md](PCM.md) covers what to hand over, how the write paces a decode
-loop, and how a clock reads back out of it.
+Feeding this from a decoder is a narrower question, and it has a section of its
+own below: what to hand over, how the write paces a decode loop, and how a clock
+reads back out of it.
 
 ## Playing something
 
@@ -78,6 +78,138 @@ process name.
 pacing mechanism, and it is why a write loop needs no timer. The one escape from
 a write that will never drain -- a stopped device, a server that died -- is
 `close`, and it is guaranteed to work: every backend is tested for it.
+
+## Handing PCM over
+
+Written for the other side of the seam: a decoder that has frames and wants them
+heard. Interleaved, little-endian, one sample per channel per frame:
+
+```kotlin
+AudioFormat(sampleRate = 48_000, channels = 2, encoding = PcmEncoding.S16LE)
+```
+
+`S16LE` is what every backend must accept, and there are four others. `U8` is old
+WAV and what derives from it. `S32LE` is where 24-bit content arrives, in the top
+24 bits, because FFmpeg has no 24-bit sample format to send it in. `F32LE` is
+float, which PipeWire and CoreAudio pass through without converting. `F64LE` is
+rare sources and some filter outputs. A decoder with no reason to prefer one
+sends `S16LE`.
+
+**Ask what a sink takes rather than finding out.** Backends do not accept the
+same set, and the differences are not small: two of them have no 64-bit float at
+all, libpulse because the protocol has no name for one and WASAPI because the
+engine refuses it whatever conversion is asked for, and the JavaSound fallback
+takes whatever the JVM's default line takes, which is three of the five.
+Speaking PipeWire natively is the one path that takes all five, which is most of
+why that path exists.
+
+```kotlin
+if (sink.accepts(shape)) sink.open(shape)
+return sink.acceptedEncodings
+```
+
+`accepts` is true exactly when `open` would not throw for want of the shape, and
+the two are asserted against each other on every backend. So a ladder down from
+what the media is towards the floor is a walk over `acceptedEncodings` rather
+than a sequence of calls wrapped in `catch`, and it can be walked before anything
+has been decoded. `open` still throws, and it throws `AudioException` rather than
+an argument exception, so a consumer that would rather try than ask can. What it
+must not do is treat a refusal as a bug: it is the answer to a question, and the
+question has a cheaper form.
+
+**Past stereo, say what the channels are.** `AudioFormat.layout` is what each
+channel is, and therefore the order they are interleaved in:
+
+```kotlin
+return AudioFormat(48_000, 6, PcmEncoding.S16LE, ChannelLayout.SURROUND_5_1)
+```
+
+It defaults to whatever FFmpeg means by that many channels, so a stream that
+declared nothing lands where FFmpeg would have put it. Ask
+`Capability.CHANNEL_PLACEMENT` before trusting it: present, the backend tells the
+device what each channel is and the layout is honoured exactly, and absent, only
+the count goes across and the device applies its own convention, which is a
+different rendering rather than a failure. Nothing to ask below three channels,
+where every platform agrees. A layout naming a position the backend cannot
+express is refused by `accepts` rather than carried with a channel missing, and
+the way through is `ChannelLayout.unspecified(n)`, which takes the platform's own
+ordering.
+
+`AudioFormat.significantBits` is the other half of describing a sample: how many
+of the bits carry signal, as against how wide the container is. It matters in
+exactly one place and that place is common, since 24-bit content arrives as
+`S32LE` with 24 significant bits, and packing 24 real bits into 24 is free while
+packing 32 into 24 is a quiet loss. `bytesPerFrame`, `framesIn`, `bytesFor`,
+`nanosFor` and `framesFor` carry the frame arithmetic and are worth using rather
+than repeating: the duration conversions split into whole seconds plus a
+remainder, because `frames * 1_000_000_000` leaves `Long`'s range after about
+fifty-three hours at 48 kHz, which a long-running process reaches and a unit test
+does not.
+
+**Nobody here resamples, so do not resample for us.** Open the sink at the rate
+the media actually is. The reason is not that resampling is hard or that the
+platform is better at it: converting samples is an addon's work, and putting it
+in the core would make our own mistakes about it unremovable without forking the
+library, which is the outcome the plugin seam exists to prevent. The sound server
+does it anyway, measured rather than assumed in every backend, so a 44.1 kHz file
+on a 48 kHz graph is not your problem, and decoding it to 48 kHz yourself means
+two conversions where one would do.
+
+`length` on a write must be a whole number of frames. A partial frame is a
+shifted stream from that point on, and nothing downstream can detect it.
+
+If your decoder is shaped around a callback rather than a push loop, `PullPump`
+drives a `PcmSource` into a sink and gives you the same pacing from the other
+side. `PcmRingBuffer` is the bridge between two threads, and it keeps the two
+failure directions apart: a device callback cannot wait, so a read short of data
+fills the shortfall with silence and counts an underrun, while a producer can
+wait and does.
+
+### Reading the playhead
+
+```kotlin
+return format.nanosFor(sink.framePosition()) + sink.latencyNanos()
+```
+
+`framePosition` counts frames the device has actually played, not frames you have
+written. `open` resets it to zero, `stop` freezes it, `start` resumes it. That
+this arithmetic is in every consumer is a known wart rather than a design.
+
+`latencyNanos` is how far ahead of the speaker the write head is, and
+`Capability.TOTAL_LATENCY` says which number you are being given. Present, it is
+the whole path: what is queued in the client, plus the server's share, plus the
+device's own. Absent, it is what the client has queued and nothing else, because
+that backend has no way to ask the hardware, and it is short by a fixed amount
+that does not go away when a flush empties the queue. Either way, do not add your
+own estimate of the missing part on top. A pacer that did would get it wrong
+differently on every machine, which is why this number is specified rather than
+left to each caller.
+
+**A zero means the backend cannot tell, not that there is no latency.** Nothing
+here separates that from a zero because nothing is queued, the way
+`Capability.UNDERRUN_COUNT` separates the two kinds of zero for underruns. That
+asymmetry is a gap in the contract rather than something to work around, and what
+a consumer does when it meets a zero is pace from the playhead alone rather than
+claim an offset it cannot measure.
+
+Seeking is the one sequence that looks arbitrary and is not:
+
+```kotlin
+sink.stop()
+sink.flush()
+return sink.framePosition()
+```
+
+Reading the position before stopping samples a value the still-draining buffer is
+about to move past, and re-anchoring a clock backwards is the one transition a
+video pacer cannot absorb. `framePosition` need not be monotonic across a flush,
+since some backends reconcile their counters around one, so carry the monotonic
+clamp above the sink rather than asking the sink to invent numbers: a fabricated
+position is worse than a visibly jumpy one.
+
+Changing format mid-stream is `open` again. It replaces the stream, drops the
+previous buffered tail, and restarts the frame position at zero, and a track at
+another sample rate is exactly this.
 
 ## Asking for a shorter path
 
