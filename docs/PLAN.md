@@ -1302,14 +1302,12 @@ the second covers what binding the metadata object inside that burst asked for.
 Measured to be load bearing rather than assumed, on a graph with one sink, where
 the default read after the first sync was null and after the second was the sink.
 
-**Creating devices is not in this section.** `createVirtualSink` and
-`combineSinks` load server modules through the pulse protocol today. That is
-where they are rather than where they have to be: `create_object` on the core
-would make one natively, with a lifetime tied to the connection instead of to the
-server. Section 13.11 weighs the two. What this section says is only that a null
-sink is a system-wide object with a restore obligation attached, which is a
-different subject from a stream this process plays through, and that nothing here
-changes how they are made.
+**Creating devices is not in this section.** `createVirtualSink` is
+`create_object` on the core now, with a lifetime tied to the connection rather
+than to the server, and 13.11 says what that buys. What this section says is
+only that a null sink is a system-wide object with a restore obligation
+attached, which is a different subject from a stream this process plays
+through.
 
 ### 13.9 Selection, and what happens on a machine without a graph
 
@@ -1436,14 +1434,27 @@ lifetime from the module the libpulse mixer loads and it is the shape
 `createVirtualSink`'s own obligation wants, since a device left behind is one
 somebody finds in their settings and cannot account for.
 
-One thing that had to be got right rather than assumed: `create_object` answers
-with a proxy before the object has a global, so a device is waited for and taken
-back if it never appears. An id handed out for one the graph accepted and did not
-build is an id every later call answers false for.
+A device is waited for rather than answered for, and taken back off the graph
+if what appears is not what was asked for. An id handed out for a device the
+graph accepted and did not build is an id every later call answers false for,
+and an id handed out for one that came back narrower is worse: a caller that
+asked for a six channel bus finds out by hearing four of its channels vanish.
 
-**Combining two devices is refused by the server rather than declined here.**
-That is a module the daemon loads, and a graph that has not loaded it registers
-no factory for one, which a client cannot change from outside.
+**The channel count is not what the volume array says it is.** Measured on a
+null sink created with six channels. `channelVolumes` carried two entries until
+something wrote a volume to it, at which point it became six, while `channelMap`
+carried all six from the moment the device appeared. So the map is what a
+channel count is read off, and a volume written off the array's length would
+have set two channels of that device and left four where they were, which is the
+failure the refusal in `setProps` exists to prevent.
+
+**Combining two devices is not built.** It is a module the daemon loads rather
+than an object a client creates: the core's method table has no call that loads
+one, and the daemon's shipped configuration does not load the module that would
+register a factory. On a graph whose owner loaded it by hand there would be a
+factory, and finding it by name and checking what it answers is the part that
+does not exist here. Nothing is asked, so nothing is refused, and the mixer's
+own documentation says so where a consumer would read it.
 
 **Cards, profiles and ports are not built, and the reason is that nothing here
 can exercise them.** They are reachable: `PipeWire:Interface:Device` with
@@ -1461,22 +1472,40 @@ on the one operation whose own documentation says a card left on a profile
 nobody chose is a machine whose speakers have stopped working with nothing on
 screen to explain it.
 
-**Which means selection has the shape 13.9 already worked out.** The pulse mixer
-covers more of the interface today, the native one covers what has been built,
-and neither is a subset of the other in the way that matters, so
-`VolumeMixers.open` takes the same optional set of capabilities
-`AudioBackends.open` does and answers with the first that offers them. The
-machine with no shim gets a mixer for the first time, and nothing anywhere loses
-one.
+**Which means selection is the reverse of 13.9's.** The native mixer's
+capability set is a subset of the pulse one's, short by exactly
+`DEVICE_PROFILES`. So the widest goes first, which is the opposite of the
+backends, where the native rung offered something the rung below did not and
+going direct cost nothing. Going direct here would take a consumer's card panel
+away on every machine that has the shim, without that consumer having asked.
+
+`VolumeMixers.open` still takes the same optional set of capabilities
+`AudioBackends.open` does, and it is worth being plain about what that does
+while one set contains the other: it cannot move the choice on a machine where
+the pulse rung opens. What it does is refuse on the machine that has no shim,
+where a consumer whose whole feature is a card's profile is told null rather
+than handed a mixer whose card list is empty.
 
 That ordering rests on today's coverage rather than on anything permanent. Close
-what is left and the wider mixer is the native one, and the order should turn
-over the way the backends' did.
+what is left and the two sets are equal, and going direct costs nothing again.
 
 **What is built.** Streams in both directions, their volume and mute, moving
-one, each device's volume and mute, choosing the default, virtual devices, a
-level meter, and the three events a consumer subscribes for, worked out from the
-one coarse signal the graph gives.
+one, each device's volume and mute, choosing the default, virtual devices laid
+out with the channel count they were asked for, a level meter, and the three
+events a consumer subscribes for, worked out from the one coarse signal the
+graph gives.
+
+Every setter waits for the graph's answer rather than for the request to go out,
+which is what `VolumeMixer` asks for and what a slider that springs back needs.
+A proxy method carries no answer of its own, so the answer is a sync behind the
+write: the server replies to one only after everything queued ahead of it, and a
+refusal of the write is one of those things, arriving on the core's error event
+naming the proxy it was about.
+
+Moving a stream is claimed only where the metadata object is bound. A graph
+running without a session manager has nothing to write a target into and nothing
+that would act on one, and a device menu is a control not worth drawing where it
+cannot work.
 
 A meter is a capture stream aimed at that node, on a loop of its own: a meter's
 callback on the registry's loop would hold up the registry's dispatch, so a
