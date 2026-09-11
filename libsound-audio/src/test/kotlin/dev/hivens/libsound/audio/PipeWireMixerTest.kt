@@ -324,6 +324,34 @@ class PipeWireMixerTest {
     }
 
     @Test
+    fun `a device's own volume and mute go through, and restore puts them back`() {
+        // The other half of a mixer, on a device rather than a row. Done on
+        // whatever this graph calls the default, so the case names no device of
+        // the test server's own.
+        val mixer = checkNotNull(mixer)
+        val device = checkNotNull(checkNotNull(backend).defaultDevice()) {
+            "the graph reported no default playback device"
+        }
+        val before = checkNotNull(device.volume) { "the graph did not report the device's volume" }
+        eventually("the device to become settable") { mixer.setDeviceVolume(device.id, 0.2f).takeIf { it } }
+        val quiet = checkNotNull(checkNotNull(backend).devices().firstOrNull { it.id == device.id })
+        withClue("the device setter answered before the graph did") {
+            (abs(checkNotNull(quiet.volume) - 0.2f) < TOLERANCE) shouldBe true
+        }
+        mixer.setDeviceMuted(device.id, true) shouldBe true
+
+        // The obligation is stronger here than on a row: a device volume left
+        // low is the one a person is most likely to blame on their hardware.
+        mixer.restoreAll()
+        val after = eventually("the device volume to come back") {
+            checkNotNull(backend).devices().firstOrNull {
+                it.id == device.id && it.volume != null && abs(it.volume!! - before) < TOLERANCE
+            }
+        }
+        withClue("the device mute was not put back") { after.muted shouldBe device.muted }
+    }
+
+    @Test
     fun `a device this process made goes when the mixer closes`() {
         // The other half of the obligation the interface states. restoreAll is
         // tested below and is the half a consumer calls; this is the half that
