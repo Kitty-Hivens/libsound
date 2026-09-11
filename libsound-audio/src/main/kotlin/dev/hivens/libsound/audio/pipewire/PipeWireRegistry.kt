@@ -253,6 +253,26 @@ internal class PipeWireRegistry private constructor(
     @Volatile
     private var syncFailed = false
 
+    /**
+     * The proxy a write is waiting on, and whether the graph refused that
+     * write.
+     *
+     * Every method on a proxy is a one-way message. `set_param` returns as soon
+     * as its bytes are written, so what it reports is that the request went
+     * out, and a refusal arrives afterwards on the core's own error event,
+     * naming the proxy it was about. Matching the two up is what lets a setter
+     * answer for the graph rather than for the socket.
+     *
+     * One at a time is enough because [calls] lets one write into the graph at
+     * a time. [NO_PROXY] is safe as the resting value: the ids in an error are
+     * the ones this connection was handed, and they start at zero.
+     */
+    @Volatile
+    private var watchedProxy = NO_PROXY
+
+    @Volatile
+    private var proxyRefused = false
+
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     /**
@@ -600,6 +620,9 @@ internal class PipeWireRegistry private constructor(
     ) {
         runCatching {
             log.debug("the graph refused id {}: {} ({})", id, message.readCString(), result)
+            // A refusal of the write a setter is waiting on, which is how that
+            // setter answers false rather than reporting the request it sent.
+            if (id == watchedProxy) proxyRefused = true
             // Only the request the barrier is waiting for ends it. Ending on
             // any core error at all would let an unrelated refusal, on another
             // object, cut the wait short and leave settle satisfied with a
@@ -817,7 +840,7 @@ internal class PipeWireRegistry private constructor(
                         channelVolumes = volume?.let { level -> FloatArray(channels) { level.coerceIn(0f, 1f) } },
                         mute = muted,
                     )
-                    runCatching { setParam(proxy, SpaAbi.PARAM_PROPS, pod) }
+                    runCatching { answered(proxy) { setParam(proxy, SpaAbi.PARAM_PROPS, pod) } }
                         .onFailure { log.debug("set_param on {} threw: {}", entry.value.name, it.message) }
                         .getOrDefault(false)
                 }
@@ -996,22 +1019,60 @@ internal class PipeWireRegistry private constructor(
                             ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                         ),
                     )
-                    Arena.ofConfined().use { call2 ->
-                        // The strings are read during the call and marshalled
-                        // onto the wire, so a confined arena is the right
-                        // lifetime here where a bind's type string was not.
-                        val rc = call.invokeExact(
-                            interfaceData(proxy), subject,
-                            call2.allocateFrom(key),
-                            type?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
-                            value?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
-                        ) as Int
-                        rc >= 0
+                    answered(proxy) {
+                        Arena.ofConfined().use { call2 ->
+                            // The strings are read during the call and
+                            // marshalled onto the wire, so a confined arena is
+                            // the right lifetime here where a bind's type
+                            // string was not.
+                            val rc = call.invokeExact(
+                                interfaceData(proxy), subject,
+                                call2.allocateFrom(key),
+                                type?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                                value?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                            ) as Int
+                            rc >= 0
+                        }
                     }
                 }
             }.onFailure { log.debug("set_property({}) threw: {}", key, it.message) }
                 .getOrDefault(false)
         }
+
+    /**
+     * Make one write and come back with what the graph did about it, rather
+     * than with whether it was sent.
+     *
+     * `VolumeMixer` asks its setters for the server's answer, because a row
+     * that springs back is the correct rendering of a stream that closed
+     * mid-drag and nothing else can draw it. A proxy method gives no answer of
+     * its own, so the answer is assembled: the write, then a sync, which the
+     * server replies to only after everything queued ahead of it. A refusal of
+     * the write is one of those things, and it names this proxy.
+     *
+     * The round trip is one message each way on a local socket. It is also what
+     * makes the value readable the moment this returns, because the parameter
+     * event carrying it back is queued ahead of the sync as well.
+     *
+     * Both [calls] and the loop lock must be held.
+     */
+    private fun answered(proxy: MemorySegment, write: () -> Boolean): Boolean {
+        watchedProxy = proxyId(proxy)
+        proxyRefused = false
+        try {
+            if (!write()) return false
+            // A graph that did not answer the sync is one this cannot speak
+            // for, which is the same false a refusal gives.
+            if (!roundTripLocked()) return false
+            return !proxyRefused
+        } finally {
+            watchedProxy = NO_PROXY
+        }
+    }
+
+    /** The id the connection gave a proxy, which is what an error names. */
+    private fun proxyId(proxy: MemorySegment): Int =
+        lib.handle("pw_proxy_get_id").invokeExact(proxy) as Int
 
     /**
      * `pw_node_set_param`, walked for the reason every other proxy method here
@@ -1334,6 +1395,9 @@ internal class PipeWireRegistry private constructor(
 
         /** No sequence outstanding. Real ones are assigned by the protocol and positive. */
         private const val NO_SEQ = -1
+
+        /** No write outstanding. Real proxy ids are handed out by the connection from zero up. */
+        private const val NO_PROXY = -1
 
         /** No serial. Real ones are assigned by the graph and positive. */
         private const val NO_SERIAL = 0L

@@ -134,6 +134,10 @@ internal class PipeWireLibrary private constructor(
             // bound: see SpaAbi's note on calling a proxy method.
             Triple("pw_proxy_add_object_listener", null, listOf(ADDR, ADDR, ADDR, ADDR)),
             Triple("pw_proxy_destroy", null, listOf(ADDR)),
+            // Which proxy a refusal was about. The core reports one by the id
+            // it gave the object, and a write that wants to answer for itself
+            // has to match the two up.
+            Triple("pw_proxy_get_id", I32, listOf(ADDR)),
         )
 
         /**
