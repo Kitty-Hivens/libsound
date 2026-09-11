@@ -53,11 +53,15 @@ class PipeWireMixerTest {
 
     @AfterEach
     fun close() {
+        // The mixer before the player, which is the order the comment here
+        // always claimed and the code never had. Stopping the player first
+        // closes the stream out from under the restore, so every volume and
+        // mute this suite set stayed set as far as the graph was concerned,
+        // and the cases that ran afterwards measured a graph this one had
+        // changed and stopped accounting for.
+        mixer?.let { runCatching { it.close() } }
         player?.stop()
         player = null
-        // The mixer first, so what it restores is applied while the stream it
-        // was changed on is still there.
-        mixer?.let { runCatching { it.close() } }
         backend?.let { runCatching { it.close() } }
         mixer = null
         backend = null
@@ -399,9 +403,14 @@ class PipeWireMixerTest {
         }
         val before = checkNotNull(device.volume) { "the graph did not report the device's volume" }
         eventually("the device to become settable") { mixer.setDeviceVolume(device.id, 0.2f).takeIf { it } }
-        val quiet = checkNotNull(checkNotNull(backend).devices().firstOrNull { it.id == device.id })
-        withClue("the device setter answered before the graph did") {
-            (abs(checkNotNull(quiet.volume) - 0.2f) < TOLERANCE) shouldBe true
+        // Read through the backend, which is a second connection with a
+        // dispatch of its own, so this waits rather than asserting at once.
+        // What a setter's answer covers is that the graph took the write and
+        // told this mixer, not that every other client has heard.
+        eventually("the device volume to come back") {
+            checkNotNull(backend).devices().firstOrNull {
+                it.id == device.id && it.volume != null && abs(it.volume!! - 0.2f) < TOLERANCE
+            }
         }
         mixer.setDeviceMuted(device.id, true) shouldBe true
 
@@ -487,7 +496,11 @@ class PipeWireMixerTest {
         fun stop() {
             running.set(false)
             shut()
-            thread.join(5_000)
+            thread.join(JOIN_MILLIS)
+            // Waited out rather than assumed. A writer still in its loop when
+            // the next case starts is a stream this suite has stopped
+            // accounting for, playing into the graph that case is measuring.
+            check(!thread.isAlive) { "a player thread outlived the case that started it" }
         }
     }
 
@@ -538,5 +551,8 @@ class PipeWireMixerTest {
 
         /** Above anything a null sink's own path carries, which is nothing. */
         const val SILENCE = 0.05f
+
+        /** Long enough for a blocking write to come back once its sink is closed. */
+        const val JOIN_MILLIS = 5_000L
     }
 }
