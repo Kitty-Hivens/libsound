@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Timeout
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -207,6 +208,55 @@ class PipeWireMixerTest {
     }
 
     @Test
+    fun `a cancelled meter releases the thread that was reading it`() {
+        val mixer = checkNotNull(mixer)
+        play(amplitude = LOUD)
+        val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
+        val idle = meterThreads()
+        val peaks = AtomicInteger()
+        val cancel = mixer.meter(row.id) { peaks.incrementAndGet() }
+        eventually("a level to arrive") { peaks.get().takeIf { seen -> seen > 0 } }
+        cancel()
+        // Cancelled twice, because a consumer that lost track of whether it
+        // already had is not a reason to tear the same stream down twice.
+        cancel()
+        // The reader is the thing to assert on. A handler that stops being
+        // called says nothing either way: a reader parked forever on a stream
+        // nobody closed stops calling it too, which is the leak rather than the
+        // absence of one.
+        eventually("the reader to finish") { meterThreads().takeIf { live -> live == idle } }
+    }
+
+    @Test
+    fun `closing the mixer takes down a meter nobody cancelled`() {
+        // The case a consumer reaches by closing without cancelling first. Each
+        // meter is a capture stream and a thread reading it, and the only
+        // reference to either is the cancel handed to whoever asked, so a mixer
+        // that does not keep its own list leaves both behind for the life of
+        // the process.
+        val mixer = checkNotNull(mixer)
+        play(amplitude = LOUD)
+        val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
+        val idle = meterThreads()
+        val peaks = AtomicInteger()
+        mixer.meter(row.id) { peaks.incrementAndGet() }
+        eventually("a level to arrive") { peaks.get().takeIf { seen -> seen > 0 } }
+        // A second connection, so the row is read out of the graph's own
+        // account of what is on it rather than out of this mixer's memory.
+        val watcher = checkNotNull(PipeWireMixer.openOrNull("$appName watcher"))
+        watcher.use { watching ->
+            eventually("the meter's own row to appear") {
+                watching.streams().firstOrNull { it.applicationName == "$appName meter" }
+            }
+            mixer.close()
+            eventually("the meter's row to go with the mixer") {
+                watching.streams().none { it.applicationName == "$appName meter" }.takeIf { gone -> gone }
+            }
+        }
+        eventually("the reader to finish") { meterThreads().takeIf { live -> live == idle } }
+    }
+
+    @Test
     fun `metering an id that names nothing hands back a cancel that is safe to call`() {
         // The contract asks for a cancel in every case, including the ones
         // where the handler will never run, so a consumer's teardown is the
@@ -218,7 +268,7 @@ class PipeWireMixerTest {
     }
 
     @Test
-    fun `a device this process made appears, takes a stream, and goes with the mixer`() {
+    fun `a device this process made appears, takes a stream, and goes when it is removed`() {
         val mixer = checkNotNull(mixer)
         (Capability.VIRTUAL_DEVICES in mixer.capabilities) shouldBe true
         val name = "libsound_pw_virtual_${ProcessHandle.current().pid()}"
@@ -245,6 +295,23 @@ class PipeWireMixerTest {
         }
         // Removing one twice is a caller that lost track, not a reason to throw.
         mixer.removeVirtualSink(made) shouldBe false
+    }
+
+    @Test
+    fun `a device this process made goes when the mixer closes`() {
+        // The other half of the obligation the interface states. restoreAll is
+        // tested below and is the half a consumer calls; this is the half that
+        // runs when a consumer calls nothing at all.
+        val mixer = checkNotNull(mixer)
+        val name = "libsound_pw_closing_${ProcessHandle.current().pid()}"
+        checkNotNull(mixer.createVirtualSink(name))
+        eventually("the device to appear") {
+            checkNotNull(backend).devices().any { it.id.value == name }.takeIf { there -> there }
+        }
+        mixer.close()
+        eventually("the device to go with the mixer") {
+            checkNotNull(backend).devices().none { it.id.value == name }.takeIf { gone -> gone }
+        }
     }
 
     @Test
@@ -319,6 +386,17 @@ class PipeWireMixerTest {
         }
         return pcm
     }
+
+    /**
+     * How many meter readers are running.
+     *
+     * The observable half of a meter that was not taken down. Its stream goes
+     * when the loop it was created on is destroyed, whether or not anything
+     * closed it, so the graph cannot tell a released meter from an abandoned
+     * one. The thread can: it is parked in a read that nothing will answer.
+     */
+    private fun meterThreads(): Int =
+        Thread.getAllStackTraces().keys.count { it.name == "libsound-pipewire-meter" && it.isAlive }
 
     private fun <T : Any> eventually(what: String, produce: () -> T?): T {
         val deadline = System.nanoTime() + APPEAR_TIMEOUT_NANOS

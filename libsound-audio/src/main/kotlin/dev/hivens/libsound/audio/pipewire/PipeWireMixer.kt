@@ -130,7 +130,29 @@ internal class PipeWireMixer private constructor(
     /** Started at the first meter and released at [close]. */
     private val meterLock = ReentrantLock()
 
-    private var meters: PipeWireLoop? = null
+    private var meterLoop: PipeWireLoop? = null
+
+    /**
+     * Live meters, closed with the mixer so that none outlives the loop its
+     * stream was created on.
+     *
+     * The libpulse mixer keeps the same list for the same reason. Without it
+     * the only reference to a running meter is the cancel handed to whoever
+     * asked for it, and a consumer that closes the mixer without cancelling
+     * first leaves a capture stream on the graph, a thread parked reading it,
+     * and a recording indicator lit on the desktop until the process ends.
+     */
+    private val meters = CopyOnWriteArrayList<Meter>()
+
+    /** One live meter: the stream it reads and the thread reading it. */
+    private class Meter(private val source: PipeWireSource, private val running: AtomicBoolean) {
+        fun close() {
+            // The flag first, so the reader stops rather than reporting the
+            // closed stream as a meter that failed.
+            running.set(false)
+            runCatching { source.close() }
+        }
+    }
 
     override fun streams(): List<AudioStream> =
         if (closed.get()) emptyList() else registry.streams(ourProcess)
@@ -375,38 +397,43 @@ internal class PipeWireMixer private constructor(
         if (closed.get()) return {}
         val playing = streams().firstOrNull { it.id == id && it.direction == StreamDirection.PLAYBACK }
         if (playing == null) return { }
-        val loop = meterLoop() ?: return {}
-        val source = PipeWireSource(
-            loop,
-            SourceConfig(
-                applicationName = "$applicationName meter",
-                captureStream = id,
-                // Short, because a meter wants what is happening rather than
-                // what happened: a long buffer is a level that lags the sound
-                // by its own depth.
-                latency = LatencyProfile.LOW,
-            ),
-            METER_CAPABILITIES,
-            registry,
-        )
-        val running = AtomicBoolean(true)
-        val thread = Thread({ pump(source, running, handler) }, "libsound-pipewire-meter")
-        thread.isDaemon = true
         // Named rather than written as the last expression of each branch: a
         // lambda literal after a call is read as that call's trailing argument.
-        val cancel: () -> Unit = {
-            running.set(false)
-            runCatching { source.close() }
-        }
         val none: () -> Unit = {}
-        return runCatching {
-            source.open(AudioFormat(METER_RATE, METER_CHANNELS, PcmEncoding.F32LE))
-            thread.start()
-            cancel
-        }.getOrElse { failure ->
-            log.debug("no meter on {}: {}", id, failure.message)
-            runCatching { source.close() }
-            none
+        // The lock is held across the open rather than only across starting the
+        // loop. The stream is created on that loop and [close] destroys it, so
+        // released in between, a meter opening while the mixer closes builds a
+        // stream on a loop being torn down underneath it.
+        return meterLock.withLock {
+            val loop = meterLoopOrStart() ?: return@withLock none
+            val source = PipeWireSource(
+                loop,
+                SourceConfig(
+                    applicationName = "$applicationName meter",
+                    captureStream = id,
+                    // Short, because a meter wants what is happening rather
+                    // than what happened: a long buffer is a level that lags
+                    // the sound by its own depth.
+                    latency = LatencyProfile.LOW,
+                ),
+                METER_CAPABILITIES,
+                registry,
+            )
+            val running = AtomicBoolean(true)
+            val meter = Meter(source, running)
+            val thread = Thread({ pump(source, running, handler) }, "libsound-pipewire-meter")
+            thread.isDaemon = true
+            val cancel: () -> Unit = { if (meters.remove(meter)) meter.close() }
+            runCatching {
+                source.open(AudioFormat(METER_RATE, METER_CHANNELS, PcmEncoding.F32LE))
+                meters.add(meter)
+                thread.start()
+                cancel
+            }.getOrElse { failure ->
+                log.debug("no meter on {}: {}", id, failure.message)
+                runCatching { source.close() }
+                none
+            }
         }
     }
 
@@ -446,9 +473,9 @@ internal class PipeWireMixer private constructor(
      * Kept rather than released with the last meter, because a loop is one idle
      * thread and closing it on the last cancel would race the next subscription.
      */
-    private fun meterLoop(): PipeWireLoop? = meterLock.withLock {
+    private fun meterLoopOrStart(): PipeWireLoop? = meterLock.withLock {
         if (closed.get()) return null
-        meters ?: PipeWireLoop.startOrNull("$applicationName meters")?.also { meters = it }
+        meterLoop ?: PipeWireLoop.startOrNull("$applicationName meters")?.also { meterLoop = it }
     }
 
     override fun close() {
@@ -459,11 +486,15 @@ internal class PipeWireMixer private constructor(
             unsubscribe = null
         }
         runCatching { restoreAll() }.onFailure { log.warn("restore on close threw: {}", it.message) }
-        // The meters' loop before the registry's, because a meter's stream was
-        // created against the registry and checked through it.
+        // Every meter before the loop they run on, and that loop before the
+        // registry's: a meter's stream was created against the registry and
+        // checked through it, and destroying the loop while a stream on it is
+        // still open leaves that stream on the graph for good.
         meterLock.withLock {
-            meters?.let { runCatching { it.close() } }
-            meters = null
+            meters.forEach { runCatching { it.close() } }
+            meters.clear()
+            meterLoop?.let { runCatching { it.close() } }
+            meterLoop = null
         }
         runCatching { registry.close() }
     }
