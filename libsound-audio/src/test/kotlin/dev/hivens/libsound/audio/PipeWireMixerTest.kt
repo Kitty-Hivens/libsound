@@ -132,9 +132,14 @@ class PipeWireMixerTest {
                     row -> row.applicationName == "$appName recorder" && row.direction == StreamDirection.CAPTURE
                 }
             }
-            row.isOurs shouldBe true
             withClue("a capture row nobody can name is a row whose slider does nothing") {
                 row.id.value.isNotBlank() shouldBe true
+            }
+            // Waited for rather than read at once. The process id a row is
+            // recognised by arrives on the node's own info event, which follows
+            // the global the row itself was built from.
+            eventually("the capture row to be recognised as this process's") {
+                mixer.streams().firstOrNull { it.id == row.id && it.isOurs }
             }
         }
     }
@@ -417,12 +422,19 @@ class PipeWireMixerTest {
         // The obligation is stronger here than on a row: a device volume left
         // low is the one a person is most likely to blame on their hardware.
         mixer.restoreAll()
-        val after = eventually("the device volume to come back") {
+        // Both in the one wait, and through the backend, which is a second
+        // connection told separately. Volume goes back before mute does, so a
+        // read that waited only for the volume can catch the mute in flight.
+        val after = eventually("the device volume and mute to come back") {
             checkNotNull(backend).devices().firstOrNull {
-                it.id == device.id && it.volume != null && abs(it.volume!! - before) < TOLERANCE
+                it.id == device.id && it.volume != null &&
+                    abs(it.volume!! - before) < TOLERANCE && it.muted == device.muted
             }
         }
-        withClue("the device mute was not put back") { after.muted shouldBe device.muted }
+        withClue("the device was not put back where it was found") {
+            (abs(checkNotNull(after.volume) - before) < TOLERANCE) shouldBe true
+            after.muted shouldBe device.muted
+        }
     }
 
     @Test
