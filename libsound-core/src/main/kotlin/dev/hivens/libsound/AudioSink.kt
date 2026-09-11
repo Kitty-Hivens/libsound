@@ -283,6 +283,15 @@ public interface AudioSink : AutoCloseable {
      * Zero where the backend does not count them, which is not the same as
      * never having run dry. [Capability.UNDERRUN_COUNT] is how the two are told
      * apart.
+     *
+     * It counts what the backend can see, and that is not the same everywhere.
+     * Where the server reports the gap, as libpulse does, the count is the
+     * device's own account of running dry. Where the backend counts inside a
+     * callback the device drives, it sees a callback that ran and found too
+     * little, and it cannot see a callback that did not run in time, because a
+     * callback that never ran increments nothing. Both are gaps a listener
+     * hears. A consumer reading a steady zero at a short profile has been told
+     * that one of the two did not happen, not that neither did.
      */
     public fun underrunCount(): Long
 

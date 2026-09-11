@@ -407,6 +407,23 @@ internal class PipeWireSink(
             (remainder * num * AudioFormat.NANOS_PER_SECOND / denom)
     }
 
+    /**
+     * Cycles where the graph asked for audio and the ring had less than it
+     * wanted, which is one of the two ways this stream leaves a gap.
+     *
+     * The other is a cycle this node did not finish in time, and nothing here
+     * can count it: the count is incremented inside the process callback, so a
+     * callback that ran late or did not run increments nothing. Measured
+     * against a graph on a 2.67 ms quantum with a thread allocating hard
+     * alongside: the daemon logged 112 missed cycles for this node in twenty
+     * seconds while this number stayed at zero, because whenever the callback
+     * did run the ring had audio for it.
+     *
+     * The graph does keep that count and publishes it through the profiler
+     * object the daemon loads by default, which is where `pw-top` reads its
+     * error column. Binding that and reading this node's entry is what would
+     * make the number whole, and it is not built.
+     */
     override fun underrunCount(): Long = underruns.get()
 
     /**

@@ -357,6 +357,13 @@ internal class CoreAudioSink(
         return (free / format.bytesPerFrame).toLong()
     }
 
+    /**
+     * Renders where the unit asked for audio and the ring had less, which is
+     * the shape the native PipeWire sink's count has and carries the same
+     * limit: it is incremented inside the callback the device drives, so a
+     * callback that did not run in time increments nothing. Whether that
+     * happens here has not been measured.
+     */
     override fun underrunCount(): Long = underruns.get()
 
     override fun setVolume(volume: Float) {
