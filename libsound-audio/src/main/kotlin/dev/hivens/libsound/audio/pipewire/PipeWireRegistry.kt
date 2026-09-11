@@ -148,8 +148,15 @@ internal class PipeWireRegistry private constructor(
          */
         val volumeChannels: Int = 0,
         val suspended: Boolean = false,
-        /** True while the node is actually rendering rather than merely attached. */
-        val running: Boolean = false,
+        /**
+         * True while the node is actually rendering rather than merely
+         * attached, and null until it has said which.
+         *
+         * Nullable because the two are told apart by an event that arrives
+         * after the global does. Read as false in that window, every row drawn
+         * in the moment it appears is drawn as a paused one.
+         */
+        val running: Boolean? = null,
     ) {
         /**
          * The device row this node makes, in one direction.
@@ -382,7 +389,12 @@ internal class PipeWireRegistry private constructor(
         val properties = node.properties
         return AudioStream(
             id = handle.id(),
-            applicationName = properties[SpaAbi.KEY_APP_NAME] ?: node.label,
+            // What the application said about itself, and nothing else. The
+            // node's description is a label the graph may have written, so
+            // falling back to it answers the question with something that names
+            // no application, where the interface asks for null.
+            applicationName = properties[SpaAbi.KEY_APP_NAME]
+                ?: properties[SpaAbi.KEY_APP_PROCESS_BINARY],
             applicationId = properties[SpaAbi.KEY_APP_ID],
             iconName = properties[SpaAbi.KEY_APP_ICON_NAME],
             mediaName = properties[SpaAbi.KEY_MEDIA_NAME],
@@ -390,7 +402,10 @@ internal class PipeWireRegistry private constructor(
             device = deviceOf(id, direction),
             volume = node.volume ?: 1f,
             muted = node.muted ?: false,
-            active = node.running,
+            // Drawn as playing until the node says otherwise, which is the
+            // field's own default. A row greyed for the moment between
+            // appearing and being described is a row that flickers.
+            active = node.running ?: true,
             isOurs = properties[SpaAbi.KEY_APP_PROCESS_ID]?.toLongOrNull() == ourProcess,
             direction = direction,
         )
