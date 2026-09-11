@@ -119,6 +119,16 @@ internal class SpaPod(capacity: Int = DEFAULT_CAPACITY) {
 
     private fun float(value: Float) = pod(SpaAbi.TYPE_FLOAT) { int32(value.toRawBits()) }
 
+    /** Four bytes wide like an int, which is what the builder emits for one. */
+    private fun bool(value: Boolean) = pod(SpaAbi.TYPE_BOOL) { int32(if (value) 1 else 0) }
+
+    /** An array of floats, which is how a volume per channel crosses. */
+    private fun floatArray(values: FloatArray) = pod(SpaAbi.TYPE_ARRAY) {
+        int32(Float.SIZE_BYTES)
+        int32(SpaAbi.TYPE_FLOAT)
+        values.forEach { int32(it.toRawBits()) }
+    }
+
     /**
      * An array of ids, which is how a channel layout crosses.
      *
@@ -186,6 +196,32 @@ internal class SpaPod(capacity: Int = DEFAULT_CAPACITY) {
             }
             return positions
         }
+
+        /**
+         * The properties a node's volume and mute are set through.
+         *
+         * A null leaves that property out of the object entirely rather than
+         * sending a default. The graph merges what it is given, so an object
+         * carrying a mute nobody asked to change would set it to whatever this
+         * happened to fill in.
+         *
+         * Which of [volume] and [channelVolumes] a caller sends is the caller's
+         * question and they are not the same one: the graph carries a value per
+         * channel and a single one beside it, and what the desktop's own tools
+         * write is the per-channel array.
+         */
+        fun props(
+            volume: Float? = null,
+            channelVolumes: FloatArray? = null,
+            mute: Boolean? = null,
+            paramId: Int = SpaAbi.PARAM_PROPS,
+        ): ByteArray = SpaPod().apply {
+            obj(SpaAbi.OBJECT_PROPS, paramId) {
+                volume?.let { value -> prop(SpaAbi.PROP_VOLUME) { float(value) } }
+                mute?.let { value -> prop(SpaAbi.PROP_MUTE) { bool(value) } }
+                channelVolumes?.let { values -> prop(SpaAbi.PROP_CHANNEL_VOLUMES) { floatArray(values) } }
+            }
+        }.toByteArray()
 
         /**
          * A latency request, in quanta.

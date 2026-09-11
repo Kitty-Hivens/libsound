@@ -1,8 +1,12 @@
 package dev.hivens.libsound.audio.pipewire
 
 import dev.hivens.libsound.AudioDevice
+import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.DeviceId
+import dev.hivens.libsound.MediaRole
+import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.StreamDirection
+import dev.hivens.libsound.audio.pulse.PulseStreamHandle
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -16,6 +20,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * What is on the graph, watched rather than asked for.
@@ -70,6 +76,24 @@ internal class PipeWireRegistry private constructor(
     private val closed = AtomicBoolean(false)
 
     /**
+     * One request into the graph at a time, and none at all once closed.
+     *
+     * Two jobs in one lock, and they are the same job seen from two sides.
+     *
+     * A round trip parks on the loop's condition, which releases the loop lock
+     * while it waits, so two threads syncing at once would each wait on the
+     * other's sequence number and one of them would be told the graph had
+     * answered when it had not. That is the libpulse mixer's round-trip lock,
+     * needed here for the same reason.
+     *
+     * And [closed] on its own is a check rather than a barrier: a caller past
+     * it is about to enter a loop this may be halfway through destroying.
+     * [close] holds this across the whole teardown, so a caller that got in
+     * first finishes first and one arriving later finds the flag already set.
+     */
+    private val calls = ReentrantLock()
+
+    /**
      * Every audio node the graph has told us about, by its global id.
      *
      * Written on the loop thread by the events and read by whoever asks, which
@@ -79,13 +103,96 @@ internal class PipeWireRegistry private constructor(
     private val nodes = ConcurrentHashMap<Int, GraphNode>()
 
     /**
-     * One audio node, and which lists it belongs on.
+     * One audio node, whether it is something to play to or somebody playing.
      *
-     * A set rather than the device's own field because the graph has nodes that
-     * are both: `Audio/Duplex` is one device that plays and records, and it has
-     * to appear in each list with that list's direction stamped on it.
+     * Both kinds in one map rather than two, because everything after the
+     * `media.class` is identical: each is bound, each is subscribed to the same
+     * parameter, each reports its volume and its state through the same two
+     * callbacks. Splitting them would be that machinery written twice.
+     *
+     * [directions] is a set because the graph has devices that are both:
+     * `Audio/Duplex` plays and records, and appears in each list with that
+     * list's direction stamped on it. For a stream it holds the one direction
+     * it flows in, and [isStream] is what tells the two kinds apart.
      */
-    private data class GraphNode(val device: AudioDevice, val directions: Set<StreamDirection>)
+    private data class GraphNode(
+        /** `node.name`, the stable identity a target names. */
+        val name: String,
+        /** What a person reads, which falls back to the name. */
+        val label: String,
+        val directions: Set<StreamDirection>,
+        val isStream: Boolean,
+        /**
+         * The serial that names this object for the life of the graph, which is
+         * what a [dev.hivens.libsound.StreamId] carries.
+         */
+        val serial: Long,
+        /**
+         * The global's own property dict.
+         *
+         * Kept whole for streams, where a mixer row is most of it: the
+         * application's name, its icon, what it is playing and what it says the
+         * audio is for. A device row needs three of them and they are read out
+         * above, so this is here for the rows that need the rest.
+         */
+        val properties: Map<String, String>,
+        val volume: Float? = null,
+        val muted: Boolean? = null,
+        /**
+         * How many channels the node has, off its own channel map, or zero
+         * until that map has arrived.
+         *
+         * Kept because writing a volume back means writing one per channel, and
+         * a two entry array sent to a six channel node sets two of its channels
+         * and leaves four where they were.
+         */
+        val volumeChannels: Int = 0,
+        val suspended: Boolean = false,
+        /**
+         * True while the node is actually rendering rather than merely
+         * attached, and null until it has said which.
+         *
+         * Nullable because the two are told apart by an event that arrives
+         * after the global does. Read as false in that window, every row drawn
+         * in the moment it appears is drawn as a paused one.
+         */
+        val running: Boolean? = null,
+    ) {
+        /**
+         * The device row this node makes, in one direction.
+         *
+         * isMonitor stays false and that is not a default standing in for the
+         * unknown. A sink's monitor is ports on the sink's own node here rather
+         * than a node of its own, so there is nothing in this list that is one:
+         * what `pipewire-pulse` presents as `<sink>.monitor` it synthesises, and
+         * the graph carries no such object. Measured on a graph whose only node
+         * was a null sink, where the pulse protocol listed a monitor source and
+         * the node list had none.
+         */
+        fun asDevice(direction: StreamDirection, isDefault: Boolean): AudioDevice = AudioDevice(
+            id = DeviceId(name),
+            name = label,
+            isDefault = isDefault,
+            direction = direction,
+            volume = volume,
+            muted = muted,
+            isSuspended = suspended,
+        )
+    }
+
+    /**
+     * Which link joins which two nodes, by the link's own global id.
+     *
+     * The only thing on the graph that says where a stream's audio goes. A
+     * stream names a target only when it asked for one and most do not, so a
+     * mixer row's device is found by following the link out of that stream's
+     * node rather than by reading any property of the stream.
+     *
+     * A pair of node ids rather than the ports they joined: several links carry
+     * one stream, one per channel, and for this question they all answer the
+     * same.
+     */
+    private val links = ConcurrentHashMap<Int, Pair<Int, Int>>()
 
     /**
      * What the session manager currently calls the default, by `node.name`.
@@ -133,6 +240,15 @@ internal class PipeWireRegistry private constructor(
 
     private val spareHooks = ArrayDeque<MemorySegment>()
 
+    /**
+     * Devices this connection made, by the name they were made under.
+     *
+     * The proxy is the ownership: destroying it destroys the device, and losing
+     * it without destroying it would leave one on the graph until the
+     * connection went. Touched only under the loop lock, like the maps above.
+     */
+    private val createdSinks = HashMap<String, MemorySegment>()
+
     /** The sequence number the barrier is waiting for, and whether it arrived. */
     @Volatile
     private var pendingSeq = NO_SEQ
@@ -143,6 +259,26 @@ internal class PipeWireRegistry private constructor(
     /** Set when the round trip ended because the graph refused it, not because it answered. */
     @Volatile
     private var syncFailed = false
+
+    /**
+     * The proxy a write is waiting on, and whether the graph refused that
+     * write.
+     *
+     * Every method on a proxy is a one-way message. `set_param` returns as soon
+     * as its bytes are written, so what it reports is that the request went
+     * out, and a refusal arrives afterwards on the core's own error event,
+     * naming the proxy it was about. Matching the two up is what lets a setter
+     * answer for the graph rather than for the socket.
+     *
+     * One at a time is enough because [calls] lets one write into the graph at
+     * a time. [NO_PROXY] is safe as the resting value: the ids in an error are
+     * the ones this connection was handed, and they start at zero.
+     */
+    @Volatile
+    private var watchedProxy = NO_PROXY
+
+    @Volatile
+    private var proxyRefused = false
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
@@ -170,8 +306,8 @@ internal class PipeWireRegistry private constructor(
     fun devices(direction: StreamDirection): List<AudioDevice> {
         val default = defaultName(direction)
         return nodes.values.asSequence()
-            .filter { direction in it.directions }
-            .map { it.device.copy(direction = direction, isDefault = it.device.id.value == default) }
+            .filter { !it.isStream && direction in it.directions }
+            .map { it.asDevice(direction, it.name == default) }
             .sortedWith(compareByDescending<AudioDevice> { it.isDefault }.thenBy { it.name })
             .toList()
     }
@@ -189,8 +325,8 @@ internal class PipeWireRegistry private constructor(
     fun defaultDevice(direction: StreamDirection): AudioDevice? {
         val default = defaultName(direction) ?: return null
         return nodes.values
-            .firstOrNull { direction in it.directions && it.device.id.value == default }
-            ?.device?.copy(direction = direction, isDefault = true)
+            .firstOrNull { !it.isStream && direction in it.directions && it.name == default }
+            ?.asDevice(direction, isDefault = true)
     }
 
     /**
@@ -201,6 +337,92 @@ internal class PipeWireRegistry private constructor(
      * application and a caller would be handed its audio instead.
      */
     fun isPlaying(serial: Long): Boolean = playing.containsKey(serial)
+
+    /**
+     * Whether the object a move is written into is bound.
+     *
+     * False on a graph running without a session manager, where there is
+     * nothing to write a target into and nothing that would act on one. What a
+     * mixer builds its routing capability out of, so that a device menu is not
+     * drawn where it cannot work.
+     */
+    fun hasMetadata(): Boolean = metadata.address() != 0L
+
+    /**
+     * How many channels a device has, off its own channel map, or null while
+     * the graph has not said.
+     *
+     * What a device asked for with a channel count is checked against. The map
+     * comes back on the node's own parameters rather than on the global, so it
+     * arrives a moment after the device does.
+     */
+    fun deviceChannels(name: String): Int? = nodes.values
+        .firstOrNull { !it.isStream && it.name == name }
+        ?.volumeChannels?.takeIf { it > 0 }
+
+    /**
+     * Everybody using the graph, in both directions, as a mixer draws them.
+     *
+     * Most of a row is the global's own property dict and needs nothing asked
+     * for. The volume and the mute come from the parameter every audio node is
+     * subscribed to, and the device from following the node's links, which is
+     * the only thing on the graph that says where a stream's audio goes.
+     *
+     * A row whose serial the graph never gave is left out. The serial is the
+     * whole of the identity a caller gets back, and one that cannot be named
+     * cannot be acted on, so offering it would be offering a row whose slider
+     * does nothing.
+     */
+    fun streams(ourProcess: Long): List<AudioStream> = nodes.entries.asSequence()
+        .filter { it.value.isStream && it.value.serial != NO_SERIAL }
+        .mapNotNull { (id, node) -> row(id, node, ourProcess) }
+        .sortedBy { it.applicationName ?: it.id.value }
+        .toList()
+
+    private fun row(id: Int, node: GraphNode, ourProcess: Long): AudioStream? {
+        val direction = node.directions.firstOrNull() ?: return null
+        // The same shape the libpulse mixer hands out, because a consumer holds
+        // one id and may take it to either. Its number is the object serial,
+        // which is also the index `pipewire-pulse` gives the same object.
+        if (node.serial > Int.MAX_VALUE) return null
+        val handle = PulseStreamHandle(direction, node.serial.toInt())
+        val properties = node.properties
+        return AudioStream(
+            id = handle.id(),
+            // What the application said about itself, and nothing else. The
+            // node's description is a label the graph may have written, so
+            // falling back to it answers the question with something that names
+            // no application, where the interface asks for null.
+            applicationName = properties[SpaAbi.KEY_APP_NAME]
+                ?: properties[SpaAbi.KEY_APP_PROCESS_BINARY],
+            applicationId = properties[SpaAbi.KEY_APP_ID],
+            iconName = properties[SpaAbi.KEY_APP_ICON_NAME],
+            mediaName = properties[SpaAbi.KEY_MEDIA_NAME],
+            mediaRole = roleOf(properties[SpaAbi.KEY_MEDIA_ROLE]),
+            device = deviceOf(id, direction),
+            volume = node.volume ?: 1f,
+            muted = node.muted ?: false,
+            // Drawn as playing until the node says otherwise, which is the
+            // field's own default. A row greyed for the moment between
+            // appearing and being described is a row that flickers.
+            active = node.running ?: true,
+            isOurs = properties[SpaAbi.KEY_APP_PROCESS_ID]?.toLongOrNull() == ourProcess,
+            direction = direction,
+        )
+    }
+
+    /**
+     * What the node calls its role, back into the enum a consumer knows.
+     *
+     * Case-insensitively, because the two sides disagree about it: the wire
+     * names are lower case and this library's own streams write them capitalised,
+     * which is what the graph's own tools show. A role this has no name for is
+     * null rather than a guess.
+     */
+    private fun roleOf(role: String?): MediaRole? {
+        if (role == null) return null
+        return MediaRole.entries.firstOrNull { it.wireName.equals(role, ignoreCase = true) }
+    }
 
     fun onChanged(handler: () -> Unit): () -> Unit {
         listeners.add(handler)
@@ -215,21 +437,31 @@ internal class PipeWireRegistry private constructor(
         // holding the stubs goes.
         dispatch.shutdown()
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
-        runCatching {
-            loop.locked {
-                // Every bound proxy before the registry that handed them out,
-                // and all of it before the connection they travelled on.
-                nodeProxies.keys.toList().forEach { releaseNode(it) }
-                releaseMetadata()
-                lib.handle("pw_proxy_destroy").invokeExact(registry) as Unit
-                lib.handle("pw_core_disconnect").invokeExact(core) as Int
-                lib.handle("pw_context_destroy").invokeExact(context) as Unit
-            }
-        }.onFailure { log.warn("registry teardown threw: {}", it.message) }
-        // The loop is stopped inside this, and only then is the arena released:
-        // no upcall can be in flight past a stopped loop.
-        loop.close()
-        runCatching { stubArena.close() }
+        calls.withLock {
+            runCatching {
+                loop.locked {
+                    // Devices this connection made go first: each is a proxy
+                    // like any other, and one destroyed after the connection
+                    // would be destroyed by the connection going, which works
+                    // and says nothing about whether this remembered to.
+                    createdSinks.values.forEach { proxy ->
+                        runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+                    }
+                    createdSinks.clear()
+                    // Every bound proxy before the registry that handed them
+                    // out, and all of it before the connection they went on.
+                    nodeProxies.keys.toList().forEach { releaseNode(it) }
+                    releaseMetadata()
+                    lib.handle("pw_proxy_destroy").invokeExact(registry) as Unit
+                    lib.handle("pw_core_disconnect").invokeExact(core) as Int
+                    lib.handle("pw_context_destroy").invokeExact(context) as Unit
+                }
+            }.onFailure { log.warn("registry teardown threw: {}", it.message) }
+            // The loop is stopped inside this, and only then is the arena
+            // released: no upcall can be in flight past a stopped loop.
+            loop.close()
+            runCatching { stubArena.close() }
+        }
     }
 
     // -- the events, on the loop's own thread ---------------------------------
@@ -254,6 +486,7 @@ internal class PipeWireRegistry private constructor(
             when (type.readCString()) {
                 SpaAbi.INTERFACE_NODE -> addNode(id, readDict(props))
                 SpaAbi.INTERFACE_METADATA -> bindDefaults(id, readDict(props))
+                SpaAbi.INTERFACE_LINK -> addLink(id, readDict(props))
                 else -> return@runCatching
             }
         }.onFailure { log.debug("registry global threw: {}", it.message) }
@@ -273,6 +506,9 @@ internal class PipeWireRegistry private constructor(
             }
             releaseNode(id)
             playing.entries.removeIf { it.value == id }
+            // A link going is a stream that stopped playing to something, which
+            // is a row whose device changed rather than a row that left.
+            if (links.remove(id) != null) fire()
             if (nodes.remove(id) != null) fire()
         }.onFailure { log.debug("registry global_remove threw: {}", it.message) }
     }
@@ -329,19 +565,25 @@ internal class PipeWireRegistry private constructor(
             if (id != SpaAbi.PARAM_PROPS) return
             val node = data.address().toInt()
             val held = nodes[node] ?: return
-            val current = held.device
             val props = SpaPodReader.objectProperties(param)
             val channels = props[SpaAbi.PROP_CHANNEL_VOLUMES] as? FloatArray
+            // The map rather than the volume array, because the two disagree
+            // exactly where it matters. See SpaAbi.PROP_CHANNEL_MAP: a six
+            // channel device reports six positions from the moment it appears
+            // and two volumes until something writes one.
+            val map = props[SpaAbi.PROP_CHANNEL_MAP] as? IntArray
             val volume = channels?.maxOrNull() ?: props[SpaAbi.PROP_VOLUME] as? Float
             val muted = props[SpaAbi.PROP_MUTE] as? Boolean
-            if (volume == null && muted == null) return
+            if (volume == null && muted == null && map == null) return
             nodes[node] = held.copy(
-                device = current.copy(
-                    // What the node did not say keeps what it said last,
-                    // because a parameter arrives whole only the first time.
-                    volume = volume?.coerceIn(0f, 1f) ?: current.volume,
-                    muted = muted ?: current.muted,
-                ),
+                // What the node did not say keeps what it said last, because a
+                // parameter arrives whole only the first time.
+                volume = volume?.coerceIn(0f, 1f) ?: held.volume,
+                muted = muted ?: held.muted,
+                // The volume array is the fallback rather than the source: it
+                // is the right count wherever the two agree, which is every
+                // node whose channels were never narrowed.
+                volumeChannels = map?.size ?: channels?.size ?: held.volumeChannels,
             )
             fire()
         }.onFailure { log.debug("node param threw: {}", it.message) }
@@ -360,11 +602,33 @@ internal class PipeWireRegistry private constructor(
             if (info.address() == 0L) return
             val node = data.address().toInt()
             val held = nodes[node] ?: return
-            val state = info.reinterpret(SpaAbi.NODE_INFO_SIZE)
-                .get(ValueLayout.JAVA_INT, SpaAbi.NODE_INFO_STATE)
+            val whole = info.reinterpret(SpaAbi.NODE_INFO_SIZE)
+            val changed = whole.get(ValueLayout.JAVA_LONG, SpaAbi.NODE_INFO_CHANGE_MASK)
+            val state = whole.get(ValueLayout.JAVA_INT, SpaAbi.NODE_INFO_STATE)
             val suspended = state == SpaAbi.NODE_STATE_SUSPENDED
-            if (suspended == held.device.isSuspended) return
-            nodes[node] = held.copy(device = held.device.copy(isSuspended = suspended))
+            // Running rather than merely attached, which is what a mixer greys
+            // a row for: a paused player holds its node open and renders
+            // nothing, and the row belongs on screen either way.
+            val running = state == SpaAbi.NODE_STATE_RUNNING
+            // The node's own dict, which is a larger set than the registry
+            // global's: an application's process id is on this one and not on
+            // that one, so a mixer reading only the global could not tell which
+            // rows belong to the process it is running in. Read only when the
+            // event says it refreshed the pointer, and merged rather than
+            // replacing, because an event that carried none should not empty
+            // what the global already said.
+            val refreshed = if (changed and SpaAbi.NODE_CHANGE_MASK_PROPS != 0L) {
+                val dict = whole.get(ValueLayout.ADDRESS, SpaAbi.NODE_INFO_PROPS)
+                if (dict.address() == 0L) emptyMap() else readDict(dict)
+            } else {
+                emptyMap()
+            }
+            if (suspended == held.suspended && running == held.running && refreshed.isEmpty()) return
+            nodes[node] = held.copy(
+                suspended = suspended,
+                running = running,
+                properties = if (refreshed.isEmpty()) held.properties else held.properties + refreshed,
+            )
             fire()
         }.onFailure { log.debug("node info threw: {}", it.message) }
     }
@@ -401,6 +665,9 @@ internal class PipeWireRegistry private constructor(
     ) {
         runCatching {
             log.debug("the graph refused id {}: {} ({})", id, message.readCString(), result)
+            // A refusal of the write a setter is waiting on, which is how that
+            // setter answers false rather than reporting the request it sent.
+            if (id == watchedProxy) proxyRefused = true
             // Only the request the barrier is waiting for ends it. Ending on
             // any core error at all would let an unrelated refusal, on another
             // object, cut the wait short and leave settle satisfied with a
@@ -421,18 +688,10 @@ internal class PipeWireRegistry private constructor(
 
     private fun addNode(id: Int, entries: Map<String, String>) {
         val mediaClass = entries[SpaAbi.KEY_MEDIA_CLASS] ?: return
-        // Somebody playing rather than something to play to. Kept for one
-        // question, which is whether a stream a caller asked to record is still
-        // there, and kept out of the device list for the reason the rest of
-        // this is: a device menu offering a running application as an output is
-        // a menu with a broken row.
-        if (mediaClass == SpaAbi.MEDIA_CLASS_STREAM_OUTPUT) {
-            entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull()?.let { playing[it] = id }
-            return
-        }
-        val directions = directionsOf(mediaClass)
-        // A filter, a video node, or a capture stream, and none of them is
-        // anything this answers a question about.
+        val streaming = streamDirectionOf(mediaClass)
+        val directions = streaming?.let { setOf(it) } ?: directionsOf(mediaClass)
+        // A filter, a video node, or anything else the graph carries that is
+        // neither a device nor somebody using one.
         if (directions.isEmpty()) return
         // node.name is the stable identity a target.object is named by, and
         // the description is what a person reads. Falling back to the name
@@ -442,24 +701,62 @@ internal class PipeWireRegistry private constructor(
             ?: entries[SpaAbi.KEY_NODE_NICK]
             ?: entries[SpaAbi.KEY_DEVICE_DESCRIPTION]
             ?: name
+        val serial = entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull() ?: NO_SERIAL
         nodes[id] = GraphNode(
-            // isMonitor stays false and that is not a default standing in for
-            // the unknown. A sink's monitor is ports on the sink's own node
-            // here rather than a node of its own, so there is nothing in this
-            // list that is one: what `pipewire-pulse` presents as
-            // `<sink>.monitor` it synthesises, and the graph carries no such
-            // object. Measured on a graph whose only node was a null sink,
-            // where the pulse protocol listed a monitor source and the node
-            // list had none.
-            device = AudioDevice(id = DeviceId(name), name = label),
+            name = name,
+            label = label,
             directions = directions,
+            isStream = streaming != null,
+            serial = serial,
+            properties = entries,
         )
+        // What a capture aimed at one application checks against. Playback only,
+        // because recording something that is itself recording is not a thing
+        // this offers.
+        if (streaming == StreamDirection.PLAYBACK && serial != NO_SERIAL) playing[serial] = id
         bindNode(id)
         fire()
     }
 
     /**
-     * Which lists a `media.class` puts a node on.
+     * One link, kept for the one question it answers.
+     *
+     * Both ends arrive on the global's own dict as decimal node ids, so this
+     * needs no bind and no round trip, the same as a device row.
+     */
+    private fun addLink(id: Int, entries: Map<String, String>) {
+        val output = entries[SpaAbi.KEY_LINK_OUTPUT_NODE]?.toIntOrNull() ?: return
+        val input = entries[SpaAbi.KEY_LINK_INPUT_NODE]?.toIntOrNull() ?: return
+        links[id] = output to input
+        fire()
+    }
+
+    /**
+     * The device at the far end of a stream's links, or null while it is
+     * attached to nothing.
+     *
+     * Audio leaves a playback stream and enters a device, and enters a capture
+     * stream having left one, so which end to follow depends on which way the
+     * row flows. Several links carry one stream, one per channel, and they all
+     * lead to the same node, so the first that lands on a device is the answer.
+     *
+     * Null is a real state rather than a gap: a stream the session manager has
+     * not placed yet, or one whose target went away, is attached to nothing for
+     * as long as that lasts.
+     */
+    private fun deviceOf(node: Int, direction: StreamDirection): DeviceId? {
+        val far = links.values.asSequence().mapNotNull { (output, input) ->
+            when {
+                direction == StreamDirection.PLAYBACK && output == node -> input
+                direction == StreamDirection.CAPTURE && input == node -> output
+                else -> null
+            }
+        }
+        return far.mapNotNull { nodes[it] }.firstOrNull { !it.isStream }?.let { DeviceId(it.name) }
+    }
+
+    /**
+     * Which lists a `media.class` puts a device on.
      *
      * Prefix rather than equality, because the graph qualifies these: a
      * loopback microphone is `Audio/Source/Virtual`, and matching the bare name
@@ -472,6 +769,21 @@ internal class PipeWireRegistry private constructor(
         mediaClass.startsWith(SpaAbi.MEDIA_CLASS_SINK) -> setOf(StreamDirection.PLAYBACK)
         mediaClass.startsWith(SpaAbi.MEDIA_CLASS_SOURCE) -> setOf(StreamDirection.CAPTURE)
         else -> emptySet()
+    }
+
+    /**
+     * Which way somebody's audio flows, or null where the node is not somebody
+     * but something.
+     *
+     * The graph's own names read the opposite way round from a mixer's: a node
+     * playing music is a `Stream/Output/Audio`, because the audio leaves it,
+     * and a mixer calls that row playback. One is about the node's ports and the
+     * other about the person looking at the screen.
+     */
+    private fun streamDirectionOf(mediaClass: String): StreamDirection? = when (mediaClass) {
+        SpaAbi.MEDIA_CLASS_STREAM_OUTPUT -> StreamDirection.PLAYBACK
+        SpaAbi.MEDIA_CLASS_STREAM_INPUT -> StreamDirection.CAPTURE
+        else -> null
     }
 
     /**
@@ -510,6 +822,321 @@ internal class PipeWireRegistry private constructor(
             .invokeExact(proxy, hook, nodeEvents, MemorySegment.ofAddress(id.toLong())) as Unit
         runCatching { subscribeProps(proxy) }
             .onFailure { log.debug("subscribe_params on node {} threw: {}", id, it.message) }
+    }
+
+    /**
+     * What the graph itself has said about one node's volume and mute, with
+     * null for whichever of the two it has not said yet.
+     *
+     * Deliberately not the row a mixer draws. There a volume nobody has
+     * reported shows as full, because a slider has to be somewhere, and that
+     * substitution is harmless on screen and ruinous in a record of what to put
+     * back: a value nobody measured, restored at close, is this process setting
+     * a stranger's stream to a level they never chose.
+     */
+    data class NodeSettings(val volume: Float?, val muted: Boolean?)
+
+    /** What the graph has said about one of the rows a mixer draws. */
+    fun streamSettings(serial: Long): NodeSettings? =
+        settingsOf { it.isStream && it.serial == serial }
+
+    /** The same, for a device named the way a device list names it. */
+    fun deviceSettings(name: String): NodeSettings? =
+        settingsOf { !it.isStream && it.name == name }
+
+    private fun settingsOf(match: (GraphNode) -> Boolean): NodeSettings? =
+        nodes.values.firstOrNull(match)?.let { NodeSettings(it.volume, it.muted) }
+
+    /**
+     * Write a volume, a mute, or both onto one node, by the name it is listed
+     * under.
+     *
+     * The other direction of the parameter this already subscribes to. A node
+     * that has not answered with its own properties yet has no channel count to
+     * write back, so it is refused rather than written with a guess: a two entry
+     * array sent to a six channel device sets two of its channels and silently
+     * leaves the rest.
+     *
+     * True means the graph took the request, not that the value stuck. A session
+     * manager may have its own opinion a moment later, which is the same caveat
+     * the libpulse side carries and the reason a caller that needs the value to
+     * hold reads it back.
+     */
+    fun setDeviceProps(name: String, volume: Float?, muted: Boolean?): Boolean =
+        setProps({ !it.isStream && it.name == name }, volume, muted)
+
+    /** The same, for one of the rows a mixer draws, named by its serial. */
+    fun setStreamProps(serial: Long, volume: Float?, muted: Boolean?): Boolean =
+        setProps({ it.isStream && it.serial == serial }, volume, muted)
+
+    private fun setProps(match: (GraphNode) -> Boolean, volume: Float?, muted: Boolean?): Boolean =
+        calls.withLock {
+            if (closed.get()) return@withLock false
+            // Outside the loop lock rather than inside it, because taking that
+            // lock is itself refused on a closed loop and `VolumeMixer` says a
+            // control that cannot act answers false rather than throwing.
+            runCatching {
+                loop.locked {
+                    val entry = nodes.entries.firstOrNull { match(it.value) } ?: return@locked false
+                    val proxy = nodeProxies[entry.key] ?: return@locked false
+                    val channels = entry.value.volumeChannels
+                    if (volume != null && channels <= 0) return@locked false
+                    val pod = SpaPod.props(
+                        channelVolumes = volume?.let { level -> FloatArray(channels) { level.coerceIn(0f, 1f) } },
+                        mute = muted,
+                    )
+                    runCatching { answered(proxy) { setParam(proxy, SpaAbi.PARAM_PROPS, pod) } }
+                        .onFailure { log.debug("set_param on {} threw: {}", entry.value.name, it.message) }
+                        .getOrDefault(false)
+                }
+            }.getOrDefault(false)
+        }
+
+    /**
+     * Make [name] the device applications get when they ask for none.
+     *
+     * Written into the entry that records a choice rather than the one that
+     * records the result: the session manager computes the second from the
+     * first, so writing the result directly is writing a value the next rescan
+     * replaces.
+     */
+    fun setDefaultDevice(name: String, direction: StreamDirection): Boolean {
+        val key = when (direction) {
+            StreamDirection.PLAYBACK -> SpaAbi.METADATA_KEY_CONFIGURED_SINK
+            StreamDirection.CAPTURE -> SpaAbi.METADATA_KEY_CONFIGURED_SOURCE
+        }
+        // The same shape the session manager writes, and the reader above takes
+        // it back apart.
+        return setMetadata(SpaAbi.METADATA_SUBJECT_GRAPH, key, SpaAbi.METADATA_TYPE_JSON, "{\"name\":\"$name\"}")
+    }
+
+    /**
+     * Move one stream onto one device.
+     *
+     * A property on the stream rather than a link made by hand: the session
+     * manager owns linking, reads this and relinks. Making the links here
+     * instead would be a second policy running beside the one the desktop
+     * already has, and the two would disagree the first time anything else
+     * moved.
+     */
+    fun moveStream(serial: Long, device: String): Boolean {
+        val node = nodes.entries.firstOrNull { it.value.isStream && it.value.serial == serial } ?: return false
+        return setMetadata(node.key, SpaAbi.METADATA_KEY_TARGET_OBJECT, null, device)
+    }
+
+    /**
+     * Make a device the machine does not have, and hold the proxy that owns it.
+     *
+     * `create_object` on the core, with the adapter factory and the null sink
+     * behind it, which is the pair the daemon's own shipped configuration names.
+     *
+     * `object.linger` is deliberately not set. The header describes that key as
+     * the one that makes an object outlive its client, so leaving it out ties
+     * what comes back to this connection. That is not a shortfall against the
+     * module the libpulse mixer loads: the obligation
+     * `VolumeMixer.createVirtualSink` is written under is that a device left
+     * behind is one a person finds in their settings and cannot account for,
+     * and a connection-scoped object is the shape that obligation wants.
+     *
+     * The channel count is honoured or the whole thing is refused, never
+     * narrowed. The positions travel with it where every one of them has a name
+     * here, and where they do not the count goes on its own and the graph lays
+     * it out, which is what a device with no layout gets anywhere.
+     */
+    fun createNullSink(name: String, channels: Int): Boolean {
+        if (channels !in 1..SpaAbi.MAX_CHANNELS) return false
+        val layout = ChannelLayout.defaultFor(channels)
+        val positions = layout.positions.map { SpaAbi.channelNameOf(it) }
+        val entries = buildList {
+            add(SpaAbi.KEY_FACTORY_NAME to SpaAbi.FACTORY_NULL_SINK)
+            add(SpaAbi.KEY_NODE_NAME to name)
+            add(SpaAbi.KEY_NODE_DESCRIPTION to name)
+            add(SpaAbi.KEY_MEDIA_CLASS to SpaAbi.MEDIA_CLASS_SINK)
+            add(SpaAbi.KEY_AUDIO_CHANNELS to channels.toString())
+            if (positions.isNotEmpty() && positions.none { it == null }) {
+                add(SpaAbi.KEY_AUDIO_POSITION to positions.joinToString(",") { checkNotNull(it) })
+            }
+        }
+        return calls.withLock {
+            if (closed.get()) return@withLock false
+            runCatching {
+                loop.locked {
+                    // Asked and answered under the one lock that guards the
+                    // map. Split in two, two callers naming the same device
+                    // both get past the question and the second proxy replaces
+                    // the first in the map, leaving a device on the graph that
+                    // nothing here can destroy any more.
+                    if (createdSinks.containsKey(name)) return@locked false
+                    val proxy = createObject(SpaAbi.FACTORY_ADAPTER, nodeType, SpaAbi.VERSION_NODE, entries)
+                    if (proxy.address() == 0L) return@locked false
+                    createdSinks[name] = proxy
+                    true
+                }
+            }.onFailure { log.debug("create_object({}) threw: {}", name, it.message) }
+                .getOrDefault(false)
+        }
+    }
+
+    /** Drop a device this connection made. False for one it did not make. */
+    fun removeNullSink(name: String): Boolean = calls.withLock {
+        if (closed.get()) return@withLock false
+        runCatching {
+            loop.locked {
+                val proxy = createdSinks.remove(name) ?: return@locked false
+                runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+                    .onFailure { log.debug("destroy of {} threw: {}", name, it.message) }
+                    .isSuccess
+            }
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Every device this connection made and has not removed.
+     *
+     * Under the loop lock like every other reader of that map, because the
+     * caller is a restore running on somebody else's thread while the loop's
+     * own thread may be adding to it.
+     */
+    fun createdSinkNames(): List<String> = calls.withLock {
+        if (closed.get()) return@withLock emptyList()
+        runCatching { loop.locked { createdSinks.keys.toList() } }.getOrDefault(emptyList())
+    }
+
+    /**
+     * `pw_core_create_object`, walked like every other proxy method here.
+     *
+     * The loop lock must be held. The property strings live only for the call,
+     * which is right here and was not right for a bind: `pw_proxy_new` keeps
+     * the type string it is handed, and a dict is marshalled onto the wire
+     * before this returns.
+     */
+    private fun createObject(
+        factory: String,
+        type: MemorySegment,
+        version: Int,
+        entries: List<Pair<String, String>>,
+    ): MemorySegment {
+        val method = interfaceMethod(core, SpaAbi.CORE_METHOD_CREATE_OBJECT, "create_object")
+        val call = Linker.nativeLinker().downcallHandle(
+            method,
+            FunctionDescriptor.of(
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+            ),
+        )
+        return Arena.ofConfined().use { call2 ->
+            val items = call2.allocate(SpaAbi.DICT_ITEM_SIZE * entries.size, 8)
+            entries.forEachIndexed { index, (key, value) ->
+                val at = SpaAbi.DICT_ITEM_SIZE * index
+                items.set(ValueLayout.ADDRESS, at + SpaAbi.DICT_ITEM_KEY, call2.allocateFrom(key))
+                items.set(ValueLayout.ADDRESS, at + SpaAbi.DICT_ITEM_VALUE, call2.allocateFrom(value))
+            }
+            val dict = call2.allocate(SpaAbi.DICT_SIZE, 8)
+            dict.set(ValueLayout.JAVA_INT, SpaAbi.DICT_FLAGS, 0)
+            dict.set(ValueLayout.JAVA_INT, SpaAbi.DICT_N_ITEMS, entries.size)
+            dict.set(ValueLayout.ADDRESS, SpaAbi.DICT_ITEMS, items)
+            call.invokeExact(
+                interfaceData(core), call2.allocateFrom(factory), type, version, dict, 0L,
+            ) as MemorySegment
+        }
+    }
+
+    /**
+     * `pw_metadata_set_property`, walked for the reason every other proxy
+     * method here is.
+     *
+     * False where nothing is bound, which is a graph with no session manager on
+     * it: there is no object to write into and no policy that would read it.
+     */
+    private fun setMetadata(subject: Int, key: String, type: String?, value: String?): Boolean =
+        calls.withLock {
+            if (closed.get()) return@withLock false
+            runCatching {
+                loop.locked {
+                    val proxy = metadata
+                    if (proxy.address() == 0L) return@locked false
+                    val method =
+                        interfaceMethod(proxy, SpaAbi.METADATA_METHOD_SET_PROPERTY, "set_property")
+                    val call = Linker.nativeLinker().downcallHandle(
+                        method,
+                        FunctionDescriptor.of(
+                            ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                        ),
+                    )
+                    answered(proxy) {
+                        Arena.ofConfined().use { call2 ->
+                            // The strings are read during the call and
+                            // marshalled onto the wire, so a confined arena is
+                            // the right lifetime here where a bind's type
+                            // string was not.
+                            val rc = call.invokeExact(
+                                interfaceData(proxy), subject,
+                                call2.allocateFrom(key),
+                                type?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                                value?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                            ) as Int
+                            rc >= 0
+                        }
+                    }
+                }
+            }.onFailure { log.debug("set_property({}) threw: {}", key, it.message) }
+                .getOrDefault(false)
+        }
+
+    /**
+     * Make one write and come back with what the graph did about it, rather
+     * than with whether it was sent.
+     *
+     * `VolumeMixer` asks its setters for the server's answer, because a row
+     * that springs back is the correct rendering of a stream that closed
+     * mid-drag and nothing else can draw it. A proxy method gives no answer of
+     * its own, so the answer is assembled: the write, then a sync, which the
+     * server replies to only after everything queued ahead of it. A refusal of
+     * the write is one of those things, and it names this proxy.
+     *
+     * The round trip is one message each way on a local socket. It is also what
+     * makes the value readable the moment this returns, because the parameter
+     * event carrying it back is queued ahead of the sync as well.
+     *
+     * Both [calls] and the loop lock must be held.
+     */
+    private fun answered(proxy: MemorySegment, write: () -> Boolean): Boolean {
+        watchedProxy = proxyId(proxy)
+        proxyRefused = false
+        try {
+            if (!write()) return false
+            // A graph that did not answer the sync is one this cannot speak
+            // for, which is the same false a refusal gives.
+            if (!roundTripLocked()) return false
+            return !proxyRefused
+        } finally {
+            watchedProxy = NO_PROXY
+        }
+    }
+
+    /** The id the connection gave a proxy, which is what an error names. */
+    private fun proxyId(proxy: MemorySegment): Int =
+        lib.handle("pw_proxy_get_id").invokeExact(proxy) as Int
+
+    /**
+     * `pw_node_set_param`, walked for the reason every other proxy method here
+     * is. The loop lock must be held.
+     */
+    private fun setParam(proxy: MemorySegment, paramId: Int, pod: ByteArray): Boolean {
+        val method = interfaceMethod(proxy, SpaAbi.NODE_METHOD_SET_PARAM, "set_param")
+        val call = Linker.nativeLinker().downcallHandle(
+            method,
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+            ),
+        )
+        return Arena.ofConfined().use { call2 ->
+            val segment = call2.allocate(pod.size.toLong(), SpaAbi.POD_ALIGN.toLong())
+            MemorySegment.copy(pod, 0, segment, ValueLayout.JAVA_BYTE, 0L, pod.size)
+            (call.invokeExact(interfaceData(proxy), paramId, 0, segment) as Int) >= 0
+        }
     }
 
     /** Drop one node's proxy and put its hook back. The loop lock must be held. */
@@ -814,6 +1441,12 @@ internal class PipeWireRegistry private constructor(
         /** No sequence outstanding. Real ones are assigned by the protocol and positive. */
         private const val NO_SEQ = -1
 
+        /** No write outstanding. Real proxy ids are handed out by the connection from zero up. */
+        private const val NO_PROXY = -1
+
+        /** No serial. Real ones are assigned by the graph and positive. */
+        private const val NO_SERIAL = 0L
+
         /**
          * How long a connect waits for the graph to answer a sync.
          *
@@ -945,7 +1578,10 @@ internal class PipeWireRegistry private constructor(
      * [ROUND_TRIP_SECONDS], which is a graph to report rather than one to keep
      * waiting on.
      */
-    private fun roundTrip(): Boolean = loop.locked {
+    private fun roundTrip(): Boolean = calls.withLock { loop.locked { roundTripLocked() } }
+
+    /** The wait itself, for a caller already holding both locks. */
+    private fun roundTripLocked(): Boolean {
         val method = interfaceMethod(core, SpaAbi.CORE_METHOD_SYNC, "sync")
         val call = Linker.nativeLinker().downcallHandle(
             method,
@@ -962,12 +1598,12 @@ internal class PipeWireRegistry private constructor(
         pendingSeq = call.invokeExact(interfaceData(core), SpaAbi.ID_CORE, 0) as Int
         val deadline = System.nanoTime() + ROUND_TRIP_SECONDS * NANOS_PER_SECOND
         while (!syncDone) {
-            if (System.nanoTime() >= deadline) return@locked false
+            if (System.nanoTime() >= deadline) return false
             // A spurious wake returns with nothing having happened, which is
             // why the flag is re-read rather than the wake being trusted.
-            if (!loop.awaitFor(ROUND_TRIP_SECONDS)) return@locked false
+            if (!loop.awaitFor(ROUND_TRIP_SECONDS)) return false
         }
-        !syncFailed
+        return !syncFailed
     }
 
     /**
