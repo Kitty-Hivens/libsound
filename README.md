@@ -105,9 +105,9 @@ system already has.
 and being a player the desktop knows about. Every example in it is compiled, and
 the build fails if the page and the code drift apart.
 
-Writing a decoder that feeds this? [docs/PCM.md](docs/PCM.md) is the seam from
-the other side: what to hand over, what comes back, and the three questions
-everybody asks first, of which the first is who resamples.
+Writing a decoder that feeds this? The guide's **Handing PCM over** section is
+the seam from the other side: what to hand over, what comes back, and the three
+questions everybody asks first, of which the first is who resamples.
 
 <details>
   <summary>Modules</summary>
