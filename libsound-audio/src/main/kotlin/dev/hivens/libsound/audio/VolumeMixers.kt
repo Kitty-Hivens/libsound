@@ -24,12 +24,23 @@ import org.slf4j.LoggerFactory
  *
  * ## Two rungs on Linux, and the wider one is not the native one
  *
- * The libpulse mixer covers cards, profiles, ports and virtual devices. The
- * native one covers what the graph owns: what is playing, how loud, muted or
- * not, and where. Neither contains the other, so the order here is the order of
- * coverage rather than of directness, which is the opposite of the choice
- * [AudioBackends] makes and for a reason that does not apply there: a backend's
- * two rungs differed by one capability, and these two differ by four.
+ * The native rung's capabilities are a subset of the libpulse rung's, short by
+ * exactly one: [Capability.DEVICE_PROFILES], which covers cards, profiles and
+ * ports. Everything else the libpulse mixer does, including virtual devices,
+ * the native one does too.
+ *
+ * That subset is why the widest goes first here, which is the opposite of the
+ * order [AudioBackends] uses. There the native rung offered something the one
+ * below it did not, so going direct cost nothing. Here going direct would cost
+ * a consumer its card panel on every machine that has the shim installed,
+ * without that consumer having asked for anything.
+ *
+ * It also means [open] with a set of needs cannot move the choice on a machine
+ * where the libpulse rung opens, since that rung satisfies everything the
+ * native one could. What it does there is refuse: a machine without
+ * `pipewire-pulse` reaches the native rung, and a caller that named
+ * [Capability.DEVICE_PROFILES] is told null rather than handed a mixer whose
+ * card list is empty.
  *
  * What the native rung is for is the machine that has no other. PipeWire without
  * `pipewire-pulse` had a backend that played and no mixer at all, which is also
@@ -57,9 +68,11 @@ public object VolumeMixers {
      *
      * The same question [VolumeMixer.capabilities] answers, asked one step
      * earlier, and for the consumer that cannot adapt rather than the one that
-     * can. On Linux the two rungs differ by cards, profiles, ports and virtual
-     * devices, so a panel whose whole feature is a card's profile names that
-     * and gets the rung that has it.
+     * can. On Linux the two rungs differ by [Capability.DEVICE_PROFILES] alone,
+     * and the rung that has it is already first, so what naming it buys is the
+     * refusal: a panel whose whole feature is a card's profile is told null on
+     * a machine that offers no such rung, instead of opening one and finding
+     * the card list empty.
      *
      * A rung that opens and turns out to be short is closed again before the
      * next is tried, because an open mixer is a connection the server is

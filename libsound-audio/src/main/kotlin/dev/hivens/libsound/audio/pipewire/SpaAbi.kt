@@ -320,9 +320,13 @@ internal object SpaAbi {
      * The node's own property dict, which is a larger set than the one the
      * registry global carries.
      *
-     * Measured, and the difference matters: `application.process.id` is on this
-     * one and not on the global's, so a mixer that read only the global could
-     * not tell which rows belong to the process it is running in.
+     * The difference matters: `application.process.id` is on this one and not
+     * on the global's, so a mixer reading only the global could not tell which
+     * rows belong to the process it is running in. Found by reading the global
+     * and seeing it absent, which is a measurement nothing in this repository
+     * reproduces. What the suite does guard is the consequence: a row this
+     * process opened reports itself as ours, and it would not if this field
+     * stopped being read.
      */
     const val NODE_INFO_PROPS = 48L
 
@@ -494,11 +498,6 @@ internal object SpaAbi {
     const val KEY_NODE_NAME = "node.name"
     const val KEY_NODE_DESCRIPTION = "node.description"
 
-    /**
-     * The lever section 4.4 measured `pipewire-pulse` overwriting. A node sets
-     * it and keeps it; a pulse client sets it and has the shim recompute it
-     * from the buffer size that client asked for.
-     */
     /** The two ends of a link, each the global id of a node, as decimal strings. */
     const val KEY_LINK_OUTPUT_NODE = "link.output.node"
     const val KEY_LINK_INPUT_NODE = "link.input.node"
@@ -506,7 +505,15 @@ internal object SpaAbi {
     /** What a stream says it is playing, which is a mixer row's second line. */
     const val KEY_MEDIA_NAME = "media.name"
 
-    /** Which client a node belongs to, so a mixer can tell its own rows apart. */
+    /**
+     * Which connection a node was made on.
+     *
+     * Not how this tells its own rows apart, and the reason is one line down:
+     * a mixer is a second connection with a client id of its own, so a stream
+     * this process opened on the first carries an id the second does not share.
+     * Transcribed because it names a real key and a reader of the node's dict
+     * will meet it, not because anything here reads it.
+     */
     const val KEY_CLIENT_ID = "client.id"
 
     /**
@@ -524,14 +531,23 @@ internal object SpaAbi {
     /**
      * Whether a created object outlives the connection that asked for it.
      *
-     * Left unset here, so what is created belongs to the connection that asked
-     * for it. That is the shape `VolumeMixer.createVirtualSink`'s own obligation
-     * wants: a device left behind is one a person finds in their settings and
-     * cannot account for.
+     * Never put in the property list a device is created with, which is what
+     * ties what comes back to the connection that asked for it. That is the
+     * shape `VolumeMixer.createVirtualSink`'s own obligation wants: a device
+     * left behind is one a person finds in their settings and cannot account
+     * for. Transcribed so that leaving it out reads as a decision rather than
+     * as a key nobody knew about.
      */
     const val KEY_OBJECT_LINGER = "object.linger"
 
-    /** The factory the daemon's own shipped configuration names for a null sink. */
+    /**
+     * The pair that makes a device the machine does not have.
+     *
+     * `create_object` is called with the adapter, and the null sink travels in
+     * the property list as `factory.name`. Not from the headers, where neither
+     * appears: they are the names the daemon's own shipped configuration uses
+     * for exactly this, which is why the oracle does not print them.
+     */
     const val FACTORY_ADAPTER = "adapter"
     const val FACTORY_NULL_SINK = "support.null-audio-sink"
 
@@ -539,6 +555,13 @@ internal object SpaAbi {
     const val KEY_AUDIO_CHANNELS = "audio.channels"
     const val KEY_AUDIO_POSITION = "audio.position"
 
+    /**
+     * What a node asks its buffer to be, in frames over a rate.
+     *
+     * The lever measured against `pipewire-pulse`: a node sets it and keeps it,
+     * where a pulse client sets it and has the shim recompute it from the
+     * buffer size that client asked for.
+     */
     const val KEY_NODE_LATENCY = "node.latency"
     const val KEY_NODE_RATE = "node.rate"
     const val KEY_TARGET_OBJECT = "target.object"

@@ -50,25 +50,29 @@ import kotlin.math.abs
  * subscription reporting every object on the machine has no business on the
  * socket carrying audio timing.
  *
- * ## What it does not cover, and why that is scope rather than reach
+ * ## What it does not cover
  *
- * Cards, profiles and ports are the `Device` interface with `SPA_PARAM_Profile`
- * and `SPA_PARAM_Route`, reached by the same bind, the same subscription and the
- * same setter this already uses on a node. Virtual and combined sinks are
- * `create_object` on the core, whose offset the oracle has printed since the
- * first day. None of it is out of reach and saying otherwise would be citing a
- * decision as though it were a property of the graph.
+ * Cards, profiles and ports, which is the one capability separating this from
+ * the libpulse mixer. They are the `Device` interface with `SPA_PARAM_Profile`
+ * and `SPA_PARAM_Route` on it, reached by the same bind, the same subscription
+ * and the same setter this already uses on a node, so nothing about the graph
+ * puts them out of reach. What is missing is anywhere to try them: a card is
+ * hardware, the graph this suite runs against has none in it by construction,
+ * and the suite does not run against a machine that has any.
  *
- * What is true is that none of it is built, and that one of them would not be a
- * translation of what the libpulse mixer does. A sink created through
- * `create_object` belongs to the connection that asked for it and goes when that
- * connection goes, where a server module outlives its client. For the obligation
- * `createVirtualSink` is written under, that is the better of the two rather
- * than a shortfall, and it is a difference worth deciding on rather than
- * inheriting.
+ * [Capability.DEVICE_PROFILES] is absent to say so, rather than present and
+ * answering false, so a settings screen asks before it draws.
  *
- * Each is absent from [capabilities] rather than present and answering false, so
- * a settings screen asks before it draws.
+ * Combining two devices into one is not built either, and it is the only item
+ * here that is not one bind away. [combineSinks] says what it is instead.
+ *
+ * ## Where it differs from the libpulse mixer rather than falling short of it
+ *
+ * A sink created through `create_object` belongs to the connection that asked
+ * for it and goes when that connection goes, where the server module the
+ * libpulse mixer loads outlives its client. For the obligation
+ * [createVirtualSink] is written under, that is the better of the two rather
+ * than a shortfall.
  */
 internal class PipeWireMixer private constructor(
     private val applicationName: String,
@@ -301,12 +305,20 @@ internal class PipeWireMixer private constructor(
     override fun removeVirtualSink(id: DeviceId): Boolean = registry.removeNullSink(id.value)
 
     /**
-     * Null, and it is the server refusing rather than this declining to ask.
+     * Null. Nothing here asks for one.
      *
-     * Playing one thing to two devices is a module the daemon loads, and a
-     * graph that has not loaded it registers no factory for one, which a client
-     * cannot change from outside. Where a machine has loaded it, this is where
-     * the call would go.
+     * Playing one thing to two devices is a module the daemon loads rather than
+     * an object a client creates. The core's method table has no call that
+     * loads a module, and the daemon's shipped configuration does not load the
+     * one that would register a factory, so on an ordinary graph there is
+     * nothing to call. On a graph whose owner loaded it by hand there would be,
+     * and finding it by name and checking what it answers is the part that is
+     * not built.
+     *
+     * Worth stating because the interface reads null as the server refusing,
+     * and [Capability.VIRTUAL_DEVICES] is present here for [createVirtualSink],
+     * so nothing in the capability set tells the two apart. This is the one
+     * place this mixer is narrower than the division the interface draws.
      */
     override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? = null
 
@@ -348,14 +360,16 @@ internal class PipeWireMixer private constructor(
     }
 
     /**
-     * Put back every volume and mute this process changed and has not changed
-     * back.
+     * Remove every device this process created and put back every volume and
+     * mute it changed, where it has not already done so itself.
      *
      * The contract's order runs from what makes devices exist towards what is
-     * set on them. Nothing here makes a device exist, so what is left is the
-     * last step of it, and each entry is taken out of the record before it is
-     * applied: a restore that fails is not a restore to try again for the life
-     * of the process.
+     * set on them, and both ends of it are here: devices this process created
+     * go first, then the volumes and mutes. Card profiles and ports are the
+     * step in between and this mixer does not set them.
+     *
+     * Each entry is taken out of the record before it is applied, so a restore
+     * that fails is not a restore to try again for the life of the process.
      */
     override fun restoreAll() {
         val streamVolumes = drain(originalStreamVolumes)
@@ -588,7 +602,7 @@ internal class PipeWireMixer private constructor(
      * Compare the graph against what it was and tell everybody what moved.
      *
      * Runs on the registry's own dispatch thread, which is single, so the
-     * comparison is serialised by construction; the lock is there because a
+     * comparison is serialised by construction. The lock is there because a
      * subscription arriving at the same moment reads the same field.
      */
     private fun publish() {
@@ -640,8 +654,9 @@ internal class PipeWireMixer private constructor(
          * answered.
          *
          * Null is the ordinary answer on a machine running real PulseAudio and
-         * on one with no sound server, both of which the selection above falls
-         * back from.
+         * on one with no sound server. Neither reaches this rung for a mixer
+         * that works: the first is answered by the rung above, and the second
+         * by no rung at all.
          */
         fun openOrNull(applicationName: String): VolumeMixer? {
             val registry = PipeWireRegistry.openOrNull("$applicationName mixer") ?: return null
