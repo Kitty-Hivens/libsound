@@ -165,6 +165,30 @@ public abstract class AudioSinkDecoratorContract {
     }
 
     @Test
+    public fun `what it will take is never less than the wrapped sink will take`() {
+        // The other end of the latency rule. A decorator that reported less than
+        // the device would send a consumer polling it away while the device was
+        // waiting for audio, which is a stall the consumer cannot see the cause
+        // of. One that holds frames may report its own room on top; one that
+        // holds none reports the device's unchanged.
+        decorate(device).use { sink ->
+            sink.open(format)
+            (sink.writableFrames() >= device.writableFrames()) shouldBe true
+
+            val chunk = format.sampleRate / 50
+            sink.write(frames(chunk), 0, chunk * format.bytesPerFrame)
+            (sink.writableFrames() >= device.writableFrames()) shouldBe true
+
+            // And filling the device is reported as no room, so a consumer is
+            // told to come back rather than told to write into a full one.
+            device.stop()
+            val remaining = device.writableFrames().toInt()
+            if (remaining > 0) sink.write(frames(remaining), 0, remaining * format.bytesPerFrame)
+            device.writableFrames() shouldBe 0L
+        }
+    }
+
+    @Test
     public fun `close closes the sink it wraps`() {
         val sink = decorate(device)
         sink.open(format)

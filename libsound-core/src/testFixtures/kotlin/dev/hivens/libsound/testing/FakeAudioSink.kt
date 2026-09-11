@@ -186,6 +186,11 @@ public class FakeAudioSink(
         openFormat?.nanosFor(bufferedFrames) ?: 0L
     }
 
+    /** Room left in the bounded buffer, which is exactly where [write] parks. */
+    override fun writableFrames(): Long = lock.withLock {
+        if (openFormat == null || closed) 0L else (bufferFrames - bufferedFrames).coerceAtLeast(0)
+    }
+
     /** Times [consume] asked for more than was buffered, since the last [open]. */
     override fun underrunCount(): Long = lock.withLock { underruns }
 

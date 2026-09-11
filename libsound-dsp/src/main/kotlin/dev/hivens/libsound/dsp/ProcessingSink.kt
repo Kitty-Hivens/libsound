@@ -198,6 +198,13 @@ public abstract class ProcessingSink(
     /** The wrapped sink's, because nothing here is queued on top of it. */
     override fun latencyNanos(): Long = inner.latencyNanos()
 
+    /**
+     * The wrapped sink's. Nothing is held here, so there is no room of this
+     * decorator's own to add, and a consumer asking through a chain gets the
+     * answer of the device at the bottom of it.
+     */
+    override fun writableFrames(): Long = inner.writableFrames()
+
     /** The device's own count. */
     override fun underrunCount(): Long = inner.underrunCount()
 

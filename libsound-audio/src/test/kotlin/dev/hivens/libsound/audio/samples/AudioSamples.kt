@@ -94,6 +94,18 @@ internal object AudioSamples {
         return format.nanosFor(sink.framePosition()) + sink.latencyNanos()
     }
 
+    fun feedWithoutParking(sink: AudioSink, take: (Int) -> ByteArray?): Boolean {
+        // What the device will take right now, so a consumer that already has a
+        // loop of its own never parks a thread inside a write. A zero is not a
+        // failure: it means the device is full and there is something else to
+        // do until it is not.
+        val room = sink.writableFrames().toInt()
+        if (room == 0) return false
+        val pcm = take(room) ?: return false
+        sink.write(pcm, 0, pcm.size)
+        return true
+    }
+
     fun anchorASeek(sink: AudioSink): Long {
         // Freeze the device, then drop what it has not played, then read. The
         // other order samples a position the draining buffer is about to move

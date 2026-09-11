@@ -436,6 +436,20 @@ internal class PulseSink(
         }
     }
 
+    /**
+     * What the server says it will take, which is the same number the write
+     * loop waits on when it is zero.
+     */
+    override fun writableFrames(): Long {
+        val format = openFormat ?: return 0L
+        return pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked 0L
+            val writable = lib.handle("pa_stream_writable_size").invokeExact(current) as Long
+            if (writable == PulseAbi.SIZE_ERROR) 0L else writable / format.bytesPerFrame
+        }
+    }
+
     override fun underrunCount(): Long = underruns.get()
 
     override fun setVolume(volume: Float) {
