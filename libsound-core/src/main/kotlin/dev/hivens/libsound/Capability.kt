@@ -161,6 +161,10 @@ public enum class Capability {
      * A latency target nobody can validate is a setting rather than a
      * guarantee, and this is how a consumer finds out whether the number it is
      * watching means anything before it decides to back a profile off.
+     *
+     * Present means something is counting, not that the count is complete.
+     * [AudioSink.underrunCount] says which gaps a backend can see and which it
+     * cannot, and the difference is real rather than theoretical.
      */
     UNDERRUN_COUNT,
 
