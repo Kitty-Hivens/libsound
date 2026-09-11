@@ -72,17 +72,15 @@ class PipeWireMixerTest {
             Capability.DEVICE_VOLUME,
         ) shouldBe true
         // Absent rather than present and answering false, so a settings screen
-        // asks before it draws a control. Absent because none of it is built,
-        // not because the graph withholds it: each is one interface along from
-        // what this already binds.
-        // Cards and profiles are a Device global with its own parameters, which
-        // is one interface along from what this binds. Absent because nothing
-        // here can exercise them: an isolated graph has no card and the suite
-        // does not run against a machine that has one.
+        // asks before it draws a control. Cards and profiles are a Device
+        // global with its own parameters, one interface along from what this
+        // binds, so the graph does not withhold them. What is missing is
+        // anywhere to try them: this graph has no card in it by construction,
+        // and the suite does not run against a machine that has one.
         (Capability.DEVICE_PROFILES in mixer.capabilities) shouldBe false
         mixer.cards() shouldBe emptyList()
-        // Watching what a row plays is here; watching what one records is not,
-        // and they are separate capabilities because aiming at a recording row
+        // Watching what a row plays is here and watching what one records is
+        // not. They are separate capabilities because aiming at a recording row
         // would tap the device it records from rather than that row.
         (Capability.STREAM_METERING in mixer.capabilities) shouldBe true
         (Capability.CAPTURE_METERING in mixer.capabilities) shouldBe false
@@ -354,7 +352,7 @@ class PipeWireMixerTest {
     @Test
     fun `a device this process made goes when the mixer closes`() {
         // The other half of the obligation the interface states. restoreAll is
-        // tested below and is the half a consumer calls; this is the half that
+        // the half a consumer calls and is tested below. This is the half that
         // runs when a consumer calls nothing at all.
         val mixer = checkNotNull(mixer)
         val name = "libsound_pw_closing_${ProcessHandle.current().pid()}"
@@ -384,9 +382,10 @@ class PipeWireMixerTest {
     @Test
     fun `an id naming nothing is refused rather than answered for`() {
         val mixer = checkNotNull(mixer)
-        // A stream that has gone is a row that springs back, which is the
-        // correct rendering and can only be drawn by an implementation that
-        // waited for the answer rather than for the request to go out.
+        // An id this mixer can parse that no node answers to, and one it
+        // cannot parse at all. Both are refused before anything goes out, which
+        // is a different mechanism from a write the graph turns down: there is
+        // nothing here to ask about.
         mixer.setVolume(StreamId("sink-input:999999999"), 0.5f) shouldBe false
         mixer.setMuted(StreamId("sink-input:999999999"), true) shouldBe false
         // And one that is not this mixer's shape at all.
