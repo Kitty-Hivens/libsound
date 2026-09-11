@@ -53,11 +53,12 @@ class PipeWireMixerTest {
 
     @AfterEach
     fun close() {
+        // The mixer before the player, which is what the order was always meant
+        // to be: a restore is applied to the stream it was recorded against, and
+        // stopping the player first closes that stream out from under it.
+        mixer?.let { runCatching { it.close() } }
         player?.stop()
         player = null
-        // The mixer first, so what it restores is applied while the stream it
-        // was changed on is still there.
-        mixer?.let { runCatching { it.close() } }
         backend?.let { runCatching { it.close() } }
         mixer = null
         backend = null
@@ -487,7 +488,11 @@ class PipeWireMixerTest {
         fun stop() {
             running.set(false)
             shut()
-            thread.join(5_000)
+            thread.join(JOIN_MILLIS)
+            // Waited out rather than assumed. A writer still in its loop when
+            // the next case starts is a stream this suite has stopped
+            // accounting for, playing into a graph the next case is measuring.
+            check(!thread.isAlive) { "a player thread outlived the case that started it" }
         }
     }
 
@@ -538,5 +543,8 @@ class PipeWireMixerTest {
 
         /** Above anything a null sink's own path carries, which is nothing. */
         const val SILENCE = 0.05f
+
+        /** Long enough for a blocking write to come back once its sink is closed. */
+        const val JOIN_MILLIS = 5_000L
     }
 }
