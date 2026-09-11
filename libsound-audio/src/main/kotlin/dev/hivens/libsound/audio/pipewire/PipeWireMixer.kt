@@ -276,7 +276,7 @@ internal class PipeWireMixer private constructor(
         // returns and appears on the graph a moment later, and a caller handed
         // an id it cannot yet use has been handed a promise rather than a
         // device.
-        return awaitDevice(name)
+        return awaitDevice(name, channels)
     }
 
     override fun removeVirtualSink(id: DeviceId): Boolean = registry.removeNullSink(id.value)
@@ -300,13 +300,30 @@ internal class PipeWireMixer private constructor(
      * build. Handing back an id for one would be handing back something every
      * later call answers false for.
      */
-    private fun awaitDevice(name: String): DeviceId? {
+    private fun awaitDevice(name: String, channels: Int): DeviceId? {
         val deadline = System.nanoTime() + APPEAR_TIMEOUT_NANOS
         while (System.nanoTime() < deadline) {
-            if (registry.devices(StreamDirection.PLAYBACK).any { it.id.value == name }) return DeviceId(name)
-            Thread.sleep(APPEAR_POLL_MILLIS)
+            val laid = registry.deviceChannels(name)
+            if (laid != null) {
+                if (laid == channels) return DeviceId(name)
+                // Honoured or refused, never narrowed. A caller that asked for
+                // a six channel bus and was handed a stereo one finds out by
+                // hearing four of its channels vanish.
+                log.info("the graph laid {} out with {} channel(s) rather than {}", name, laid, channels)
+                break
+            }
+            try {
+                Thread.sleep(APPEAR_POLL_MILLIS)
+            } catch (interrupted: InterruptedException) {
+                // The flag back, because swallowing it leaves a caller that was
+                // being shut down with no sign of it. The device goes either
+                // way: it belongs to this connection, and nothing else holds a
+                // name for it.
+                Thread.currentThread().interrupt()
+                log.debug("waiting for {} was interrupted: {}", name, interrupted.message)
+                break
+            }
         }
-        log.debug("the graph took {} and never showed it", name)
         registry.removeNullSink(name)
         return null
     }

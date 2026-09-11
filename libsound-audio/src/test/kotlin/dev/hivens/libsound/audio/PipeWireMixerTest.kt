@@ -303,6 +303,27 @@ class PipeWireMixerTest {
     }
 
     @Test
+    fun `a device is laid out with the channels it was asked for`() {
+        val mixer = checkNotNull(mixer)
+        val name = "libsound_pw_six_${ProcessHandle.current().pid()}"
+        // Honoured or refused, never narrowed. Null here would be the graph
+        // declining, and an id is a promise that six channels are there.
+        val made = checkNotNull(mixer.createVirtualSink(name, channels = 6)) {
+            "the graph refused a six channel device"
+        }
+        try {
+            // A volume is written one entry per channel, off the count the
+            // device itself reports, so this passing on a device that came back
+            // as stereo would mean six entries went to a two channel node.
+            eventually("the six channel device to become settable") {
+                mixer.setDeviceVolume(made, 0.5f).takeIf { it }
+            }
+        } finally {
+            mixer.removeVirtualSink(made)
+        }
+    }
+
+    @Test
     fun `a device this process made goes when the mixer closes`() {
         // The other half of the obligation the interface states. restoreAll is
         // tested below and is the half a consumer calls; this is the half that

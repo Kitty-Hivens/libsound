@@ -417,6 +417,20 @@ internal object SpaAbi {
     const val PROP_MUTE = 65_540
     const val PROP_CHANNEL_VOLUMES = 65_544
 
+    /**
+     * What each of a node's channels is, and the only honest answer to how many
+     * it has.
+     *
+     * Not [PROP_CHANNEL_VOLUMES], which is the trap. Measured on a null sink
+     * created with six channels: the map carried all six from the moment the
+     * device appeared, and the volume array carried two until something wrote a
+     * volume, at which point it became six. So a volume written off the length
+     * of the volume array would have set two channels of a six channel device
+     * and left four where they were, which is the exact failure the refusal in
+     * `setProps` exists to prevent.
+     */
+    const val PROP_CHANNEL_MAP = 65_547
+
     // -- property keys -------------------------------------------------------
 
     /**
