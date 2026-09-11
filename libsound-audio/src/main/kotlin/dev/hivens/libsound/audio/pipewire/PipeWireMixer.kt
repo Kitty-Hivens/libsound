@@ -396,13 +396,41 @@ internal class PipeWireMixer private constructor(
     override fun onStreamsChanged(handler: (StreamEvent) -> Unit): () -> Unit {
         if (closed.get()) return {}
         handlers.add(handler)
-        snapshotLock.withLock {
-            if (unsubscribe == null) {
+        val first = snapshotLock.withLock {
+            if (unsubscribe != null) {
+                false
+            } else {
                 snapshot = streams().associateBy { it.id }
                 unsubscribe = registry.onChanged(::publish)
+                true
             }
         }
-        return { handlers.remove(handler) }
+        // A row that appeared between the snapshot and the subscription is on
+        // neither of them: the event announcing it went out before this was
+        // listening, and the snapshot was taken before it existed. One
+        // comparison closes that window, and costs a list read where nothing
+        // moved.
+        if (first) publish()
+        return { release(handler) }
+    }
+
+    /**
+     * Drop one subscriber, and the registry's own subscription with the last of
+     * them.
+     *
+     * The snapshot goes with it. One kept across a gap with nobody listening
+     * would be compared against a graph that had moved on, so whoever
+     * subscribed next would be told about every change made while nobody was.
+     */
+    private fun release(handler: (StreamEvent) -> Unit) {
+        handlers.remove(handler)
+        snapshotLock.withLock {
+            if (handlers.isEmpty()) {
+                unsubscribe?.invoke()
+                unsubscribe = null
+                snapshot = emptyMap()
+            }
+        }
     }
 
     /**
@@ -564,7 +592,7 @@ internal class PipeWireMixer private constructor(
      * subscription arriving at the same moment reads the same field.
      */
     private fun publish() {
-        if (closed.get()) return
+        if (closed.get() || handlers.isEmpty()) return
         val events = snapshotLock.withLock {
             val fresh = streams().associateBy { it.id }
             val previous = snapshot
