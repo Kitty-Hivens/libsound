@@ -8,9 +8,11 @@ import dev.hivens.libsound.AudioSource
 import dev.hivens.libsound.AudioStream
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.CardId
+import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.LatencyProfile
 import dev.hivens.libsound.MediaRole
+import dev.hivens.libsound.PcmEncoding
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.VolumeMixer
@@ -63,6 +65,43 @@ internal object AudioSamples {
                 channel.write(pcm, 0, pcm.size)
             }
         }
+    }
+
+    // -- handing PCM over ----------------------------------------------------
+
+    fun theShapeToSend(): AudioFormat =
+        AudioFormat(sampleRate = 48_000, channels = 2, encoding = PcmEncoding.S16LE)
+
+    fun askWhatTheSinkTakes(sink: AudioSink, shape: AudioFormat): Set<PcmEncoding> {
+        // True exactly when open would not throw for want of the shape, so a
+        // ladder down towards the floor is a walk over what the sink takes
+        // rather than a sequence of calls wrapped in catch.
+        if (sink.accepts(shape)) sink.open(shape)
+        return sink.acceptedEncodings
+    }
+
+    fun sayWhatTheChannelsAre(): AudioFormat {
+        // Counting is not enough: six channels is 5.1 or 5.1(side), and the two
+        // differ in whether the last pair is the rear or the sides. Laying one
+        // out as the other moves a film's rear channels into its side ones.
+        return AudioFormat(48_000, 6, PcmEncoding.S16LE, ChannelLayout.SURROUND_5_1)
+    }
+
+    fun whereAFrameWillBeHeard(sink: AudioSink, format: AudioFormat): Long {
+        // What the device has played, plus how far ahead of the speaker the
+        // write head is. Capability.TOTAL_LATENCY says whether the second
+        // number covers the device's own path or only what this client queued.
+        return format.nanosFor(sink.framePosition()) + sink.latencyNanos()
+    }
+
+    fun anchorASeek(sink: AudioSink): Long {
+        // Freeze the device, then drop what it has not played, then read. The
+        // other order samples a position the draining buffer is about to move
+        // past, and a clock re-anchored backwards is the one transition a video
+        // pacer cannot absorb.
+        sink.stop()
+        sink.flush()
+        return sink.framePosition()
     }
 
     // -- asking before drawing -----------------------------------------------
