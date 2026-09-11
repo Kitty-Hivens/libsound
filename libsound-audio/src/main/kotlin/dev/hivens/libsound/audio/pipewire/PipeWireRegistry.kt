@@ -735,6 +735,29 @@ internal class PipeWireRegistry private constructor(
     }
 
     /**
+     * What the graph itself has said about one node's volume and mute, with
+     * null for whichever of the two it has not said yet.
+     *
+     * Deliberately not the row a mixer draws. There a volume nobody has
+     * reported shows as full, because a slider has to be somewhere, and that
+     * substitution is harmless on screen and ruinous in a record of what to put
+     * back: a value nobody measured, restored at close, is this process setting
+     * a stranger's stream to a level they never chose.
+     */
+    data class NodeSettings(val volume: Float?, val muted: Boolean?)
+
+    /** What the graph has said about one of the rows a mixer draws. */
+    fun streamSettings(serial: Long): NodeSettings? =
+        settingsOf { it.isStream && it.serial == serial }
+
+    /** The same, for a device named the way a device list names it. */
+    fun deviceSettings(name: String): NodeSettings? =
+        settingsOf { !it.isStream && it.name == name }
+
+    private fun settingsOf(match: (GraphNode) -> Boolean): NodeSettings? =
+        nodes.values.firstOrNull(match)?.let { NodeSettings(it.volume, it.muted) }
+
+    /**
      * Write a volume, a mute, or both onto one node, by the name it is listed
      * under.
      *
