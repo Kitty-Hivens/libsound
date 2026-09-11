@@ -202,6 +202,13 @@ headset that sounds good or has a working microphone:
 ```kotlin
 // The bluetooth case: good playback, or the low quality mode that has a
 // working microphone. Two profiles of one card.
+//
+// Asked for rather than assumed, the way the device volume above is.
+// Not every mixer has cards: on Linux the one that speaks the graph
+// directly does not, and it answers with an empty list rather than a
+// wrong one, so a screen that skipped the question would draw a panel
+// that stays empty and says nothing.
+if (Capability.DEVICE_PROFILES !in mixer.capabilities) return emptyList()
 return mixer.cards().flatMap { card ->
     card.profiles.filter { it.available }.map { card.id to it.name }
 }
@@ -219,6 +226,22 @@ mixer.streams()
     .filter { it.applicationName == game }
     .forEach { mixer.moveTo(it.id, bus) }
 ```
+
+Linux has two mixers. The one that speaks the graph directly is what a machine
+running PipeWire without `pipewire-pulse` gets, where before it had none at all,
+and it covers everything the mixer over libpulse does except cards, profiles and
+ports. The wider one is tried first, so naming a capability cannot change which
+one you get on a machine that has both:
+
+```kotlin
+val mixer = VolumeMixers.open("Example", setOf(Capability.DEVICE_PROFILES))
+```
+
+What it does there is refuse. On the machine that has only the native mixer, a
+consumer whose whole feature is a card's profile is told null, rather than being
+handed a mixer and finding its card list empty. As with the backend, that is the
+same question `capabilities` answers, asked one step earlier, and it is for the
+consumer that cannot adapt rather than the one that can.
 
 ## Changing the audio on the way out
 
