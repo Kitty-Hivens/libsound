@@ -517,6 +517,7 @@ int main(void) {
     P(SPA_PROP_volume);
     P(SPA_PROP_mute);
     P(SPA_PROP_channelVolumes);
+    P(SPA_PROP_channelMap);
 
     SECTION("the property keys a node is named and placed by");
     printf("  %-30s = %s\n", "PW_KEY_MEDIA_TYPE", PW_KEY_MEDIA_TYPE);

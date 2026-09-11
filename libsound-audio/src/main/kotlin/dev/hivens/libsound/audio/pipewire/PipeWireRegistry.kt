@@ -139,8 +139,8 @@ internal class PipeWireRegistry private constructor(
         val volume: Float? = null,
         val muted: Boolean? = null,
         /**
-         * How many channels the node's volume has, as its own parameter
-         * reported it, or zero until one has arrived.
+         * How many channels the node has, off its own channel map, or zero
+         * until that map has arrived.
          *
          * Kept because writing a volume back means writing one per channel, and
          * a two entry array sent to a six channel node sets two of its channels
@@ -330,6 +330,28 @@ internal class PipeWireRegistry private constructor(
      * application and a caller would be handed its audio instead.
      */
     fun isPlaying(serial: Long): Boolean = playing.containsKey(serial)
+
+    /**
+     * Whether the object a move is written into is bound.
+     *
+     * False on a graph running without a session manager, where there is
+     * nothing to write a target into and nothing that would act on one. What a
+     * mixer builds its routing capability out of, so that a device menu is not
+     * drawn where it cannot work.
+     */
+    fun hasMetadata(): Boolean = metadata.address() != 0L
+
+    /**
+     * How many channels a device has, off its own channel map, or null while
+     * the graph has not said.
+     *
+     * What a device asked for with a channel count is checked against. The map
+     * comes back on the node's own parameters rather than on the global, so it
+     * arrives a moment after the device does.
+     */
+    fun deviceChannels(name: String): Int? = nodes.values
+        .firstOrNull { !it.isStream && it.name == name }
+        ?.volumeChannels?.takeIf { it > 0 }
 
     /**
      * Everybody using the graph, in both directions, as a mixer draws them.
@@ -530,15 +552,23 @@ internal class PipeWireRegistry private constructor(
             val held = nodes[node] ?: return
             val props = SpaPodReader.objectProperties(param)
             val channels = props[SpaAbi.PROP_CHANNEL_VOLUMES] as? FloatArray
+            // The map rather than the volume array, because the two disagree
+            // exactly where it matters. See SpaAbi.PROP_CHANNEL_MAP: a six
+            // channel device reports six positions from the moment it appears
+            // and two volumes until something writes one.
+            val map = props[SpaAbi.PROP_CHANNEL_MAP] as? IntArray
             val volume = channels?.maxOrNull() ?: props[SpaAbi.PROP_VOLUME] as? Float
             val muted = props[SpaAbi.PROP_MUTE] as? Boolean
-            if (volume == null && muted == null) return
+            if (volume == null && muted == null && map == null) return
             nodes[node] = held.copy(
                 // What the node did not say keeps what it said last, because a
                 // parameter arrives whole only the first time.
                 volume = volume?.coerceIn(0f, 1f) ?: held.volume,
                 muted = muted ?: held.muted,
-                volumeChannels = channels?.size ?: held.volumeChannels,
+                // The volume array is the fallback rather than the source: it
+                // is the right count wherever the two agree, which is every
+                // node whose channels were never narrowed.
+                volumeChannels = map?.size ?: channels?.size ?: held.volumeChannels,
             )
             fire()
         }.onFailure { log.debug("node param threw: {}", it.message) }
