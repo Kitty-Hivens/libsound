@@ -4,6 +4,7 @@ import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.SinkConfig
+import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.StreamDirection
 import dev.hivens.libsound.StreamEvent
 import dev.hivens.libsound.StreamId
@@ -12,6 +13,7 @@ import dev.hivens.libsound.audio.pipewire.PipeWireBackend
 import dev.hivens.libsound.audio.pipewire.PipeWireMixer
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -112,6 +114,62 @@ class PipeWireMixerTest {
     }
 
     @Test
+    fun `a stream this process is recording appears as a capture row`() {
+        // The other direction, which the capability set claims separately
+        // because a backend can list what is playing without listing what is
+        // listening, and because that second list is the one a person reads to
+        // find out what has their microphone open.
+        val mixer = checkNotNull(mixer)
+        val source = checkNotNull(backend).createSource(SourceConfig(applicationName = "$appName recorder"))
+        source.use {
+            it.open(AudioFormat(48_000, 1))
+            val row = eventually("our own capture row") {
+                mixer.streams().firstOrNull {
+                    row -> row.applicationName == "$appName recorder" && row.direction == StreamDirection.CAPTURE
+                }
+            }
+            row.isOurs shouldBe true
+            withClue("a capture row nobody can name is a row whose slider does nothing") {
+                row.id.value.isNotBlank() shouldBe true
+            }
+        }
+    }
+
+    @Test
+    fun `the default device moves, and restore leaves it where the caller put it`() {
+        val mixer = checkNotNull(mixer)
+        val was = checkNotNull(checkNotNull(backend).defaultDevice()) { "this graph has no default" }
+        val name = "libsound_pw_default_${ProcessHandle.current().pid()}"
+        val made = checkNotNull(mixer.createVirtualSink(name))
+        try {
+            mixer.setDefaultDevice(made) shouldBe true
+            eventually("the default to move") {
+                checkNotNull(backend).defaultDevice()?.takeIf { it.id == made }
+            }
+            // The one thing this interface changes and does not put back. A
+            // default somebody picked through a settings screen is a decision,
+            // not a change made on their behalf, so restoring it would undo the
+            // thing they asked for.
+            //
+            // What the restore does take away is the device itself, since this
+            // process created it, so the graph is left naming one that is not
+            // there and the default reads as unknown. A mixer that recorded
+            // defaults would have put the old one back instead, and that is the
+            // difference this can see.
+            mixer.restoreAll()
+            withClue("restore put back a default the caller had replaced") {
+                checkNotNull(backend).defaultDevice()?.id shouldNotBe was.id
+            }
+        } finally {
+            // Put back by hand, because the mixer is right not to. The device
+            // this pointed at is about to go, and a graph left naming one that
+            // does not exist is a graph the cases after this one play into.
+            mixer.setDefaultDevice(was.id)
+            mixer.removeVirtualSink(made)
+        }
+    }
+
+    @Test
     fun `a volume set on a row is readable the moment the setter answers`() {
         val mixer = checkNotNull(mixer)
         play()
@@ -158,7 +216,7 @@ class PipeWireMixerTest {
     }
 
     @Test
-    fun `a row appearing and going is reported as two events rather than one redraw`() {
+    fun `a row appearing, changing and going is reported as three kinds of event`() {
         val mixer = checkNotNull(mixer)
         val seen = CopyOnWriteArrayList<StreamEvent>()
         val cancel = mixer.onStreamsChanged { seen.add(it) }
@@ -172,6 +230,15 @@ class PipeWireMixerTest {
                 seen.filterIsInstance<StreamEvent.Appeared>()
                     .first { it.stream.applicationName == appName }.stream.id,
             )
+            // The middle kind, which is the whole reason the difference is
+            // worked out here rather than passed on as one coarse signal: a
+            // list redrawn wholesale loses the scroll position and the drag in
+            // progress, and a row whose volume moved is the common case.
+            eventually("the row to become settable") { mixer.setVolume(id, 0.4f).takeIf { it } }
+            eventually("a change") {
+                seen.filterIsInstance<StreamEvent.Changed>()
+                    .firstOrNull { it.stream.id == id && abs(it.stream.volume - 0.4f) < TOLERANCE }
+            }
             player?.stop()
             player = null
             eventually("a departure") {
