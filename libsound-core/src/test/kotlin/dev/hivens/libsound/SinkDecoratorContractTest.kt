@@ -47,6 +47,17 @@ private class BufferedPassThroughSink(
         inner.open(format)
     }
 
+    /**
+     * The device's, plus whatever this one can still absorb before it has to
+     * forward. Anything less would send a consumer away while the sink below
+     * was waiting for audio.
+     */
+    override fun writableFrames(): Long {
+        val format = inner.format ?: return 0L
+        val room = holdFrames - format.framesIn(held.size.toLong())
+        return inner.writableFrames() + room.coerceAtLeast(0)
+    }
+
     override fun write(data: ByteArray, offset: Int, length: Int) {
         val format = inner.format ?: throw AudioException("write before open")
         require(length % format.bytesPerFrame == 0) { "length must be whole frames" }
