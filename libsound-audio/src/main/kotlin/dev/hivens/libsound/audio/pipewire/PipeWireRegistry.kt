@@ -20,6 +20,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * What is on the graph, watched rather than asked for.
@@ -72,6 +74,24 @@ internal class PipeWireRegistry private constructor(
     private val lib = loop.lib
 
     private val closed = AtomicBoolean(false)
+
+    /**
+     * One request into the graph at a time, and none at all once closed.
+     *
+     * Two jobs in one lock, and they are the same job seen from two sides.
+     *
+     * A round trip parks on the loop's condition, which releases the loop lock
+     * while it waits, so two threads syncing at once would each wait on the
+     * other's sequence number and one of them would be told the graph had
+     * answered when it had not. That is the libpulse mixer's round-trip lock,
+     * needed here for the same reason.
+     *
+     * And [closed] on its own is a check rather than a barrier: a caller past
+     * it is about to enter a loop this may be halfway through destroying.
+     * [close] holds this across the whole teardown, so a caller that got in
+     * first finishes first and one arriving later finds the flag already set.
+     */
+    private val calls = ReentrantLock()
 
     /**
      * Every audio node the graph has told us about, by its global id.
@@ -360,29 +380,31 @@ internal class PipeWireRegistry private constructor(
         // holding the stubs goes.
         dispatch.shutdown()
         runCatching { dispatch.awaitTermination(2, TimeUnit.SECONDS) }
-        runCatching {
-            loop.locked {
-                // Devices this connection made go first: each is a proxy like
-                // any other, and one destroyed after the connection would be
-                // destroyed by the connection going, which works and says
-                // nothing about whether this remembered to.
-                createdSinks.values.forEach { proxy ->
-                    runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+        calls.withLock {
+            runCatching {
+                loop.locked {
+                    // Devices this connection made go first: each is a proxy
+                    // like any other, and one destroyed after the connection
+                    // would be destroyed by the connection going, which works
+                    // and says nothing about whether this remembered to.
+                    createdSinks.values.forEach { proxy ->
+                        runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+                    }
+                    createdSinks.clear()
+                    // Every bound proxy before the registry that handed them
+                    // out, and all of it before the connection they went on.
+                    nodeProxies.keys.toList().forEach { releaseNode(it) }
+                    releaseMetadata()
+                    lib.handle("pw_proxy_destroy").invokeExact(registry) as Unit
+                    lib.handle("pw_core_disconnect").invokeExact(core) as Int
+                    lib.handle("pw_context_destroy").invokeExact(context) as Unit
                 }
-                createdSinks.clear()
-                // Every bound proxy before the registry that handed them out,
-                // and all of it before the connection they travelled on.
-                nodeProxies.keys.toList().forEach { releaseNode(it) }
-                releaseMetadata()
-                lib.handle("pw_proxy_destroy").invokeExact(registry) as Unit
-                lib.handle("pw_core_disconnect").invokeExact(core) as Int
-                lib.handle("pw_context_destroy").invokeExact(context) as Unit
-            }
-        }.onFailure { log.warn("registry teardown threw: {}", it.message) }
-        // The loop is stopped inside this, and only then is the arena released:
-        // no upcall can be in flight past a stopped loop.
-        loop.close()
-        runCatching { stubArena.close() }
+            }.onFailure { log.warn("registry teardown threw: {}", it.message) }
+            // The loop is stopped inside this, and only then is the arena
+            // released: no upcall can be in flight past a stopped loop.
+            loop.close()
+            runCatching { stubArena.close() }
+        }
     }
 
     // -- the events, on the loop's own thread ---------------------------------
@@ -779,22 +801,28 @@ internal class PipeWireRegistry private constructor(
     fun setStreamProps(serial: Long, volume: Float?, muted: Boolean?): Boolean =
         setProps({ it.isStream && it.serial == serial }, volume, muted)
 
-    private fun setProps(match: (GraphNode) -> Boolean, volume: Float?, muted: Boolean?): Boolean {
-        if (closed.get()) return false
-        return loop.locked {
-            val entry = nodes.entries.firstOrNull { match(it.value) } ?: return@locked false
-            val proxy = nodeProxies[entry.key] ?: return@locked false
-            val channels = entry.value.volumeChannels
-            if (volume != null && channels <= 0) return@locked false
-            val pod = SpaPod.props(
-                channelVolumes = volume?.let { level -> FloatArray(channels) { level.coerceIn(0f, 1f) } },
-                mute = muted,
-            )
-            runCatching { setParam(proxy, SpaAbi.PARAM_PROPS, pod) }
-                .onFailure { log.debug("set_param on {} threw: {}", entry.value.name, it.message) }
-                .getOrDefault(false)
+    private fun setProps(match: (GraphNode) -> Boolean, volume: Float?, muted: Boolean?): Boolean =
+        calls.withLock {
+            if (closed.get()) return@withLock false
+            // Outside the loop lock rather than inside it, because taking that
+            // lock is itself refused on a closed loop and `VolumeMixer` says a
+            // control that cannot act answers false rather than throwing.
+            runCatching {
+                loop.locked {
+                    val entry = nodes.entries.firstOrNull { match(it.value) } ?: return@locked false
+                    val proxy = nodeProxies[entry.key] ?: return@locked false
+                    val channels = entry.value.volumeChannels
+                    if (volume != null && channels <= 0) return@locked false
+                    val pod = SpaPod.props(
+                        channelVolumes = volume?.let { level -> FloatArray(channels) { level.coerceIn(0f, 1f) } },
+                        mute = muted,
+                    )
+                    runCatching { setParam(proxy, SpaAbi.PARAM_PROPS, pod) }
+                        .onFailure { log.debug("set_param on {} threw: {}", entry.value.name, it.message) }
+                        .getOrDefault(false)
+                }
+            }.getOrDefault(false)
         }
-    }
 
     /**
      * Make [name] the device applications get when they ask for none.
@@ -848,9 +876,7 @@ internal class PipeWireRegistry private constructor(
      * it out, which is what a device with no layout gets anywhere.
      */
     fun createNullSink(name: String, channels: Int): Boolean {
-        if (closed.get()) return false
         if (channels !in 1..SpaAbi.MAX_CHANNELS) return false
-        if (createdSinks.containsKey(name)) return false
         val layout = ChannelLayout.defaultFor(channels)
         val positions = layout.positions.map { SpaAbi.channelNameOf(it) }
         val entries = buildList {
@@ -863,30 +889,50 @@ internal class PipeWireRegistry private constructor(
                 add(SpaAbi.KEY_AUDIO_POSITION to positions.joinToString(",") { checkNotNull(it) })
             }
         }
-        return loop.locked {
+        return calls.withLock {
+            if (closed.get()) return@withLock false
             runCatching {
-                val proxy = createObject(SpaAbi.FACTORY_ADAPTER, nodeType, SpaAbi.VERSION_NODE, entries)
-                if (proxy.address() == 0L) return@runCatching false
-                createdSinks[name] = proxy
-                true
+                loop.locked {
+                    // Asked and answered under the one lock that guards the
+                    // map. Split in two, two callers naming the same device
+                    // both get past the question and the second proxy replaces
+                    // the first in the map, leaving a device on the graph that
+                    // nothing here can destroy any more.
+                    if (createdSinks.containsKey(name)) return@locked false
+                    val proxy = createObject(SpaAbi.FACTORY_ADAPTER, nodeType, SpaAbi.VERSION_NODE, entries)
+                    if (proxy.address() == 0L) return@locked false
+                    createdSinks[name] = proxy
+                    true
+                }
             }.onFailure { log.debug("create_object({}) threw: {}", name, it.message) }
                 .getOrDefault(false)
         }
     }
 
     /** Drop a device this connection made. False for one it did not make. */
-    fun removeNullSink(name: String): Boolean {
-        if (closed.get()) return false
-        return loop.locked {
-            val proxy = createdSinks.remove(name) ?: return@locked false
-            runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
-                .onFailure { log.debug("destroy of {} threw: {}", name, it.message) }
-                .isSuccess
-        }
+    fun removeNullSink(name: String): Boolean = calls.withLock {
+        if (closed.get()) return@withLock false
+        runCatching {
+            loop.locked {
+                val proxy = createdSinks.remove(name) ?: return@locked false
+                runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+                    .onFailure { log.debug("destroy of {} threw: {}", name, it.message) }
+                    .isSuccess
+            }
+        }.getOrDefault(false)
     }
 
-    /** Every device this connection made and has not removed. */
-    fun createdSinkNames(): List<String> = createdSinks.keys.toList()
+    /**
+     * Every device this connection made and has not removed.
+     *
+     * Under the loop lock like every other reader of that map, because the
+     * caller is a restore running on somebody else's thread while the loop's
+     * own thread may be adding to it.
+     */
+    fun createdSinkNames(): List<String> = calls.withLock {
+        if (closed.get()) return@withLock emptyList()
+        runCatching { loop.locked { createdSinks.keys.toList() } }.getOrDefault(emptyList())
+    }
 
     /**
      * `pw_core_create_object`, walked like every other proxy method here.
@@ -934,36 +980,38 @@ internal class PipeWireRegistry private constructor(
      * False where nothing is bound, which is a graph with no session manager on
      * it: there is no object to write into and no policy that would read it.
      */
-    private fun setMetadata(subject: Int, key: String, type: String?, value: String?): Boolean {
-        if (closed.get()) return false
-        return loop.locked {
-            val proxy = metadata
-            if (proxy.address() == 0L) return@locked false
+    private fun setMetadata(subject: Int, key: String, type: String?, value: String?): Boolean =
+        calls.withLock {
+            if (closed.get()) return@withLock false
             runCatching {
-                val method = interfaceMethod(proxy, SpaAbi.METADATA_METHOD_SET_PROPERTY, "set_property")
-                val call = Linker.nativeLinker().downcallHandle(
-                    method,
-                    FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                    ),
-                )
-                Arena.ofConfined().use { call2 ->
-                    // The strings are read during the call and marshalled onto
-                    // the wire, so a confined arena is the right lifetime here
-                    // where a bind's type string was not.
-                    val rc = call.invokeExact(
-                        interfaceData(proxy), subject,
-                        call2.allocateFrom(key),
-                        type?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
-                        value?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
-                    ) as Int
-                    rc >= 0
+                loop.locked {
+                    val proxy = metadata
+                    if (proxy.address() == 0L) return@locked false
+                    val method =
+                        interfaceMethod(proxy, SpaAbi.METADATA_METHOD_SET_PROPERTY, "set_property")
+                    val call = Linker.nativeLinker().downcallHandle(
+                        method,
+                        FunctionDescriptor.of(
+                            ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                        ),
+                    )
+                    Arena.ofConfined().use { call2 ->
+                        // The strings are read during the call and marshalled
+                        // onto the wire, so a confined arena is the right
+                        // lifetime here where a bind's type string was not.
+                        val rc = call.invokeExact(
+                            interfaceData(proxy), subject,
+                            call2.allocateFrom(key),
+                            type?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                            value?.let { call2.allocateFrom(it) } ?: MemorySegment.NULL,
+                        ) as Int
+                        rc >= 0
+                    }
                 }
             }.onFailure { log.debug("set_property({}) threw: {}", key, it.message) }
                 .getOrDefault(false)
         }
-    }
 
     /**
      * `pw_node_set_param`, walked for the reason every other proxy method here
@@ -1421,7 +1469,10 @@ internal class PipeWireRegistry private constructor(
      * [ROUND_TRIP_SECONDS], which is a graph to report rather than one to keep
      * waiting on.
      */
-    private fun roundTrip(): Boolean = loop.locked {
+    private fun roundTrip(): Boolean = calls.withLock { loop.locked { roundTripLocked() } }
+
+    /** The wait itself, for a caller already holding both locks. */
+    private fun roundTripLocked(): Boolean {
         val method = interfaceMethod(core, SpaAbi.CORE_METHOD_SYNC, "sync")
         val call = Linker.nativeLinker().downcallHandle(
             method,
@@ -1438,12 +1489,12 @@ internal class PipeWireRegistry private constructor(
         pendingSeq = call.invokeExact(interfaceData(core), SpaAbi.ID_CORE, 0) as Int
         val deadline = System.nanoTime() + ROUND_TRIP_SECONDS * NANOS_PER_SECOND
         while (!syncDone) {
-            if (System.nanoTime() >= deadline) return@locked false
+            if (System.nanoTime() >= deadline) return false
             // A spurious wake returns with nothing having happened, which is
             // why the flag is re-read rather than the wake being trusted.
-            if (!loop.awaitFor(ROUND_TRIP_SECONDS)) return@locked false
+            if (!loop.awaitFor(ROUND_TRIP_SECONDS)) return false
         }
-        !syncFailed
+        return !syncFailed
     }
 
     /**
