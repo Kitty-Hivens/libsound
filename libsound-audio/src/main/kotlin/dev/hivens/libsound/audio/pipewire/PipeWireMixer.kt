@@ -139,11 +139,16 @@ internal class PipeWireMixer private constructor(
      * False also means not yet, and a consumer that has just seen the row
      * appear should try again.
      *
-     * The graph describes an object in pieces: a node's global arrives first
-     * and its parameters a moment later, and writing a volume means writing one
-     * per channel, so until that parameter has landed there is no channel count
-     * to write. Refused rather than guessed, because an array of the wrong
-     * length sets some of a device's channels and leaves the rest.
+     * This binding learns a node's volume by subscribing to it when the node's
+     * global arrives, so there is a moment after a row appears in which the
+     * graph has not answered yet. Two things are missing during it: the channel
+     * count, without which a volume cannot be written at all, and the value to
+     * put back at close.
+     *
+     * Both are refused rather than guessed. An array of the wrong length sets
+     * some of a device's channels and leaves the rest, and a remembered value
+     * nobody measured is worse than either, because it is applied later to
+     * somebody else's audio by a restore that believes it is undoing something.
      *
      * A row is settable within a moment of appearing and stays settable. What
      * this cannot do is tell that case apart from a stream that has gone, which
@@ -151,14 +156,22 @@ internal class PipeWireMixer private constructor(
      */
     override fun setVolume(id: StreamId, volume: Float): Boolean {
         val serial = serialOf(id) ?: return false
-        remember(id) { row -> originalStreamVolumes.putIfAbsent(serial, row.volume) }
-        return registry.setStreamProps(serial, volume.coerceIn(0f, 1f), null)
+        val before = registry.streamSettings(serial)?.volume ?: return false
+        if (!registry.setStreamProps(serial, volume.coerceIn(0f, 1f), null)) return false
+        // After the write and only on success: a record of a change that did
+        // not happen is a restore that moves something this process never
+        // touched.
+        originalStreamVolumes.putIfAbsent(serial, before)
+        return true
     }
 
+    /** As [setVolume], refused for the same reasons and recorded the same way. */
     override fun setMuted(id: StreamId, muted: Boolean): Boolean {
         val serial = serialOf(id) ?: return false
-        remember(id) { row -> originalStreamMutes.putIfAbsent(serial, row.muted) }
-        return registry.setStreamProps(serial, null, muted)
+        val before = registry.streamSettings(serial)?.muted ?: return false
+        if (!registry.setStreamProps(serial, null, muted)) return false
+        originalStreamMutes.putIfAbsent(serial, before)
+        return true
     }
 
     override fun moveTo(id: StreamId, device: DeviceId): Boolean {
@@ -169,14 +182,20 @@ internal class PipeWireMixer private constructor(
         return registry.moveStream(serial, device.value)
     }
 
+    /** As [setVolume], on the speaker everything plays through rather than one row. */
     override fun setDeviceVolume(device: DeviceId, volume: Float): Boolean {
-        rememberDevice(device) { row -> row.volume?.let { originalDeviceVolumes.putIfAbsent(device.value, it) } }
-        return registry.setDeviceProps(device.value, volume.coerceIn(0f, 1f), null)
+        val before = registry.deviceSettings(device.value)?.volume ?: return false
+        if (!registry.setDeviceProps(device.value, volume.coerceIn(0f, 1f), null)) return false
+        originalDeviceVolumes.putIfAbsent(device.value, before)
+        return true
     }
 
+    /** As [setDeviceVolume], and answering for the same reasons. */
     override fun setDeviceMuted(device: DeviceId, muted: Boolean): Boolean {
-        rememberDevice(device) { row -> row.muted?.let { originalDeviceMutes.putIfAbsent(device.value, it) } }
-        return registry.setDeviceProps(device.value, null, muted)
+        val before = registry.deviceSettings(device.value)?.muted ?: return false
+        if (!registry.setDeviceProps(device.value, null, muted)) return false
+        originalDeviceMutes.putIfAbsent(device.value, before)
+        return true
     }
 
     /**
@@ -462,18 +481,6 @@ internal class PipeWireMixer private constructor(
     private fun serialOf(id: StreamId): Long? {
         if (closed.get()) return null
         return PulseStreamHandle.parse(id)?.index?.toLong()
-    }
-
-    /** Record what a row was, once, before this process first changes it. */
-    private inline fun remember(id: StreamId, record: (AudioStream) -> Unit) {
-        streams().firstOrNull { it.id == id }?.let(record)
-    }
-
-    private inline fun rememberDevice(device: DeviceId, record: (dev.hivens.libsound.AudioDevice) -> Unit) {
-        StreamDirection.entries.asSequence()
-            .flatMap { registry.devices(it).asSequence() }
-            .firstOrNull { it.id == device }
-            ?.let(record)
     }
 
     private fun <K, V> drain(from: ConcurrentHashMap<K, V>): List<Pair<K, V>> {
