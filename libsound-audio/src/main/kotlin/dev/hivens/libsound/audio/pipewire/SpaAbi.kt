@@ -208,9 +208,10 @@ internal object SpaAbi {
      */
     const val INTERFACE_CB_DATA = 24L
 
-    /** `pw_core_methods`, where `sync` and `get_registry` live. */
+    /** `pw_core_methods`, where `sync`, `get_registry` and `create_object` live. */
     const val CORE_METHOD_SYNC = 24L
     const val CORE_METHOD_GET_REGISTRY = 48L
+    const val CORE_METHOD_CREATE_OBJECT = 56L
 
     /** `pw_registry_methods`, where `bind` lives. */
     const val REGISTRY_METHOD_BIND = 16L
@@ -272,6 +273,16 @@ internal object SpaAbi {
     const val INTERFACE_DEVICE = "PipeWire:Interface:Device"
     const val INTERFACE_METADATA = "PipeWire:Interface:Metadata"
 
+    /**
+     * A link, which is the only thing on the graph that says which device a
+     * stream is playing to.
+     *
+     * Nothing else does. A stream carries a target only when it asked for one
+     * and most do not, so a mixer row's device comes from following the link
+     * out of the stream's node rather than from any property of the stream.
+     */
+    const val INTERFACE_LINK = "PipeWire:Interface:Link"
+
     /** `struct spa_hook`, which a listener is registered through and which the caller owns. */
     const val HOOK_SIZE = 48L
 
@@ -300,9 +311,34 @@ internal object SpaAbi {
     const val NODE_METHOD_ENUM_PARAMS = 24L
     const val NODE_METHOD_SET_PARAM = 32L
 
-    /** `pw_node_info`, of which one field is read. */
+    /** `pw_node_info`, of which three fields are read. */
     const val NODE_INFO_SIZE = 72L
+    const val NODE_INFO_CHANGE_MASK = 16L
     const val NODE_INFO_STATE = 32L
+
+    /**
+     * The node's own property dict, which is a larger set than the one the
+     * registry global carries.
+     *
+     * The difference matters: `application.process.id` is on this one and not
+     * on the global's, so a mixer reading only the global could not tell which
+     * rows belong to the process it is running in. Found by reading the global
+     * and seeing it absent, which is a measurement nothing in this repository
+     * reproduces. What the suite does guard is the consequence: a row this
+     * process opened reports itself as ours, and it would not if this field
+     * stopped being read.
+     */
+    const val NODE_INFO_PROPS = 48L
+
+    /**
+     * Which fields the info event actually refreshed.
+     *
+     * A pointer whose bit is clear has not been filled in, so reading the props
+     * off every info event would sooner or later read one the event did not
+     * carry.
+     */
+    const val NODE_CHANGE_MASK_STATE = 0x0000_0004L
+    const val NODE_CHANGE_MASK_PROPS = 0x0000_0008L
 
     /**
      * A node the server has closed the hardware for because nothing is using
@@ -310,6 +346,15 @@ internal object SpaAbi {
      * libpulse side reports as suspended.
      */
     const val NODE_STATE_SUSPENDED = 1
+
+    /**
+     * A node that is actually rendering, against one attached and idle.
+     *
+     * What a mixer greys a row for: a paused player holds its node open and
+     * produces nothing, and the row belongs on screen either way, which is why
+     * this is a field rather than a reason to leave it out of the list.
+     */
+    const val NODE_STATE_RUNNING = 3
 
     // -- metadata, which is where the default device lives -------------------
 
@@ -328,6 +373,9 @@ internal object SpaAbi {
     const val METADATA_EVENTS_PROPERTY = 8L
     const val VERSION_METADATA_EVENTS = 0
 
+    /** `pw_metadata_methods`, where writing a default goes. */
+    const val METADATA_METHOD_SET_PROPERTY = 16L
+
     /** The interface version a bind asks for. */
     const val VERSION_METADATA = 3
 
@@ -345,6 +393,26 @@ internal object SpaAbi {
     const val METADATA_KEY_DEFAULT_SINK = "default.audio.sink"
     const val METADATA_KEY_DEFAULT_SOURCE = "default.audio.source"
 
+    /**
+     * What a person chose, which is the entry a choice is written into.
+     *
+     * The session manager reads these and computes the effective pair above
+     * from them, so writing the effective one directly is writing a value the
+     * next rescan overwrites. It is also the difference between a preference
+     * that survives the device being unplugged and one that does not.
+     */
+    const val METADATA_KEY_CONFIGURED_SINK = "default.configured.audio.sink"
+    const val METADATA_KEY_CONFIGURED_SOURCE = "default.configured.audio.source"
+
+    /** What the session manager reads to move a node somewhere else. */
+    const val METADATA_KEY_TARGET_OBJECT = "target.object"
+
+    /** The subject a graph-wide entry is written under, against one node's id. */
+    const val METADATA_SUBJECT_GRAPH = 0
+
+    /** How a default names a device, which is a JSON object with one field. */
+    const val METADATA_TYPE_JSON = "Spa:String:JSON"
+
     // -- properties a volume is set through ----------------------------------
 
     const val OBJECT_PROPS = 262_146
@@ -352,6 +420,20 @@ internal object SpaAbi {
     const val PROP_VOLUME = 65_539
     const val PROP_MUTE = 65_540
     const val PROP_CHANNEL_VOLUMES = 65_544
+
+    /**
+     * What each of a node's channels is, and the only honest answer to how many
+     * it has.
+     *
+     * Not [PROP_CHANNEL_VOLUMES], which is the trap. Measured on a null sink
+     * created with six channels: the map carried all six from the moment the
+     * device appeared, and the volume array carried two until something wrote a
+     * volume, at which point it became six. So a volume written off the length
+     * of the volume array would have set two channels of a six channel device
+     * and left four where they were, which is the exact failure the refusal in
+     * `setProps` exists to prevent.
+     */
+    const val PROP_CHANNEL_MAP = 65_547
 
     // -- property keys -------------------------------------------------------
 
@@ -378,6 +460,9 @@ internal object SpaAbi {
     /** Somebody playing, which is what recording one application aims at. */
     const val MEDIA_CLASS_STREAM_OUTPUT = "Stream/Output/Audio"
 
+    /** Somebody recording, which is the other half of what a mixer lists. */
+    const val MEDIA_CLASS_STREAM_INPUT = "Stream/Input/Audio"
+
     /**
      * A number that names one object for the life of the graph.
      *
@@ -397,15 +482,85 @@ internal object SpaAbi {
     const val KEY_MEDIA_CATEGORY = "media.category"
     const val KEY_MEDIA_ROLE = "media.role"
     const val KEY_APP_NAME = "application.name"
+
+    /**
+     * The binary a node's process is running, which is what an application that
+     * named itself nothing leaves behind.
+     *
+     * The one fallback a mixer row's application name takes. It is still
+     * something the application said about itself, unlike the node's
+     * description, which is a label the graph may have written and which names
+     * no application at all.
+     */
+    const val KEY_APP_PROCESS_BINARY = "application.process.binary"
     const val KEY_APP_ID = "application.id"
     const val KEY_APP_ICON_NAME = "application.icon-name"
     const val KEY_NODE_NAME = "node.name"
     const val KEY_NODE_DESCRIPTION = "node.description"
 
+    /** The two ends of a link, each the global id of a node, as decimal strings. */
+    const val KEY_LINK_OUTPUT_NODE = "link.output.node"
+    const val KEY_LINK_INPUT_NODE = "link.input.node"
+
+    /** What a stream says it is playing, which is a mixer row's second line. */
+    const val KEY_MEDIA_NAME = "media.name"
+
     /**
-     * The lever section 4.4 measured `pipewire-pulse` overwriting. A node sets
-     * it and keeps it; a pulse client sets it and has the shim recompute it
-     * from the buffer size that client asked for.
+     * Which connection a node was made on.
+     *
+     * Not how this tells its own rows apart, and the reason is one line down:
+     * a mixer is a second connection with a client id of its own, so a stream
+     * this process opened on the first carries an id the second does not share.
+     * Transcribed because it names a real key and a reader of the node's dict
+     * will meet it, not because anything here reads it.
+     */
+    const val KEY_CLIENT_ID = "client.id"
+
+    /**
+     * Which process a node belongs to.
+     *
+     * How a mixer marks its own rows. The client id would do it on the
+     * connection that made the stream, and a mixer is a second connection with
+     * a client id of its own, so the process is the thing both sides agree on.
+     */
+    const val KEY_APP_PROCESS_ID = "application.process.id"
+
+    /** What creating a device that is not hardware needs. */
+    const val KEY_FACTORY_NAME = "factory.name"
+
+    /**
+     * Whether a created object outlives the connection that asked for it.
+     *
+     * Never put in the property list a device is created with, which is what
+     * ties what comes back to the connection that asked for it. That is the
+     * shape `VolumeMixer.createVirtualSink`'s own obligation wants: a device
+     * left behind is one a person finds in their settings and cannot account
+     * for. Transcribed so that leaving it out reads as a decision rather than
+     * as a key nobody knew about.
+     */
+    const val KEY_OBJECT_LINGER = "object.linger"
+
+    /**
+     * The pair that makes a device the machine does not have.
+     *
+     * `create_object` is called with the adapter, and the null sink travels in
+     * the property list as `factory.name`. Not from the headers, where neither
+     * appears: they are the names the daemon's own shipped configuration uses
+     * for exactly this, which is why the oracle does not print them.
+     */
+    const val FACTORY_ADAPTER = "adapter"
+    const val FACTORY_NULL_SINK = "support.null-audio-sink"
+
+    /** How many channels a created device has, and what each of them is. */
+    const val KEY_AUDIO_CHANNELS = "audio.channels"
+    const val KEY_AUDIO_POSITION = "audio.position"
+
+    /**
+     * What a node asks its buffer to be, in frames over a rate.
+     *
+     * The lever measured against `pipewire-pulse`: a node sets it and keeps it,
+     * where a pulse client sets it and has the shim recompute it from the
+     * buffer size that client asked for.
      */
     const val KEY_NODE_LATENCY = "node.latency"
     const val KEY_NODE_RATE = "node.rate"
@@ -533,6 +688,50 @@ internal object SpaAbi {
     const val CHANNEL_BC = 35
     const val CHANNEL_BLC = 36
     const val CHANNEL_BRC = 37
+
+    /**
+     * What a property calls a position, or null where the graph has no name for
+     * it.
+     *
+     * The same twenty-six [channelOf] answers for, spelled rather than
+     * numbered, because `audio.position` in a property set takes names. Both
+     * come out of the same table in the oracle so the two cannot drift apart
+     * without the run that produced them saying so.
+     */
+    fun channelNameOf(position: ChannelPosition): String? = when (position) {
+        ChannelPosition.FL -> "FL"
+        ChannelPosition.FR -> "FR"
+        ChannelPosition.FC -> "FC"
+        ChannelPosition.LFE -> "LFE"
+        ChannelPosition.SL -> "SL"
+        ChannelPosition.SR -> "SR"
+        ChannelPosition.FLC -> "FLC"
+        ChannelPosition.FRC -> "FRC"
+        ChannelPosition.BC -> "RC"
+        ChannelPosition.BL -> "RL"
+        ChannelPosition.BR -> "RR"
+        ChannelPosition.TC -> "TC"
+        ChannelPosition.TFL -> "TFL"
+        ChannelPosition.TFC -> "TFC"
+        ChannelPosition.TFR -> "TFR"
+        ChannelPosition.TBL -> "TRL"
+        ChannelPosition.TBC -> "TRC"
+        ChannelPosition.TBR -> "TRR"
+        ChannelPosition.WL -> "FLW"
+        ChannelPosition.WR -> "FRW"
+        ChannelPosition.LFE2 -> "LFE2"
+        ChannelPosition.TSL -> "TSL"
+        ChannelPosition.TSR -> "TSR"
+        ChannelPosition.BFC -> "BC"
+        ChannelPosition.BFL -> "BLC"
+        ChannelPosition.BFR -> "BRC"
+        ChannelPosition.DL, ChannelPosition.DR,
+        ChannelPosition.SDL, ChannelPosition.SDR,
+        ChannelPosition.SSL, ChannelPosition.SSR,
+        ChannelPosition.TTL, ChannelPosition.TTR,
+        ChannelPosition.BIL, ChannelPosition.BIR,
+        -> null
+    }
 
     /**
      * What the graph calls a position, or null where it has no name for it.

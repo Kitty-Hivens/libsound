@@ -42,7 +42,21 @@ internal class PipeWireLoop private constructor(
     /** The `pw_loop` a stream is created against. */
     val loop: MemorySegment = lib.handle("pw_thread_loop_get_loop").invokeExact(threadLoop) as MemorySegment
 
+    /**
+     * Take the loop's lock, and refuse once [close] has run.
+     *
+     * The refusal is the point rather than tidiness. What these calls travel
+     * through is an address in a global scope, so Panama cannot tell a live
+     * `pw_thread_loop` from a destroyed one: a lock taken after the destroy is
+     * a jump into freed memory rather than a call that fails. Checked here
+     * because every other entry point on this class goes through it.
+     *
+     * This narrows the window and does not close it. What closes it is a caller
+     * holding a lock of its own across both this check and [close], which is
+     * what the registry does.
+     */
     fun lock() {
+        check(!closed.get()) { "the loop is closed" }
         lib.handle("pw_thread_loop_lock").invokeExact(threadLoop) as Unit
     }
 

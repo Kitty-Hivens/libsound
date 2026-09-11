@@ -1302,11 +1302,12 @@ the second covers what binding the metadata object inside that burst asked for.
 Measured to be load bearing rather than assumed, on a graph with one sink, where
 the default read after the first sync was null and after the second was the sink.
 
-**Creating devices is not in this section either.** `createVirtualSink` and
-`combineSinks` load server modules through the pulse protocol today, and they
-keep doing that until something says otherwise. A null sink is a system-wide
-object with a restore obligation attached, and it is a different subject from a
-stream this process plays through.
+**Creating devices is not in this section.** `createVirtualSink` is
+`create_object` on the core now, with a lifetime tied to the connection rather
+than to the server, and 13.11 says what that buys. What this section says is
+only that a null sink is a system-wide object with a restore obligation
+attached, which is a different subject from a stream this process plays
+through.
 
 ### 13.9 Selection, and what happens on a machine without a graph
 
@@ -1386,14 +1387,14 @@ a graph now, rather than an extra a backend could do without.
 | What does `pw_stream_get_time_n` report through an underrun? | Unmeasured, and the sink no longer implies otherwise. Every other backend's clock had this trap and each one needed a different correction, so assume it has one until a stream fed half a second and left alone says otherwise. Nothing depends on the answer: the playhead is the count of frames the callback took out of the ring, which is right whichever way this turns out. |
 | Is `PW_STREAM_FLAG_RT_PROCESS` worth taking? | Still open, and now the only half of 4.5 that is. The writing thread asks RealtimeKit here the way it does on the libpulse rung, which is what a caller setting `realtime` was silently not getting. The flag is the other half: it promises the callback runs on the graph's real-time thread, and whether a JVM callback belongs there at all is a different question from whether a JVM write loop does. The answer involves what a garbage collection pause does to the graph rather than to one stream. |
 | How much of `PulseBackend` survives? | **Narrowed to one thing.** The device list is the graph's after all and is native now, and so is a device's volume and recording one application. What is left of the backend is the sample cache, which has nothing behind it in the graph at all. |
-| Does the mixer need a native half? | **Answered: yes.** See 13.11. |
+| Does the mixer need a native half? | **Answered: yes, and built.** See 13.11 for what it covers and for the one thing it does not. |
 
 ### 13.11 The mixer's native half
 
 The question 13.10 left open has an answer, and the review that closed it also
 showed why the answer is not optional.
 
-`VolumeMixers.open` returns a `PulseMixer` on every Linux machine, whichever
+`VolumeMixers.open` returned a `PulseMixer` on every Linux machine, whichever
 backend is playing. That is fine where `pipewire-pulse` is installed and it is
 nothing at all where it is not, and a machine running PipeWire without the shim
 is one of the two the rung below `AudioBackends` exists for. So on that machine
@@ -1417,22 +1418,101 @@ mechanism this backend already uses:
 | `onStreamsChanged` | The registry's own event stream, filtered the way the device list is. |
 | `meter` | A capture stream aimed at the node, which is what per-application capture already builds. |
 
-**What it does not cover, and this is the reason it is a half.** Cards, profiles
-and ports are the `Device` interface with its `Profile` and `Route` parameters,
-which is a second object type and a second parameter vocabulary. Virtual and
-combined sinks load server modules, and 13.8 already says those keep going
-through the pulse protocol: a null sink is a system-wide object with a restore
-obligation on it, which is a different subject from a stream this process plays
-through.
+**What it does not cover, and the reason is not the one an earlier draft gave.**
+That draft said cards and virtual devices stay on the pulse protocol and cited
+13.8 for it, which was citing a decision as though it were a property of the
+graph. Everything on that list is reachable, checked against the installed
+headers, and two of the three are now built.
 
-**Which means selection has the shape 13.9 already worked out.** The pulse mixer
-covers more, the native one covers what the graph owns, and neither is a subset
-of the other in the way that matters, so `VolumeMixers.open` takes the same
-optional set of capabilities `AudioBackends.open` does and answers with the
-first that offers them. The machine with no shim gets a mixer for the first
-time, and nothing anywhere loses one.
+**Virtual devices are built**, and the lifetime question they raised is
+answered. `create_object` with the adapter factory and `support.null-audio-sink`
+behind it, which is the pair the daemon's own shipped configuration names.
+`object.linger` is left unset, so what comes back belongs to the connection that
+asked for it. The header describes that key as the one making an object outlive
+its client, so leaving it out is what ties the two together. That is a different
+lifetime from the module the libpulse mixer loads and it is the shape
+`createVirtualSink`'s own obligation wants, since a device left behind is one
+somebody finds in their settings and cannot account for.
 
-**Not in this pull request.** The work that is in it is a backend and the repair
-a review found it needed, and a second interface the size of `VolumeMixer` on
-top of that would be one change nobody could read. The decision is recorded here
-so the next one starts from it rather than from the question.
+A device is waited for rather than answered for, and taken back off the graph
+if what appears is not what was asked for. An id handed out for a device the
+graph accepted and did not build is an id every later call answers false for,
+and an id handed out for one that came back narrower is worse: a caller that
+asked for a six channel bus finds out by hearing four of its channels vanish.
+
+**The channel count is not what the volume array says it is.** Measured on a
+null sink created with six channels. `channelVolumes` carried two entries until
+something wrote a volume to it, at which point it became six, while `channelMap`
+carried all six from the moment the device appeared. So the map is what a
+channel count is read off, and a volume written off the array's length would
+have set two channels of that device and left four where they were, which is the
+failure the refusal in `setProps` exists to prevent.
+
+**Combining two devices is not built.** It is a module the daemon loads rather
+than an object a client creates: the core's method table has no call that loads
+one, and the daemon's shipped configuration does not load the module that would
+register a factory. On a graph whose owner loaded it by hand there would be a
+factory, and finding it by name and checking what it answers is the part that
+does not exist here. Nothing is asked, so nothing is refused, and the mixer's
+own documentation says so where a consumer would read it.
+
+**Cards, profiles and ports are not built, and the reason is that nothing here
+can exercise them.** They are reachable: `PipeWire:Interface:Device` with
+`SPA_PARAM_EnumProfile` and `SPA_PARAM_Profile`, ports with `EnumRoute` and
+`Route` on the same object, the bind and the subscription and the setter this
+already uses on a node, one interface along.
+
+What stops it is the test environment, and stops it for a good reason. The
+isolated server this suite runs against has no card and can have none: its
+session manager runs with the hardware monitors disabled, which is the whole of
+why it is safe to run a suite that reconfigures devices. The only machine with a
+card is somebody's desktop, and this suite does not go there. Building profile
+switching would mean shipping the most dangerous call in `VolumeMixer` untested,
+on the one operation whose own documentation says a card left on a profile
+nobody chose is a machine whose speakers have stopped working with nothing on
+screen to explain it.
+
+**Which means selection is the reverse of 13.9's.** The native mixer's
+capability set is a subset of the pulse one's, short by exactly
+`DEVICE_PROFILES`. So the widest goes first, which is the opposite of the
+backends, where the native rung offered something the rung below did not and
+going direct cost nothing. Going direct here would take a consumer's card panel
+away on every machine that has the shim, without that consumer having asked.
+
+`VolumeMixers.open` still takes the same optional set of capabilities
+`AudioBackends.open` does, and it is worth being plain about what that does
+while one set contains the other: it cannot move the choice on a machine where
+the pulse rung opens. What it does is refuse on the machine that has no shim,
+where a consumer whose whole feature is a card's profile is told null rather
+than handed a mixer whose card list is empty.
+
+That ordering rests on today's coverage rather than on anything permanent. Close
+what is left and the two sets are equal, and going direct costs nothing again.
+
+**What is built.** Streams in both directions, their volume and mute, moving
+one, each device's volume and mute, choosing the default, virtual devices laid
+out with the channel count they were asked for, a level meter, and the three
+events a consumer subscribes for, worked out from the one coarse signal the
+graph gives.
+
+Every setter waits for the graph's answer rather than for the request to go out,
+which is what `VolumeMixer` asks for and what a slider that springs back needs.
+A proxy method carries no answer of its own, so the answer is a sync behind the
+write: the server replies to one only after everything queued ahead of it, and a
+refusal of the write is one of those things, arriving on the core's error event
+naming the proxy it was about.
+
+Moving a stream is claimed only where the metadata object is bound. A graph
+running without a session manager has nothing to write a target into and nothing
+that would act on one, and a device menu is a control not worth drawing where it
+cannot work.
+
+A meter is a capture stream aimed at that node, on a loop of its own: a meter's
+callback on the registry's loop would hold up the registry's dispatch, so a
+mixer with a meter open would stop hearing about the streams it is metering. It
+covers playback rows only, because aiming at a row that is itself recording taps
+what that row records from, which is the device rather than the row.
+
+**What is left** is one thing, and it is above: cards, profiles and ports, held
+up by having nowhere safe to exercise them rather than by anything about the
+graph.

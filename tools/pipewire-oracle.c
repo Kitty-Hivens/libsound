@@ -108,6 +108,14 @@ int main(void) {
         if (spa_name) named++;
     }
     printf("  %d of the 36 positions FFmpeg names have a SPA constant here\n", named);
+    /* The same table as a property value. audio.position takes names rather
+     * than numbers, which is what creating a device with a layout needs. */
+    printf("  as audio.position names:\n");
+    for (size_t i = 0; i < SPA_N_ELEMENTS(CHANNELS); i++) {
+        const char *spa_name =
+            spa_debug_type_find_short_name(spa_type_audio_channel, CHANNELS[i].spa);
+        printf("    %-5s -> \"%s\"\n", CHANNELS[i].ffmpeg, spa_name ? spa_name : "");
+    }
     printf("  (pa_channel_position_t names 18 of them, which is the shim's ceiling)\n");
 
     /* The ceiling a format has to be refused above. accepts() promises that a
@@ -413,6 +421,12 @@ int main(void) {
     SECTION("metadata, which is where the default device lives");
     P(PW_VERSION_METADATA);
     P(PW_VERSION_METADATA_EVENTS);
+    P(sizeof(struct pw_metadata_methods));
+    P(offsetof(struct pw_metadata_methods, version));
+    P(offsetof(struct pw_metadata_methods, add_listener));
+    P(offsetof(struct pw_metadata_methods, set_property));
+    P(offsetof(struct pw_metadata_methods, clear));
+    P(PW_VERSION_METADATA_METHODS);
     P(sizeof(struct pw_metadata_events));
     P(offsetof(struct pw_metadata_events, version));
     P(offsetof(struct pw_metadata_events, property));
@@ -446,6 +460,12 @@ int main(void) {
     P(offsetof(struct pw_node_info, change_mask));
     P(offsetof(struct pw_node_info, state));
     P(offsetof(struct pw_node_info, props));
+    /* Which fields of the info struct the event actually refreshed. The props
+     * pointer is only good when its bit is set, and the props on the info are a
+     * larger set than the ones the registry global carries: an application's
+     * process id is on one and not the other. */
+    HEX(PW_NODE_CHANGE_MASK_PROPS);
+    HEX(PW_NODE_CHANGE_MASK_STATE);
     P(PW_NODE_STATE_ERROR);
     P(PW_NODE_STATE_CREATING);
     P(PW_NODE_STATE_SUSPENDED);
@@ -465,6 +485,30 @@ int main(void) {
     P(sizeof(struct spa_pod_bool));
     P(sizeof(struct spa_pod_float));
 
+    /* A link, which is how a mixer finds out which device a stream is playing
+     * to. Nothing else on the graph says: a stream names a target only when it
+     * asked for one, and most do not. */
+    SECTION("links, which is what a stream playing to a device is");
+    printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Link", PW_TYPE_INTERFACE_Link);
+    printf("  %-30s = %s\n", "PW_KEY_LINK_OUTPUT_NODE", PW_KEY_LINK_OUTPUT_NODE);
+    printf("  %-30s = %s\n", "PW_KEY_LINK_INPUT_NODE", PW_KEY_LINK_INPUT_NODE);
+    printf("  %-30s = %s\n", "PW_KEY_MEDIA_NAME", PW_KEY_MEDIA_NAME);
+    printf("  %-30s = %s\n", "PW_KEY_CLIENT_ID", PW_KEY_CLIENT_ID);
+    /* Which process a node belongs to, which is how a mixer marks its own rows
+     * without needing to know its own client id on a second connection. */
+    printf("  %-30s = %s\n", "PW_KEY_APP_PROCESS_ID", PW_KEY_APP_PROCESS_ID);
+
+    /* Making a device that is not hardware. The core's create_object takes a
+     * factory by name and a property set, and which factory is the adapter's
+     * business rather than the core's: support.null-audio-sink is named in the
+     * daemon's own shipped configuration. object.linger decides whether what
+     * comes back outlives the connection that asked for it. */
+    printf("  %-30s = %s\n", "PW_KEY_FACTORY_NAME", PW_KEY_FACTORY_NAME);
+    printf("  %-30s = %s\n", "PW_KEY_OBJECT_LINGER", PW_KEY_OBJECT_LINGER);
+    printf("  %-30s = %s\n", "SPA_KEY_AUDIO_CHANNELS", SPA_KEY_AUDIO_CHANNELS);
+    printf("  %-30s = %s\n", "SPA_KEY_AUDIO_POSITION", SPA_KEY_AUDIO_POSITION);
+    printf("  %-30s = %s\n", "MEDIA_CLASS Stream/Input/Audio", "Stream/Input/Audio");
+
     /* A stream's own volume, which is a control on its node rather than
      * anything pw_stream carries directly. */
     SECTION("SPA_PROP, which is what a volume is");
@@ -473,6 +517,7 @@ int main(void) {
     P(SPA_PROP_volume);
     P(SPA_PROP_mute);
     P(SPA_PROP_channelVolumes);
+    P(SPA_PROP_channelMap);
 
     SECTION("the property keys a node is named and placed by");
     printf("  %-30s = %s\n", "PW_KEY_MEDIA_TYPE", PW_KEY_MEDIA_TYPE);
@@ -481,6 +526,7 @@ int main(void) {
     printf("  %-30s = %s\n", "PW_KEY_APP_NAME", PW_KEY_APP_NAME);
     printf("  %-30s = %s\n", "PW_KEY_APP_ID", PW_KEY_APP_ID);
     printf("  %-30s = %s\n", "PW_KEY_APP_ICON_NAME", PW_KEY_APP_ICON_NAME);
+    printf("  %-30s = %s\n", "PW_KEY_APP_PROCESS_BINARY", PW_KEY_APP_PROCESS_BINARY);
     printf("  %-30s = %s\n", "PW_KEY_NODE_NAME", PW_KEY_NODE_NAME);
     printf("  %-30s = %s\n", "PW_KEY_NODE_DESCRIPTION", PW_KEY_NODE_DESCRIPTION);
     /* The lever section 4.4 measured pipewire-pulse overwriting. */
