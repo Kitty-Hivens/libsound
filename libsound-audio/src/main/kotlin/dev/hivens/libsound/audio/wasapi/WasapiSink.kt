@@ -364,6 +364,18 @@ internal class WasapiSink(
     }
 
     /**
+     * The engine's buffer less what it still holds, which is the room the write
+     * loop waits for when there is none.
+     */
+    override fun writableFrames(): Long = synchronized(interfaceLock) {
+        val audioClient = client
+        if (openFormat == null || audioClient.address() == 0L) return 0L
+        return Arena.ofConfined().use { call ->
+            (bufferFrames - readPadding(call, audioClient)).coerceAtLeast(0).toLong()
+        }
+    }
+
+    /**
      * The engine's own share, or zero where it would not say.
      *
      * A REFERENCE_TIME, so hundreds of nanoseconds rather than the microseconds

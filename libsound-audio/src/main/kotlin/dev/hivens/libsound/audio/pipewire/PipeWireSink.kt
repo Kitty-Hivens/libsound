@@ -345,6 +345,20 @@ internal class PipeWireSink(
     }
 
     /**
+     * What the ring has room for, which is exactly where a write parks when it
+     * has none.
+     */
+    override fun writableFrames(): Long {
+        // The flag and the format as well as the ring: close() closes the ring
+        // to free a parked producer and leaves the reference standing, and a
+        // closed ring still reports its whole capacity as free.
+        if (closed.get() || openFormat == null) return 0L
+        val current = ring ?: return 0L
+        val bytes = frameBytes
+        return if (bytes <= 0 || current.isClosed()) 0L else (current.free() / bytes).toLong()
+    }
+
+    /**
      * The graph's share of the path, in nanoseconds.
      *
      * Three segments, in two different units, and adding them as one number was

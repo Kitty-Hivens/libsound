@@ -158,6 +158,24 @@ two conversions where one would do.
 `length` on a write must be a whole number of frames. A partial frame is a
 shifted stream from that point on, and nothing downstream can detect it.
 
+**If you already have a loop, do not give a thread up to the write.** The
+blocking write is the pacing a decode loop wants, and it is exactly wrong for a
+consumer driving several streams or an event loop of its own: a thread parked in
+a write is a thread not decoding the next frame and not answering a seek. Ask
+what the device will take and write no more than that:
+
+```kotlin
+val room = sink.writableFrames().toInt()
+if (room == 0) return false
+val pcm = take(room) ?: return false
+sink.write(pcm, 0, pcm.size)
+```
+
+A zero means the device is full, not that anything failed. The number is a floor
+and only under one writer: the device drains on its own, so the true room can
+grow between the answer and the write and never shrink, and a sink written to
+from two threads has no meaningful answer to give.
+
 If your decoder is shaped around a callback rather than a push loop, `PullPump`
 drives a `PcmSource` into a sink and gives you the same pacing from the other
 side. `PcmRingBuffer` is the bridge between two threads, and it keeps the two

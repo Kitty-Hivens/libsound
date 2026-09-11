@@ -216,6 +216,13 @@ internal class JavaSoundSink(
         return format.nanosFor(format.framesIn(buffered.toLong()))
     }
 
+    /** What the line says it will take, which is what it blocks for want of. */
+    override fun writableFrames(): Long {
+        val current = line ?: return 0L
+        val format = openFormat ?: return 0L
+        return format.framesIn(current.available().toLong())
+    }
+
     /**
      * Always zero, which [Capability.UNDERRUN_COUNT] is absent to say.
      *
