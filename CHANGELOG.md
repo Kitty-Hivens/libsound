@@ -130,16 +130,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and stream events worked out from the one coarse signal the graph gives.
   Cards, profiles and ports are absent and said to be absent.
 
+  Moving a stream is claimed only where the object it is written into is bound,
+  because a graph running without a session manager has nothing that would act
+  on it, and a device menu is a control not worth drawing where it cannot work.
+
+  Every setter waits for the graph to answer rather than for the request to go
+  out, which is what the interface asks for and what lets a slider spring back
+  when the stream it was dragging closed. A volume is written one entry per
+  channel off the count the node's own channel map reports, and a device created
+  with a channel count is refused rather than handed back narrower.
+
   A device it creates belongs to its connection rather than to the server, which
   is a different lifetime from the module the libpulse mixer loads and the one
   this call's own obligation wants: a virtual sink left behind is a device
   somebody finds in their settings and cannot account for.
 - `VolumeMixers.open` takes an optional set of capabilities the caller needs, the
-  same way the backend selection does. The two Linux mixers differ by cards,
-  profiles, ports and combined devices, so a panel whose feature is a card's
-  profile names that and gets the mixer that has it. Widest first here, which is
-  the opposite order from the backends and for a reason that does not apply
-  there: those differed by one capability and these differ by four.
+  same way the backend selection does. The native mixer's capabilities are a
+  subset of the libpulse one's, short by cards, profiles and ports, so the
+  widest goes first here, which is the opposite order from the backends: there
+  the native rung offered something the rung below did not, and going direct
+  cost nothing, where going direct here would take a consumer's card panel away
+  on every machine that has the shim installed. Naming a capability therefore
+  cannot move the choice on such a machine. What it does is refuse on the
+  machine that has no shim, where a panel whose whole feature is a card's
+  profile is told null instead of opening a mixer whose card list is empty.
 - `AudioBackends.open` takes an optional set of capabilities the caller needs
   and answers with the first backend that offers them. The two Linux rungs
   differ by one, the sample cache, and promoting the native one without this
