@@ -82,16 +82,35 @@ internal class PipeWireMixer private constructor(
     /** Which rows are this process's own, which is a comparison against the graph. */
     private val ourProcess = ProcessHandle.current().pid()
 
-    override val capabilities: Capabilities = Capabilities.of(
-        Capability.STREAM_ENUMERATION,
-        Capability.STREAM_CONTROL,
-        Capability.STREAM_ROUTING,
-        Capability.CAPTURE_ENUMERATION,
-        Capability.CAPTURE_CONTROL,
-        Capability.CAPTURE_ROUTING,
-        Capability.DEVICE_VOLUME,
-        Capability.STREAM_METERING,
-        Capability.VIRTUAL_DEVICES,
+    /**
+     * Decided once at open and constant afterwards, which is what the interface
+     * promises a settings screen it may rely on.
+     *
+     * Routing is the one entry that is not a property of this code. Moving a
+     * stream is a line written into the session manager's metadata object and
+     * acted on by that manager, so a graph running without one has nothing to
+     * write into and nothing that would read it. Claimed only where that object
+     * is bound, because the interface says plainly that a device menu on a
+     * mixer row is a control a consumer should not draw where it cannot work.
+     *
+     * Answerable by now rather than guessed at: the second round trip the
+     * registry makes at open is there so that what its binds brought back has
+     * arrived before anybody asks.
+     */
+    override val capabilities: Capabilities = Capabilities(
+        buildSet {
+            add(Capability.STREAM_ENUMERATION)
+            add(Capability.STREAM_CONTROL)
+            add(Capability.CAPTURE_ENUMERATION)
+            add(Capability.CAPTURE_CONTROL)
+            add(Capability.DEVICE_VOLUME)
+            add(Capability.STREAM_METERING)
+            add(Capability.VIRTUAL_DEVICES)
+            if (registry.hasMetadata()) {
+                add(Capability.STREAM_ROUTING)
+                add(Capability.CAPTURE_ROUTING)
+            }
+        },
     )
 
     override val isOpen: Boolean get() = !closed.get()
