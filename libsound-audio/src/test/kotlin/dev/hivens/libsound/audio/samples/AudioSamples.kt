@@ -188,9 +188,21 @@ internal object AudioSamples {
         return mixer.setDeviceVolume(device.id, 0.5f)
     }
 
+    fun mixerThatHasCards(): VolumeMixer? {
+        val mixer = VolumeMixers.open("Example", setOf(Capability.DEVICE_PROFILES))
+        return mixer
+    }
+
     fun offerCardProfiles(mixer: VolumeMixer): List<Pair<CardId, String>> {
         // The bluetooth case: good playback, or the low quality mode that has a
         // working microphone. Two profiles of one card.
+        //
+        // Asked for rather than assumed, the way the device volume above is.
+        // Not every mixer has cards: on Linux the one that speaks the graph
+        // directly does not, and it answers with an empty list rather than a
+        // wrong one, so a screen that skipped the question would draw a panel
+        // that stays empty and says nothing.
+        if (Capability.DEVICE_PROFILES !in mixer.capabilities) return emptyList()
         return mixer.cards().flatMap { card ->
             card.profiles.filter { it.available }.map { card.id to it.name }
         }
