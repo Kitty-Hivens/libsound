@@ -144,6 +144,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is a different lifetime from the module the libpulse mixer loads and the one
   this call's own obligation wants: a virtual sink left behind is a device
   somebody finds in their settings and cannot account for.
+- `AudioSink.writableFrames`, which is how many whole frames the device will take
+  without the write parking. The blocking write is the pacing a decode loop
+  wants and the wrong shape for a consumer that already has a loop: a thread
+  parked in a write is a thread not decoding the next frame and not answering a
+  seek, and until now there was no other way in. Every backend could already
+  answer, through the ring's free space, `pa_stream_writable_size`,
+  `IAudioClient::GetCurrentPadding` and `SourceDataLine.available`, and the
+  contract simply did not ask. `write` is unchanged: it still takes everything
+  or throws, and this is the question to ask before calling it. A decorator
+  reports its own room on top of the device's and never less than the device
+  will take, which is the latency rule seen from the other end.
 - `VolumeMixers.open` takes an optional set of capabilities the caller needs, the
   same way the backend selection does. The native mixer's capabilities are a
   subset of the libpulse one's, short by cards, profiles and ports, so the

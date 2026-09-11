@@ -350,6 +350,13 @@ internal class CoreAudioSink(
         return format.nanosFor((buffered / format.bytesPerFrame).toLong())
     }
 
+    /** What the ring has room for, which is where a write parks when it has none. */
+    override fun writableFrames(): Long {
+        val format = openFormat ?: return 0L
+        val free = ring?.free() ?: return 0L
+        return (free / format.bytesPerFrame).toLong()
+    }
+
     override fun underrunCount(): Long = underruns.get()
 
     override fun setVolume(volume: Float) {

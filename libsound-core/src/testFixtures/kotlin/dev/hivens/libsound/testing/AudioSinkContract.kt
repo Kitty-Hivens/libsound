@@ -363,6 +363,54 @@ public abstract class AudioSinkContract {
     }
 
     @Test
+    public fun `writing what the sink says it will take does not park`() {
+        // The other way to drive a sink, for a consumer that already has a loop
+        // and cannot give a thread up to a blocking write. The assertion is what
+        // makes the number worth anything: against a device that is not
+        // draining, one frame past what it said would park until the class
+        // timeout ended the build.
+        val sink = newSink()
+        sink.use {
+            sink.open(format)
+            sink.stop()
+            val room = sink.writableFrames()
+            withClue("an open device with an empty buffer has somewhere to put audio") {
+                room shouldBeGreaterThan 0L
+            }
+
+            val finished = CountDownLatch(1)
+            val writer = Thread({
+                runCatching {
+                    val exactly = frames(room.toInt())
+                    sink.write(exactly, 0, exactly.size)
+                }
+                finished.countDown()
+            }, "contract-exact-writer")
+            writer.isDaemon = true
+            writer.start()
+            withClue("a write of exactly writableFrames parked against a stopped device") {
+                finished.await(EXACT_WRITE_BUDGET_SECONDS, TimeUnit.SECONDS) shouldBe true
+            }
+
+            // And it says so afterwards, so a consumer polling it is told to
+            // come back rather than told to write again into a full device.
+            withClue("the room did not shrink after it was filled") {
+                (sink.writableFrames() < room) shouldBe true
+            }
+        }
+    }
+
+    @Test
+    public fun `what the device will take is never negative and is zero once closed`() {
+        val sink = newSink()
+        withClue("a sink that was never opened takes nothing") { sink.writableFrames() shouldBe 0L }
+        sink.open(format)
+        (sink.writableFrames() >= 0L) shouldBe true
+        sink.close()
+        withClue("a closed sink takes nothing") { sink.writableFrames() shouldBe 0L }
+    }
+
+    @Test
     public fun `close is idempotent and does not throw`() {
         val sink = newSink()
         sink.open(format)
@@ -451,5 +499,13 @@ public abstract class AudioSinkContract {
          * failure without telling anyone anything the class timeout would not.
          */
         const val PARKED_READ_BUDGET_MILLIS = 2_000L
+
+        /**
+         * A write of exactly what the sink offered has to come back, and a
+         * device that is not draining gives it no other way to. Generous,
+         * because what is under test is parked against not parked rather than
+         * how fast a loaded runner copies a buffer.
+         */
+        const val EXACT_WRITE_BUDGET_SECONDS = 5L
     }
 }

@@ -114,7 +114,13 @@ package dev.hivens.libsound
  *
  * And [latencyNanos] includes the decorator's own buffer on top of what it
  * wraps. A filter that hides its depth makes every consumer's synchronisation
- * wrong by exactly that much.
+ * wrong by exactly that much. [writableFrames] is the same sum seen from the
+ * other end: a decorator that holds frames can take its own room as well as the
+ * device's, and one that holds none reports the device's unchanged. Neither may
+ * report less than the sink it wraps will take, which would send a consumer
+ * away while the device was waiting for audio. A decorator that changes the
+ * frame count is the exception rule three already covers, and it owes the same
+ * scaling here that it owes the position.
  *
  * ## What shapes it takes, asked rather than caught
  *
@@ -242,6 +248,28 @@ public interface AudioSink : AutoCloseable {
      * than left to each caller.
      */
     public fun latencyNanos(): Long
+
+    /**
+     * Whole frames the device will take right now without [write] parking.
+     *
+     * The other way to drive a sink. [write] blocks until the device has taken
+     * everything, which is the pacing a decode loop wants and is exactly wrong
+     * for a consumer that already has a loop of its own: a thread parked in a
+     * write is a thread not decoding the next frame and not answering a seek.
+     * Asking this first and writing no more than it says is how such a consumer
+     * feeds the same sink without parking at all.
+     *
+     * Zero while the sink is closed and zero while the device is full, which
+     * are one answer to the only question this asks: whether writing now would
+     * wait. A consumer that meets a zero has something else to do and comes
+     * back, which is the whole point of asking.
+     *
+     * A floor rather than a promise, and only under one writer. The device
+     * drains on its own, so the true number can grow between the answer and the
+     * write and never shrink; a sink written to from two threads has no
+     * meaningful answer here at all.
+     */
+    public fun writableFrames(): Long
 
     /**
      * Times the device ran dry since [open]. Monotonic within one open.
