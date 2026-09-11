@@ -478,6 +478,17 @@ internal object SpaAbi {
     const val KEY_MEDIA_CATEGORY = "media.category"
     const val KEY_MEDIA_ROLE = "media.role"
     const val KEY_APP_NAME = "application.name"
+
+    /**
+     * The binary a node's process is running, which is what an application that
+     * named itself nothing leaves behind.
+     *
+     * The one fallback a mixer row's application name takes. It is still
+     * something the application said about itself, unlike the node's
+     * description, which is a label the graph may have written and which names
+     * no application at all.
+     */
+    const val KEY_APP_PROCESS_BINARY = "application.process.binary"
     const val KEY_APP_ID = "application.id"
     const val KEY_APP_ICON_NAME = "application.icon-name"
     const val KEY_NODE_NAME = "node.name"

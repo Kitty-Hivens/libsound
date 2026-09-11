@@ -526,6 +526,7 @@ int main(void) {
     printf("  %-30s = %s\n", "PW_KEY_APP_NAME", PW_KEY_APP_NAME);
     printf("  %-30s = %s\n", "PW_KEY_APP_ID", PW_KEY_APP_ID);
     printf("  %-30s = %s\n", "PW_KEY_APP_ICON_NAME", PW_KEY_APP_ICON_NAME);
+    printf("  %-30s = %s\n", "PW_KEY_APP_PROCESS_BINARY", PW_KEY_APP_PROCESS_BINARY);
     printf("  %-30s = %s\n", "PW_KEY_NODE_NAME", PW_KEY_NODE_NAME);
     printf("  %-30s = %s\n", "PW_KEY_NODE_DESCRIPTION", PW_KEY_NODE_DESCRIPTION);
     /* The lever section 4.4 measured pipewire-pulse overwriting. */
