@@ -31,6 +31,8 @@
 #include <pipewire/pipewire.h>
 /* Metadata is an extension rather than core, and the default sink lives in it. */
 #include <pipewire/extensions/metadata.h>
+#include <pipewire/extensions/profiler.h>
+#include <spa/param/profiler.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
 #include <spa/param/latency-utils.h>
@@ -318,6 +320,55 @@ int main(void) {
             SPA_PROP_mute, SPA_POD_Bool(true),
             SPA_PROP_channelVolumes, SPA_POD_Array(sizeof(float), SPA_TYPE_Float, 2, volumes));
         dump("Props", pod, SPA_POD_SIZE(pod));
+    }
+
+    /* The profiler, which is the only place a client can learn that its own
+     * node missed a cycle. A stream is told nothing about it: pw_time carries
+     * no such counter and spa_node_callbacks.xrun belongs to whoever implements
+     * the node, not to whoever holds a stream. The daemon loads the profiler
+     * module by default and publishes one object, which is where pw-top reads
+     * its error column, and every follower block in it carries a node id beside
+     * that node's xrun count. */
+    SECTION("the profiler, and the follower block that carries an xrun count");
+    printf("  %-44s = %s\n", "PW_TYPE_INTERFACE_Profiler", PW_TYPE_INTERFACE_Profiler);
+    P(PW_VERSION_PROFILER);
+    P(sizeof(struct pw_profiler_events));
+    P(offsetof(struct pw_profiler_events, version));
+    P(offsetof(struct pw_profiler_events, profile));
+    P(PW_VERSION_PROFILER_EVENTS);
+    P(SPA_TYPE_OBJECT_Profiler);
+    P(SPA_TYPE_Struct);
+    P(SPA_PROFILER_info);
+    P(SPA_PROFILER_clock);
+    P(SPA_PROFILER_driverBlock);
+    P(SPA_PROFILER_followerBlock);
+    P(SPA_PROFILER_followerClock);
+
+    /* And the bytes, so the reader is checked against the builder here the way
+     * the Props reader already is. A follower block is a struct of ten fields
+     * and only two of them are wanted, so what the decoder has to get right is
+     * walking past the eight it does not read. */
+    SECTION("a reference POD: a Profiler object with one follower block");
+    {
+        uint8_t storage[1024];
+        struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
+        struct spa_pod_frame object_frame, struct_frame;
+        spa_pod_builder_push_object(&builder, &object_frame, SPA_TYPE_OBJECT_Profiler, 0);
+        spa_pod_builder_prop(&builder, SPA_PROFILER_followerBlock, 0);
+        spa_pod_builder_push_struct(&builder, &struct_frame);
+        spa_pod_builder_int(&builder, 49);
+        spa_pod_builder_string(&builder, "libsound_test");
+        spa_pod_builder_long(&builder, 1);
+        spa_pod_builder_long(&builder, 2);
+        spa_pod_builder_long(&builder, 3);
+        spa_pod_builder_long(&builder, 4);
+        spa_pod_builder_int(&builder, 3);
+        spa_pod_builder_fraction(&builder, 1024, 48000);
+        spa_pod_builder_int(&builder, 7);
+        spa_pod_builder_bool(&builder, false);
+        spa_pod_builder_pop(&builder, &struct_frame);
+        const struct spa_pod *pod = spa_pod_builder_pop(&builder, &object_frame);
+        dump("ProfilerFollower", pod, SPA_POD_SIZE(pod));
     }
 
     /* Properties are built from a dict rather than from pw_properties_new,
