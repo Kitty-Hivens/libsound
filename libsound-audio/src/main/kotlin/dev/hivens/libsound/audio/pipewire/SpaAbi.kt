@@ -577,6 +577,16 @@ internal object SpaAbi {
     const val TYPE_STRING = 8
     const val TYPE_BYTES = 9
     const val TYPE_ARRAY = 13
+
+    /**
+     * A sequence of pods with no keys, read by position.
+     *
+     * The profiler's blocks are these, and position is all there is: a follower
+     * block is ten fields of six different types, and the two that are wanted
+     * are the first and the ninth. Everything between them has to be walked
+     * past correctly or the ninth is something else entirely.
+     */
+    const val TYPE_STRUCT = 14
     const val TYPE_OBJECT = 15
 
     /**
@@ -586,6 +596,49 @@ internal object SpaAbi {
      */
     const val OBJECT_FORMAT = 262_147
     const val OBJECT_PARAM_LATENCY = 262_155
+
+    /**
+     * What the graph says about a cycle it just ran, and the only place a
+     * client can learn that its own node missed one.
+     *
+     * A stream is told nothing about it: `pw_time` carries no such counter, and
+     * the callback that would report it belongs to whoever implements the node
+     * rather than to whoever holds a stream. The daemon loads the profiler
+     * module in its shipped configuration and publishes one object, which is
+     * where `pw-top` reads its error column.
+     */
+    const val OBJECT_PROFILER = 262_154
+
+    /**
+     * One node that followed a driver through a cycle, as a struct of ten
+     * fields: id, name, four timestamps, status, latency, xrun count, and
+     * whether it is asynchronous.
+     *
+     * Repeated once per node in the object, which is why the reader keeps the
+     * order and the repeats rather than collapsing an object into a map.
+     */
+    const val PROFILER_FOLLOWER_BLOCK = 131_073
+
+    /** Where the node's own global id is in that struct, and where its count is. */
+    const val PROFILER_BLOCK_ID = 0
+    const val PROFILER_BLOCK_XRUNS = 8
+
+    // -- the profiler interface ----------------------------------------------
+
+    /**
+     * One slot, and no method worth walking: the only method on this interface
+     * is `add_listener`, which is what `pw_proxy_add_object_listener` already
+     * does for every other proxy here.
+     */
+    const val PROFILER_EVENTS_SIZE = 16L
+    const val PROFILER_EVENTS_VERSION = 0L
+    const val PROFILER_EVENTS_PROFILE = 8L
+    const val VERSION_PROFILER_EVENTS = 0
+
+    /** The interface version a bind asks for. */
+    const val VERSION_PROFILER = 3
+
+    const val INTERFACE_PROFILER = "PipeWire:Interface:Profiler"
 
     // -- parameter ids -------------------------------------------------------
 

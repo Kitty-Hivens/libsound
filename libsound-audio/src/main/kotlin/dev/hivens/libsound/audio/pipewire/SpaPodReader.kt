@@ -23,6 +23,23 @@ import java.lang.foreign.ValueLayout
  * property is not a pod: it is a key, a flags word, and one value pod. An
  * array's body is the size and type of one element, then the elements.
  *
+ * ## What it decodes, and what it walks past
+ *
+ * Booleans, ids, ints, longs, floats, arrays of the first three, and structs.
+ * Everything else comes back as null, and the position of what follows it is
+ * unaffected: every pod declares its own size and the walk steps by that size
+ * whatever the type is, so an unknown value is skipped correctly rather than
+ * shifting the rest. That is what lets a follower block be read for its first
+ * and ninth fields while the string and the fraction between them are passed
+ * over.
+ *
+ * The gap worth naming is `Choice`, which wraps a value when the graph is
+ * offering a range or a set rather than stating one. `PropInfo` and
+ * `EnumFormat` are written that way. Neither is read here: the two objects this
+ * decodes are `Props`, whose values the graph writes flat, and the profiler's,
+ * whose blocks are structs of plain numbers. A reader that grew to take either
+ * of the other two would meet this first.
+ *
  * ## Nothing here trusts the numbers
  *
  * The bytes come from another process. Every length is checked against the one
@@ -50,20 +67,35 @@ internal object SpaPodReader {
      * something it does not.
      */
     fun objectProperties(pod: MemorySegment): Map<Int, Any> {
-        if (pod.isNative && pod.address() == 0L) return emptyMap()
-        val header = view(pod, POD_HEADER) ?: return emptyMap()
+        val found = LinkedHashMap<Int, Any>()
+        objectEntries(pod).forEach { (key, value) -> found[key] = value }
+        return found
+    }
+
+    /**
+     * The same properties in the order the graph wrote them, with repeats kept.
+     *
+     * A map is the right shape for the objects this started with, where a key
+     * appears once and a caller asks for the one it wants. The profiler's
+     * object is not one of those: it carries a block under the same key for
+     * every node in the cycle, so a map would keep the last node and drop the
+     * rest of the graph.
+     */
+    fun objectEntries(pod: MemorySegment): List<Pair<Int, Any>> {
+        if (pod.isNative && pod.address() == 0L) return emptyList()
+        val header = view(pod, POD_HEADER) ?: return emptyList()
         val size = header.get(INT32, SpaAbi.POD_SIZE_OFFSET.toLong())
         val type = header.get(INT32, SpaAbi.POD_TYPE_OFFSET.toLong())
-        if (type != SpaAbi.TYPE_OBJECT) return emptyMap()
-        if (size < SpaAbi.POD_OBJECT_BODY_SIZE || size > MAX_POD_BYTES) return emptyMap()
+        if (type != SpaAbi.TYPE_OBJECT) return emptyList()
+        if (size < SpaAbi.POD_OBJECT_BODY_SIZE || size > MAX_POD_BYTES) return emptyList()
         val declared = POD_HEADER + size
         // A pointer from the graph arrives with no length attached, so the size
         // it declares is the only one there is. A segment that carries its own
         // length is clamped to it instead, which is what lets a truncated
         // reference dump be put through this in a test.
         val end = if (pod.isNative) declared else minOf(declared, pod.byteSize().toInt())
-        val whole = view(pod, end) ?: return emptyMap()
-        return properties(whole, end)
+        val whole = view(pod, end) ?: return emptyList()
+        return entries(whole, end)
     }
 
     /** A view of at least [bytes] bytes, or null where there are not that many. */
@@ -84,6 +116,10 @@ internal object SpaPodReader {
     fun objectProperties(bytes: ByteArray): Map<Int, Any> =
         objectProperties(MemorySegment.ofArray(bytes))
 
+    /** The same, over bytes already copied out of the graph. */
+    fun objectEntries(bytes: ByteArray): List<Pair<Int, Any>> =
+        objectEntries(MemorySegment.ofArray(bytes))
+
     /** What object type and parameter id a pod carries, or null if it is not an object. */
     fun objectHeader(bytes: ByteArray): Pair<Int, Int>? {
         if (bytes.size < POD_HEADER + SpaAbi.POD_OBJECT_BODY_SIZE) return null
@@ -95,8 +131,8 @@ internal object SpaPodReader {
 
     // -- the walk -------------------------------------------------------------
 
-    private fun properties(whole: MemorySegment, end: Int): Map<Int, Any> {
-        val found = LinkedHashMap<Int, Any>()
+    private fun entries(whole: MemorySegment, end: Int): List<Pair<Int, Any>> {
+        val found = ArrayList<Pair<Int, Any>>()
         var at = POD_HEADER + SpaAbi.POD_OBJECT_BODY_SIZE
         while (at + SpaAbi.POD_PROP_HEADER_SIZE + POD_HEADER <= end) {
             val key = whole.get(INT32, at.toLong())
@@ -108,13 +144,37 @@ internal object SpaPodReader {
             // Continuing would read whatever the graph allocated next, and the
             // bytes come from another process.
             if (size < 0 || body + size > end) break
-            valueOf(whole, body, size, type)?.let { found[key] = it }
+            valueOf(whole, body, size, type, 0)?.let { found += key to it }
             at = body + padded(size)
         }
         return found
     }
 
-    private fun valueOf(whole: MemorySegment, body: Int, size: Int, type: Int): Any? = when (type) {
+    /**
+     * A struct's fields, by position, with a null where the type is one this
+     * does not decode.
+     *
+     * The nulls are the point rather than a shortfall. A follower block is ten
+     * fields and two of them are wanted, so what matters is that the eight in
+     * between are walked past by their own declared size and leave the
+     * positions of the other two where they belong.
+     */
+    private fun fields(whole: MemorySegment, body: Int, size: Int, depth: Int): List<Any?> {
+        val found = ArrayList<Any?>()
+        var at = body
+        val limit = body + size
+        while (at + POD_HEADER <= limit && found.size < MAX_STRUCT_FIELDS) {
+            val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
+            val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
+            val childBody = at + POD_HEADER
+            if (childSize < 0 || childBody + childSize > limit) break
+            found += valueOf(whole, childBody, childSize, childType, depth + 1)
+            at = childBody + padded(childSize)
+        }
+        return found
+    }
+
+    private fun valueOf(whole: MemorySegment, body: Int, size: Int, type: Int, depth: Int): Any? = when (type) {
         SpaAbi.TYPE_BOOL -> size >= Int.SIZE_BYTES &&
             whole.get(INT32, body.toLong()) != 0
         SpaAbi.TYPE_ID, SpaAbi.TYPE_INT ->
@@ -124,6 +184,10 @@ internal object SpaPodReader {
         SpaAbi.TYPE_FLOAT ->
             if (size >= Float.SIZE_BYTES) whole.get(FLOAT32, body.toLong()) else null
         SpaAbi.TYPE_ARRAY -> array(whole, body, size)
+        // Bounded rather than trusted: the bytes come from another process, and
+        // nothing the graph sends here nests further than a block inside an
+        // object.
+        SpaAbi.TYPE_STRUCT -> if (depth >= MAX_STRUCT_DEPTH) null else fields(whole, body, size, depth)
         else -> null
     }
 
@@ -167,4 +231,10 @@ internal object SpaPodReader {
 
     /** More channels than any layout names, by a wide margin. */
     private const val MAX_ARRAY_ELEMENTS = 4_096
+
+    /** Longer than any block the graph writes, by a wide margin. */
+    private const val MAX_STRUCT_FIELDS = 64
+
+    /** A block inside an object is one level. Nothing here sends two. */
+    private const val MAX_STRUCT_DEPTH = 1
 }
