@@ -95,7 +95,42 @@ internal object SpaPodReader {
         // reference dump be put through this in a test.
         val end = if (pod.isNative) declared else minOf(declared, pod.byteSize().toInt())
         val whole = view(pod, end) ?: return emptyList()
-        return entries(whole, end)
+        return entriesAt(whole, POD_HEADER, size, end)
+    }
+
+    /**
+     * The same, for a pod that is a struct of objects rather than one object.
+     *
+     * The shape the profiler sends: a struct holding one object per driver,
+     * each carrying a block for every node that followed it. Flattened,
+     * because a caller looking for one key across the whole cycle has no use
+     * for which driver it came from, and a node appears under one driver.
+     *
+     * An object at the top is taken as well, so a caller that does not know
+     * which of the two it has can ask this.
+     */
+    fun structuredEntries(pod: MemorySegment): List<Pair<Int, Any>> {
+        if (pod.isNative && pod.address() == 0L) return emptyList()
+        val header = view(pod, POD_HEADER) ?: return emptyList()
+        val size = header.get(INT32, SpaAbi.POD_SIZE_OFFSET.toLong())
+        val type = header.get(INT32, SpaAbi.POD_TYPE_OFFSET.toLong())
+        if (size < 0 || size > MAX_POD_BYTES) return emptyList()
+        val declared = POD_HEADER + size
+        val end = if (pod.isNative) declared else minOf(declared, pod.byteSize().toInt())
+        val whole = view(pod, end) ?: return emptyList()
+        if (type == SpaAbi.TYPE_OBJECT) return entriesAt(whole, POD_HEADER, size, end)
+        if (type != SpaAbi.TYPE_STRUCT) return emptyList()
+        val found = ArrayList<Pair<Int, Any>>()
+        var at = POD_HEADER
+        while (at + POD_HEADER <= end) {
+            val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
+            val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
+            val childBody = at + POD_HEADER
+            if (childSize < 0 || childBody + childSize > end) break
+            if (childType == SpaAbi.TYPE_OBJECT) found += entriesAt(whole, childBody, childSize, end)
+            at = childBody + padded(childSize)
+        }
+        return found
     }
 
     /** A view of at least [bytes] bytes, or null where there are not that many. */
@@ -131,9 +166,18 @@ internal object SpaPodReader {
 
     // -- the walk -------------------------------------------------------------
 
-    private fun entries(whole: MemorySegment, end: Int): List<Pair<Int, Any>> {
+    /**
+     * One object's properties, wherever that object sits.
+     *
+     * [body] is just past its pod header, so the properties start after the
+     * object type and id that its body opens with, and [size] is what that
+     * header declared. [limit] is how far the bytes actually reach, which is
+     * the smaller of the two wherever a dump has been cut short.
+     */
+    private fun entriesAt(whole: MemorySegment, body: Int, size: Int, limit: Int): List<Pair<Int, Any>> {
         val found = ArrayList<Pair<Int, Any>>()
-        var at = POD_HEADER + SpaAbi.POD_OBJECT_BODY_SIZE
+        val end = minOf(body + size, limit)
+        var at = body + SpaAbi.POD_OBJECT_BODY_SIZE
         while (at + SpaAbi.POD_PROP_HEADER_SIZE + POD_HEADER <= end) {
             val key = whole.get(INT32, at.toLong())
             val value = at + SpaAbi.POD_PROP_HEADER_SIZE
@@ -228,6 +272,10 @@ internal object SpaPodReader {
 
     /** A parameter object larger than this is one something is wrong with. */
     private const val MAX_POD_BYTES = 1 shl 20
+
+    /** The same, over bytes already copied out of the graph. */
+    fun structuredEntries(bytes: ByteArray): List<Pair<Int, Any>> =
+        structuredEntries(MemorySegment.ofArray(bytes))
 
     /** More channels than any layout names, by a wide margin. */
     private const val MAX_ARRAY_ELEMENTS = 4_096
