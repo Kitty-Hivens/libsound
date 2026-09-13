@@ -358,11 +358,14 @@ internal class CoreAudioSink(
     }
 
     /**
-     * Renders where the unit asked for audio and the ring had less, which is
-     * the shape the native PipeWire sink's count has and carries the same
-     * limit: it is incremented inside the callback the device drives, so a
-     * callback that did not run in time increments nothing. Whether that
-     * happens here has not been measured.
+     * Renders where the unit asked for audio and the ring had less.
+     *
+     * One of the two gaps, and the one a callback can count. The other is a
+     * render this client was late for, which increments nothing here because
+     * nothing ran. The native PipeWire sink reports that half by asking the
+     * graph, which keeps its own account of every cycle. CoreAudio publishes no
+     * equivalent that this has found, so the half stays missing and is said to
+     * be rather than left to be discovered.
      */
     override fun underrunCount(): Long = underruns.get()
 

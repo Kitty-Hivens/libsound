@@ -285,13 +285,13 @@ public interface AudioSink : AutoCloseable {
      * apart.
      *
      * It counts what the backend can see, and that is not the same everywhere.
-     * Where the server reports the gap, as libpulse does, the count is the
-     * device's own account of running dry. Where the backend counts inside a
-     * callback the device drives, it sees a callback that ran and found too
-     * little, and it cannot see a callback that did not run in time, because a
-     * callback that never ran increments nothing. Both are gaps a listener
-     * hears. A consumer reading a steady zero at a short profile has been told
-     * that one of the two did not happen, not that neither did.
+     * There are two gaps a listener hears: the device asked for audio and there
+     * was too little of it, and the device asked and this client was not there
+     * to answer. A backend that counts inside a callback sees the first and not
+     * the second, because a callback that never ran increments nothing. Where
+     * the server keeps its own account, as libpulse does and as the graph does
+     * for the native path, both are reported. A consumer reading a steady zero
+     * at a short profile should know which kind of backend it is asking.
      */
     public fun underrunCount(): Long
 

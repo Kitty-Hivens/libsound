@@ -371,6 +371,48 @@ int main(void) {
         dump("ProfilerFollower", pod, SPA_POD_SIZE(pod));
     }
 
+    /* And the shape a profile event actually arrives in, which is not the one
+     * above: measured against a live graph, every event carried a struct whose
+     * children are objects, one per driver. A reader that expected a single
+     * object at the top found nothing and said nothing. */
+    SECTION("a reference POD: a profile event, which is a struct of objects");
+    {
+        uint8_t storage[2048];
+        struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
+        struct spa_pod_frame outer, object_frame, struct_frame;
+        spa_pod_builder_push_struct(&builder, &outer);
+        spa_pod_builder_push_object(&builder, &object_frame, SPA_TYPE_OBJECT_Profiler, 0);
+        spa_pod_builder_prop(&builder, SPA_PROFILER_followerBlock, 0);
+        spa_pod_builder_push_struct(&builder, &struct_frame);
+        spa_pod_builder_int(&builder, 49);
+        spa_pod_builder_string(&builder, "libsound_test");
+        spa_pod_builder_long(&builder, 1);
+        spa_pod_builder_long(&builder, 2);
+        spa_pod_builder_long(&builder, 3);
+        spa_pod_builder_long(&builder, 4);
+        spa_pod_builder_int(&builder, 3);
+        spa_pod_builder_fraction(&builder, 1024, 48000);
+        spa_pod_builder_int(&builder, 7);
+        spa_pod_builder_bool(&builder, false);
+        spa_pod_builder_pop(&builder, &struct_frame);
+        spa_pod_builder_prop(&builder, SPA_PROFILER_followerBlock, 0);
+        spa_pod_builder_push_struct(&builder, &struct_frame);
+        spa_pod_builder_int(&builder, 50);
+        spa_pod_builder_string(&builder, "another");
+        spa_pod_builder_long(&builder, 1);
+        spa_pod_builder_long(&builder, 2);
+        spa_pod_builder_long(&builder, 3);
+        spa_pod_builder_long(&builder, 4);
+        spa_pod_builder_int(&builder, 3);
+        spa_pod_builder_fraction(&builder, 1024, 48000);
+        spa_pod_builder_int(&builder, 0);
+        spa_pod_builder_bool(&builder, false);
+        spa_pod_builder_pop(&builder, &struct_frame);
+        spa_pod_builder_pop(&builder, &object_frame);
+        const struct spa_pod *pod = spa_pod_builder_pop(&builder, &outer);
+        dump("ProfileEvent", pod, SPA_POD_SIZE(pod));
+    }
+
     /* Properties are built from a dict rather than from pw_properties_new,
      * which is variadic: a Panama downcall to a variadic function needs a
      * descriptor per call shape, and a dict needs none. */

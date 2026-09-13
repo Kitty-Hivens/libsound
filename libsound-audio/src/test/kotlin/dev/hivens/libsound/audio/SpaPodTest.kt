@@ -155,6 +155,21 @@ class SpaPodTest {
     }
 
     @Test
+    fun `a profile event is a struct of objects, and every block in it is read`() {
+        // The shape the graph sends, which is not the shape the interface's own
+        // documentation suggests: a struct whose children are objects rather
+        // than one object. A reader that expected the second found nothing and
+        // said nothing, which is how this was missed until a live graph was
+        // asked.
+        val blocks = SpaPodReader.structuredEntries(PROFILE_EVENT.fromHex())
+            .filter { it.first == SpaAbi.PROFILER_FOLLOWER_BLOCK }
+            .map { it.second as List<*> }
+        blocks.size shouldBe 2
+        blocks.map { it[SpaAbi.PROFILER_BLOCK_ID] } shouldBe listOf(49, 50)
+        blocks.map { it[SpaAbi.PROFILER_BLOCK_XRUNS] } shouldBe listOf(7, 0)
+    }
+
+    @Test
     fun `an object carrying one key many times keeps every one of them`() {
         // The profiler writes a block per node under the same key. A map would
         // keep the last node on the graph and silently drop the rest, which is
@@ -286,6 +301,38 @@ class SpaPodTest {
                 "00 04 00 00 80 bb 00 00 04 00 00 00 04 00 00 00 " +
                 "07 00 00 00 00 00 00 00 04 00 00 00 02 00 00 00 " +
                 "00 00 00 00 00 00 00 00"
+
+        /**
+         * The same again in the shape a profile event actually arrives in: a
+         * struct whose children are objects, one per driver, carrying a block
+         * per node. Two blocks here, so a reader that kept only the last would
+         * be caught.
+         */
+        const val PROFILE_EVENT =
+            "78 01 00 00 0e 00 00 00 70 01 00 00 0f 00 00 00 " +
+                "0a 00 04 00 00 00 00 00 01 00 02 00 00 00 00 00 " +
+                "a8 00 00 00 0e 00 00 00 04 00 00 00 04 00 00 00 " +
+                "31 00 00 00 00 00 00 00 0e 00 00 00 08 00 00 00 " +
+                "6c 69 62 73 6f 75 6e 64 5f 74 65 73 74 00 00 00 " +
+                "08 00 00 00 05 00 00 00 01 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 02 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 04 00 00 00 00 00 00 00 " +
+                "04 00 00 00 04 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 0b 00 00 00 00 04 00 00 80 bb 00 00 " +
+                "04 00 00 00 04 00 00 00 07 00 00 00 00 00 00 00 " +
+                "04 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00 " +
+                "01 00 02 00 00 00 00 00 a0 00 00 00 0e 00 00 00 " +
+                "04 00 00 00 04 00 00 00 32 00 00 00 00 00 00 00 " +
+                "08 00 00 00 08 00 00 00 61 6e 6f 74 68 65 72 00 " +
+                "08 00 00 00 05 00 00 00 01 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 02 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 04 00 00 00 00 00 00 00 " +
+                "04 00 00 00 04 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 0b 00 00 00 00 04 00 00 80 bb 00 00 " +
+                "04 00 00 00 04 00 00 00 00 00 00 00 00 00 00 00 " +
+                "04 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00"
 
         const val PROPS_VOLUME =
             "58 00 00 00 0f 00 00 00 02 00 04 00 02 00 00 00 " +

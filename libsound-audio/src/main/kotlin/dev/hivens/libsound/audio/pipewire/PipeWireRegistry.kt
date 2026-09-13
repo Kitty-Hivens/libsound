@@ -208,12 +208,30 @@ internal class PipeWireRegistry private constructor(
     @Volatile
     private var defaultSourceName: String? = null
 
+    /**
+     * What the graph says each node has missed, by that node's global id.
+     *
+     * The only place a client can learn it. A stream is told nothing: `pw_time`
+     * carries no such counter, and the callback that would report one belongs
+     * to whoever implements the node rather than to whoever holds a stream. The
+     * daemon publishes it instead, once per cycle, and this is the same number
+     * `pw-top` shows in its error column.
+     */
+    private val missed = ConcurrentHashMap<Int, Long>()
+
     /** The metadata global this is bound to, or -1 while nothing is. */
     @Volatile
     private var metadataId = NO_GLOBAL
 
     @Volatile
     private var metadata: MemorySegment = MemorySegment.NULL
+
+    /** The profiler global this is bound to, or -1 where the graph has none. */
+    @Volatile
+    private var profilerId = NO_GLOBAL
+
+    @Volatile
+    private var profiler: MemorySegment = MemorySegment.NULL
 
     /**
      * Every application currently playing, by the serial that names it for good.
@@ -349,6 +367,27 @@ internal class PipeWireRegistry private constructor(
     fun hasMetadata(): Boolean = metadata.address() != 0L
 
     /**
+     * Cycles the graph says this node missed, or null where it cannot say.
+     *
+     * Null on a graph whose daemon does not load the profiler module, and null
+     * for a node no cycle has mentioned yet. Zero is a different answer and
+     * says the graph has spoken for this node and counted nothing.
+     *
+     * The count belongs to the node rather than to a connection, and a node
+     * exists from the moment a stream connects, so nothing has to be subtracted
+     * for a baseline: a stream that has just opened is asking about a node
+     * whose count starts where the node did.
+     */
+    fun missedCycles(node: Int): Long? = missed[node]
+
+    /** The same, for a node named the way the graph lists it. */
+    fun missedCycles(name: String): Long? =
+        nodes.entries.firstOrNull { it.value.name == name }?.let { missed[it.key] }
+
+    /** Whether the graph reports cycles at all, which needs the profiler module. */
+    fun hasProfiler(): Boolean = profiler.address() != 0L
+
+    /**
      * How many channels a device has, off its own channel map, or null while
      * the graph has not said.
      *
@@ -451,6 +490,7 @@ internal class PipeWireRegistry private constructor(
                     // Every bound proxy before the registry that handed them
                     // out, and all of it before the connection they went on.
                     nodeProxies.keys.toList().forEach { releaseNode(it) }
+                    releaseProfiler()
                     releaseMetadata()
                     lib.handle("pw_proxy_destroy").invokeExact(registry) as Unit
                     lib.handle("pw_core_disconnect").invokeExact(core) as Int
@@ -482,11 +522,17 @@ internal class PipeWireRegistry private constructor(
         props: MemorySegment,
     ) {
         runCatching {
-            if (props.address() == 0L) return@runCatching
             when (type.readCString()) {
-                SpaAbi.INTERFACE_NODE -> addNode(id, readDict(props))
-                SpaAbi.INTERFACE_METADATA -> bindDefaults(id, readDict(props))
-                SpaAbi.INTERFACE_LINK -> addLink(id, readDict(props))
+                // Asked for by type alone, because a global need not carry a
+                // property dict and this one carries none. The three below are
+                // read out of theirs, so each checks for its own.
+                SpaAbi.INTERFACE_PROFILER -> bindProfiler(id)
+                SpaAbi.INTERFACE_NODE ->
+                    if (props.address() != 0L) addNode(id, readDict(props))
+                SpaAbi.INTERFACE_METADATA ->
+                    if (props.address() != 0L) bindDefaults(id, readDict(props))
+                SpaAbi.INTERFACE_LINK ->
+                    if (props.address() != 0L) addLink(id, readDict(props))
                 else -> return@runCatching
             }
         }.onFailure { log.debug("registry global threw: {}", it.message) }
@@ -504,7 +550,9 @@ internal class PipeWireRegistry private constructor(
                 defaultSourceName = null
                 fire()
             }
+            if (id == profilerId) releaseProfiler()
             releaseNode(id)
+            missed.remove(id)
             playing.entries.removeIf { it.value == id }
             // A link going is a stream that stopped playing to something, which
             // is a row whose device changed rather than a row that left.
@@ -631,6 +679,36 @@ internal class PipeWireRegistry private constructor(
             )
             fire()
         }.onFailure { log.debug("node info threw: {}", it.message) }
+    }
+
+    /**
+     * One cycle of the graph, as the profiler describes it.
+     *
+     * An object carrying a block per node that followed the driver through that
+     * cycle, each a struct whose first field is the node's global id and whose
+     * ninth is how many cycles that node has missed. Read for those two and
+     * nothing else: the rest is timings this library has no use for, and they
+     * are walked past by their own declared sizes.
+     *
+     * The blocks repeat under one key, which is why the entries are taken in
+     * order rather than as a map.
+     */
+    fun onProfile(unusedData: MemorySegment, pod: MemorySegment) {
+        runCatching {
+            if (pod.address() == 0L) return
+            // A struct of objects, one per driver, rather than a single
+            // object: measured against a live graph, where every profile event
+            // arrived as a struct whose children carry the blocks.
+            SpaPodReader.structuredEntries(pod).forEach { (key, value) ->
+                if (key != SpaAbi.PROFILER_FOLLOWER_BLOCK) return@forEach
+                val block = value as? List<*> ?: return@forEach
+                val node = block.getOrNull(SpaAbi.PROFILER_BLOCK_ID) as? Int ?: return@forEach
+                val count = block.getOrNull(SpaAbi.PROFILER_BLOCK_XRUNS) as? Int ?: return@forEach
+                // The graph counts this as a 32-bit unsigned, and a count that
+                // has wrapped past two billion cycles is still a count.
+                missed[node] = count.toLong() and UNSIGNED_INT
+            }
+        }.onFailure { log.debug("profile threw: {}", it.message) }
     }
 
     /**
@@ -1206,6 +1284,51 @@ internal class PipeWireRegistry private constructor(
             .invokeExact(proxy, metadataHook, metadataEvents, MemorySegment.NULL) as Unit
     }
 
+    /**
+     * Bind the profiler, which is how this connection hears what the graph did
+     * with each cycle.
+     *
+     * One object and one bind, and no method table to walk: the interface's
+     * only method is adding a listener, which is what every other proxy here
+     * already does through `pw_proxy_add_object_listener`.
+     *
+     * Absent on a graph whose daemon does not load the module, which is a graph
+     * that answers nothing about missed cycles rather than one that answers
+     * zero. [missedCycles] is null there and says so.
+     */
+    private fun bindProfiler(id: Int) {
+        if (profilerId != NO_GLOBAL) return
+        val proxy = bind(id, profilerType, SpaAbi.VERSION_PROFILER)
+        if (proxy.address() == 0L) {
+            log.debug("bind of the profiler answered null")
+            return
+        }
+        val gave = interfaceType(proxy)
+        if (gave != SpaAbi.INTERFACE_PROFILER) {
+            log.debug("bind of the profiler answered a {}", gave)
+            runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+            return
+        }
+        profiler = proxy
+        profilerId = id
+        lib.handle("pw_proxy_add_object_listener")
+            .invokeExact(proxy, profilerHook, profilerEvents, MemorySegment.NULL) as Unit
+    }
+
+    /** Drop the bound proxy and everything it was reporting. The loop lock must be held. */
+    private fun releaseProfiler() {
+        val proxy = profiler
+        profiler = MemorySegment.NULL
+        profilerId = NO_GLOBAL
+        // What it said is no longer being refreshed, and a count nobody is
+        // updating is worse than no count: a consumer watching for a rise would
+        // watch a number frozen wherever the module happened to go.
+        missed.clear()
+        if (proxy.address() == 0L) return
+        runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
+            .onFailure { log.debug("profiler proxy destroy threw: {}", it.message) }
+    }
+
     /** Drop the bound proxy. The loop lock must be held. */
     private fun releaseMetadata() {
         val proxy = metadata
@@ -1343,6 +1466,9 @@ internal class PipeWireRegistry private constructor(
         metadataHook
         nodeEvents
         nodeType
+        profilerEvents
+        profilerHook
+        profilerType
         propsParam
     }
 
@@ -1381,6 +1507,41 @@ internal class PipeWireRegistry private constructor(
 
     private val metadataHook: MemorySegment by lazy {
         stubArena.allocate(SpaAbi.HOOK_SIZE, 8).apply { fill(0) }
+    }
+
+    /**
+     * The profiler's events, which is one slot and the version in front of it.
+     *
+     * Built here rather than at the global that needs one, for the reason the
+     * node's are: the stubs are linked while nothing is waiting on them.
+     */
+    private val profilerEvents: MemorySegment by lazy {
+        val struct = stubArena.allocate(SpaAbi.PROFILER_EVENTS_SIZE, 8)
+        struct.fill(0)
+        struct.set(ValueLayout.JAVA_INT, SpaAbi.PROFILER_EVENTS_VERSION, SpaAbi.VERSION_PROFILER_EVENTS)
+        struct.set(
+            ValueLayout.ADDRESS, SpaAbi.PROFILER_EVENTS_PROFILE,
+            Linker.nativeLinker().upcallStub(
+                MethodHandles.lookup().findVirtual(
+                    PipeWireRegistry::class.java, "onProfile",
+                    MethodType.methodType(
+                        Void.TYPE, MemorySegment::class.java, MemorySegment::class.java,
+                    ),
+                ).bindTo(this),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+                stubArena,
+            ),
+        )
+        struct
+    }
+
+    private val profilerHook: MemorySegment by lazy {
+        stubArena.allocate(SpaAbi.HOOK_SIZE, 8).apply { fill(0) }
+    }
+
+    /** Allocated once and kept, for the reason [bind] gives. */
+    private val profilerType: MemorySegment by lazy {
+        stubArena.allocateFrom(SpaAbi.INTERFACE_PROFILER)
     }
 
     /**
@@ -1447,6 +1608,9 @@ internal class PipeWireRegistry private constructor(
         /** No serial. Real ones are assigned by the graph and positive. */
         private const val NO_SERIAL = 0L
 
+        /** The graph counts cycles as a 32-bit unsigned, and Kotlin has no such type. */
+        private const val UNSIGNED_INT = 0xFFFF_FFFFL
+
         /**
          * How long a connect waits for the graph to answer a sync.
          *
@@ -1479,6 +1643,7 @@ internal class PipeWireRegistry private constructor(
                     context = lib.handle("pw_context_new")
                         .invokeExact(loop.loop, MemorySegment.NULL, 0L) as MemorySegment
                     check(context.address() != 0L) { "pw_context_new failed" }
+                    loadProfiler(lib, context)
                     core = lib.handle("pw_context_connect")
                         .invokeExact(context, MemorySegment.NULL, 0L) as MemorySegment
                     check(core.address() != 0L) { "pw_context_connect failed" }
@@ -1505,6 +1670,40 @@ internal class PipeWireRegistry private constructor(
                 null
             }
         }
+
+        /**
+         * Load the profiler module into this process's own context, which is
+         * what makes the profiler interface bindable at all.
+         *
+         * Not the daemon's context: this adds nothing to the graph and changes
+         * nothing for anybody else. What it adds is the client half of the
+         * protocol for one extension, which ships inside that extension's
+         * module rather than in `protocol-native`. A client context loads a
+         * fixed set by default, `metadata` among them, which is why the
+         * metadata object binds without this and the profiler does not: without
+         * the marshaller the type cannot be named and `pw_registry_bind`
+         * answers null with nothing said. `pw-top` does exactly this before
+         * asking the same question.
+         *
+         * A failure is not one: the graph then says nothing about missed
+         * cycles, which is a thing this reports rather than a thing it needs.
+         */
+        private fun loadProfiler(lib: PipeWireLibrary, context: MemorySegment) {
+            runCatching {
+                Arena.ofConfined().use { call ->
+                    val module = lib.handle("pw_context_load_module").invokeExact(
+                        context, call.allocateFrom(PROFILER_MODULE),
+                        MemorySegment.NULL, MemorySegment.NULL,
+                    ) as MemorySegment
+                    if (module.address() == 0L) {
+                        log.info("no {}: the graph will not say which cycles a node missed", PROFILER_MODULE)
+                    }
+                }
+            }.onFailure { log.info("loading {} threw: {}", PROFILER_MODULE, it.message) }
+        }
+
+        /** Where the client half of the profiler protocol lives. */
+        private const val PROFILER_MODULE = "libpipewire-module-profiler"
 
         /**
          * `pw_core_get_registry`, which is a macro over the core's method
