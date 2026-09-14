@@ -212,6 +212,11 @@ internal class PulseSink(
         if (closed.get()) throw AudioException("sink is closed")
         refuseUnacceptable(format)
         disconnectStream()
+        // Cleared with the stream it described, not replaced once the new one
+        // stands. Everything below can still fail, and a consumer walking a
+        // ladder of encodings reads isOpen and format between the rungs: left
+        // standing, the format would describe a stream that has been torn down.
+        openFormat = null
         abort = false
         lastKnownFrames = 0
         framesWritten = 0

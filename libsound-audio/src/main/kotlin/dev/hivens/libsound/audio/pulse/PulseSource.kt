@@ -157,6 +157,10 @@ internal class PulseSource(
         if (closed.get()) throw AudioException("source is closed")
         refuseUnacceptable(format)
         disconnectStream()
+        // Cleared with the stream it described, for the reason the playback
+        // side gives: everything below can still fail, and a source that failed
+        // to open must not answer with the shape of the take before it.
+        openFormat = null
         abort = false
         lastKnownFrames = 0
         overruns.set(0)
