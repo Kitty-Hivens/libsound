@@ -128,7 +128,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   volume, mute and device, moving one, each device's own volume and mute,
   choosing the default, devices that do not exist in hardware, a level meter,
   and stream events worked out from the one coarse signal the graph gives.
-  Cards, profiles and ports are absent and said to be absent.
+  Cards, profiles and ports are absent and said to be absent. Combining several
+  devices into one is there as well, which is not a factory object on the graph
+  but a module loaded into this process's own context, so the device belongs to
+  this connection the way the others do.
 
   Moving a stream is claimed only where the object it is written into is bound,
   because a graph running without a session manager has nothing that would act

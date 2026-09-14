@@ -551,6 +551,35 @@ internal object SpaAbi {
     const val FACTORY_ADAPTER = "adapter"
     const val FACTORY_NULL_SINK = "support.null-audio-sink"
 
+    /**
+     * The module that plays one thing to several devices at once.
+     *
+     * Not a factory on the core: there is no call that makes one, and the core
+     * has no method for loading a module either. What there is is loading it
+     * into this process's own context, which is where the profiler's protocol
+     * comes from as well, and a combined sink made that way belongs to this
+     * connection the way a null sink made through the factory does.
+     *
+     * Not from a header. The name is the file the daemon ships and the argument
+     * keys are the ones that module documents for itself, which is why the
+     * oracle prints neither.
+     */
+    const val MODULE_COMBINE_STREAM = "libpipewire-module-combine-stream"
+
+    /**
+     * Which devices a combined sink forwards to, as the rule that module
+     * selects them with.
+     *
+     * A rule is a list of matches and an action, and the matches are taken as
+     * alternatives: one entry naming each device is how a fixed set is
+     * addressed rather than a pattern. The module's own default is the same
+     * shape with a `media.class` match, which is what makes it follow every
+     * sink on the machine instead of the two a caller named.
+     */
+    const val KEY_STREAM_RULES = "stream.rules"
+    const val KEY_COMBINE_MODE = "combine.mode"
+    const val COMBINE_MODE_SINK = "sink"
+
     /** How many channels a created device has, and what each of them is. */
     const val KEY_AUDIO_CHANNELS = "audio.channels"
     const val KEY_AUDIO_POSITION = "audio.position"

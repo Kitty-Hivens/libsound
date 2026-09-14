@@ -136,6 +136,9 @@ internal class PipeWireLibrary private constructor(
             // than in protocol-native: a client that has not loaded it cannot
             // name the type, and the bind comes back null with nothing said.
             Triple("pw_context_load_module", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
+            // And the other half of that, because a module loaded into this
+            // context is this connection's to remove.
+            Triple("pw_impl_module_destroy", null, listOf(ADDR)),
             Triple("pw_context_connect", ADDR, listOf(ADDR, ADDR, I64)),
             Triple("pw_core_disconnect", I32, listOf(ADDR)),
 

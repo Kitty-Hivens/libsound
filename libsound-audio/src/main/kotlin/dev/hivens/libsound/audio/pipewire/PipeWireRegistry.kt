@@ -267,6 +267,16 @@ internal class PipeWireRegistry private constructor(
      */
     private val createdSinks = HashMap<String, MemorySegment>()
 
+    /**
+     * Modules this connection loaded, by the device name each one makes.
+     *
+     * A combined sink is not a factory object and has no proxy: it is a module
+     * in this process's own context, and destroying the module is what removes
+     * the device. Kept apart from [createdSinks] because the two are taken back
+     * by different calls, and touched under the same lock.
+     */
+    private val createdModules = HashMap<String, MemorySegment>()
+
     /** The sequence number the barrier is waiting for, and whether it arrived. */
     @Volatile
     private var pendingSeq = NO_SEQ
@@ -487,6 +497,12 @@ internal class PipeWireRegistry private constructor(
                         runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
                     }
                     createdSinks.clear()
+                    // And the modules, which make a device the same way from
+                    // this process's side rather than the graph's.
+                    createdModules.values.forEach { module ->
+                        runCatching { lib.handle("pw_impl_module_destroy").invokeExact(module) as Unit }
+                    }
+                    createdModules.clear()
                     // Every bound proxy before the registry that handed them
                     // out, and all of it before the connection they went on.
                     nodeProxies.keys.toList().forEach { releaseNode(it) }
@@ -1055,11 +1071,68 @@ internal class PipeWireRegistry private constructor(
         }
     }
 
-    /** Drop a device this connection made. False for one it did not make. */
+    /**
+     * Play the same audio to several devices at once, for as long as this
+     * connection lasts.
+     *
+     * A module rather than a factory object, because the graph has no factory
+     * for one and the core has no call that loads a module. What it does have
+     * is loading one into this process's own context, which adds nothing to
+     * anybody else's graph and gives the device the lifetime
+     * `VolumeMixer.createVirtualSink` is written under: it belongs to this
+     * connection and goes when the connection goes.
+     *
+     * The targets are named one per match rather than matched by pattern. The
+     * module's own default rule takes every sink with a `media.class` match,
+     * which would make a caller that named two devices get all of them.
+     *
+     * Stereo, because the interface offers no channel count for a combined
+     * sink and the module's own default is the same.
+     */
+    fun createCombinedSink(name: String, targets: List<String>): Boolean = calls.withLock {
+        if (closed.get() || targets.isEmpty()) return@withLock false
+        val matches = targets.joinToString(" ") { "{ node.name = \"$it\" }" }
+        val args = buildString {
+            append(SpaAbi.KEY_COMBINE_MODE).append(" = ").append(SpaAbi.COMBINE_MODE_SINK)
+            append(" ").append(SpaAbi.KEY_NODE_NAME).append(" = \"").append(name).append("\"")
+            append(" ").append(SpaAbi.KEY_NODE_DESCRIPTION).append(" = \"").append(name).append("\"")
+            append(" ").append(SpaAbi.KEY_STREAM_RULES)
+            append(" = [ { matches = [ ").append(matches).append(" ] actions = { create-stream = { } } } ]")
+        }
+        runCatching {
+            loop.locked {
+                if (createdModules.containsKey(name) || createdSinks.containsKey(name)) return@locked false
+                Arena.ofConfined().use { call ->
+                    val module = lib.handle("pw_context_load_module").invokeExact(
+                        context, call.allocateFrom(SpaAbi.MODULE_COMBINE_STREAM),
+                        call.allocateFrom(args), MemorySegment.NULL,
+                    ) as MemorySegment
+                    if (module.address() == 0L) return@locked false
+                    createdModules[name] = module
+                    true
+                }
+            }
+        }.onFailure { log.debug("loading {} threw: {}", SpaAbi.MODULE_COMBINE_STREAM, it.message) }
+            .getOrDefault(false)
+    }
+
+    /**
+     * Drop a device this connection made. False for one it did not make.
+     *
+     * Either kind: a factory object is destroyed through its proxy and a
+     * combined sink by destroying the module that makes it, and a caller
+     * holding an id has no reason to know which it has.
+     */
     fun removeNullSink(name: String): Boolean = calls.withLock {
         if (closed.get()) return@withLock false
         runCatching {
             loop.locked {
+                createdModules.remove(name)?.let { module ->
+                    return@locked runCatching {
+                        lib.handle("pw_impl_module_destroy").invokeExact(module) as Unit
+                    }.onFailure { log.debug("destroy of module {} threw: {}", name, it.message) }
+                        .isSuccess
+                }
                 val proxy = createdSinks.remove(name) ?: return@locked false
                 runCatching { lib.handle("pw_proxy_destroy").invokeExact(proxy) as Unit }
                     .onFailure { log.debug("destroy of {} threw: {}", name, it.message) }
@@ -1077,7 +1150,9 @@ internal class PipeWireRegistry private constructor(
      */
     fun createdSinkNames(): List<String> = calls.withLock {
         if (closed.get()) return@withLock emptyList()
-        runCatching { loop.locked { createdSinks.keys.toList() } }.getOrDefault(emptyList())
+        runCatching {
+            loop.locked { createdSinks.keys.toList() + createdModules.keys.toList() }
+        }.getOrDefault(emptyList())
     }
 
     /**
