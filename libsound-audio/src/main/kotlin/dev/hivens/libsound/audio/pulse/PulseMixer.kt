@@ -1060,16 +1060,21 @@ internal class PulseMixer private constructor(
         }
         val handle = PulseStreamHandle(direction, index)
         val kind = event and PulseAbi.SUBSCRIPTION_EVENT_TYPE_MASK
+        // Forgotten whether or not anybody is listening. Both maps are this
+        // mixer's own bookkeeping rather than anything a subscriber asked for,
+        // and doing it inside the dispatch below meant a mixer with no
+        // subscriber kept a row for every stream the machine had ever played,
+        // for the life of the process.
+        if (kind == PulseAbi.SUBSCRIPTION_EVENT_REMOVE) {
+            channelCounts.remove(handle)
+            lastDeviceIndexes.remove(handle)
+        }
         val snapshot = listeners.toList()
         if (snapshot.isEmpty()) return
         runCatching {
             dispatch.execute {
                 val streamEvent = when (kind) {
-                    PulseAbi.SUBSCRIPTION_EVENT_REMOVE -> {
-                        channelCounts.remove(handle)
-                        lastDeviceIndexes.remove(handle)
-                        StreamEvent.Gone(handle.id())
-                    }
+                    PulseAbi.SUBSCRIPTION_EVENT_REMOVE -> StreamEvent.Gone(handle.id())
                     else -> {
                         val stream = find(handle.id()) ?: return@execute
                         if (kind == PulseAbi.SUBSCRIPTION_EVENT_NEW) StreamEvent.Appeared(stream)
