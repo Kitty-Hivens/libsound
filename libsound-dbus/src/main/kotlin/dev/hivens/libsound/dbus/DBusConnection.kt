@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * So [call] hands the round trip to this thread and waits on a future, which is
  * the shape libnotify already uses for the same reason. The cost is that a
- * blocking call stalls the loop for its duration; the alternative is a reply
+ * blocking call stalls the loop for its duration. The alternative is a reply
  * that sometimes never arrives.
  *
  * [send] is fire-and-forget from any thread. Neither may be used from a message
@@ -70,7 +70,7 @@ class DBusConnection private constructor(
 
     /**
      * Register a message handler. Returns true from the handler when it consumed
-     * the message. Called on the I/O thread with nothing held; a handler that
+     * the message. Called on the I/O thread with nothing held, and a handler that
      * blocks blocks the connection, so it must not.
      */
     fun onMessage(handler: (MemorySegment) -> Boolean) {
@@ -427,7 +427,7 @@ class DBusConnection private constructor(
          * Read a set DBusError, then free it.
          *
          * libdbus reports failure through the error struct and a sentinel
-         * return; a caller that frees without reading throws away the only
+         * return, and a caller that frees without reading throws away the only
          * explanation there is. Field offsets are the oracle's: name at 0,
          * message at 8.
          */
@@ -441,7 +441,7 @@ class DBusConnection private constructor(
 
         fun freeErrorIfSet(symbols: DBusSymbols, error: MemorySegment) {
             if ((symbols.handle("dbus_error_is_set").invokeExact(error) as Int) != 0) {
-                // libdbus heap-allocates the name and message; a confined arena
+                // libdbus heap-allocates the name and message, and a confined arena
                 // does not own them.
                 runCatching { symbols.handle("dbus_error_free").invokeExact(error) as Unit }
             }

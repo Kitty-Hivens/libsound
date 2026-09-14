@@ -271,7 +271,7 @@ fun DBusSymbols.recurseOrNull(call: Arena, iter: MemorySegment): MemorySegment? 
  * Read a string at the cursor.
  *
  * STRING, OBJECT_PATH and SIGNATURE are all NUL-terminated `char *` on the
- * wire, so all three are accepted; refusing the last two is how a path argument
+ * wire, so all three are accepted. Refusing the last two is how a path argument
  * silently reads as null.
  */
 fun DBusSymbols.readString(call: Arena, iter: MemorySegment): String? {

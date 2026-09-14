@@ -26,7 +26,7 @@ kotlin {
         freeCompilerArgs.add("-opt-in=dev.hivens.libsound.dbus.InternalDBusApi")
     }
     // Deliberately no explicitApi(). The other modules enable it because their
-    // public surface is a contract somebody compiles against; everything here
+    // public surface is a contract somebody compiles against. Everything here
     // is public only because a Kotlin `internal` cannot cross a module
     // boundary, and InternalDBusApi is what says so.
 }

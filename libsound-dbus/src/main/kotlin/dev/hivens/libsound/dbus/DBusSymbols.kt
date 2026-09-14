@@ -149,7 +149,7 @@ class DBusSymbols private constructor(
     }
 }
 
-/** Allocate a NUL-terminated UTF-8 string; libdbus takes `const char *` throughout. */
+/** Allocate a NUL-terminated UTF-8 string, because libdbus takes `const char *` throughout. */
 @InternalDBusApi
 fun Arena.allocateUtf8(value: String): MemorySegment = allocateFrom(value)
 
