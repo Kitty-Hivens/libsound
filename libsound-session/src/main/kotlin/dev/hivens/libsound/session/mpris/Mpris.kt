@@ -13,7 +13,7 @@ import dev.hivens.libsound.PlaybackState
  */
 internal object Mpris {
 
-    /** Every player owns a name under this prefix; the suffix is the app's. */
+    /** Every player owns a name under this prefix, and the suffix is the app's. */
     const val BUS_NAME_PREFIX = "org.mpris.MediaPlayer2."
 
     /** The spec fixes the object path. There is exactly one, for every player. */

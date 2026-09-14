@@ -12,7 +12,7 @@ import kotlin.system.exitProcess
  *
  * The Windows backend's contract suite had never executed anywhere, and the
  * reason was mechanical rather than deep. CI runs the audible check on a Windows
- * JVM under wine; the contract suite is a JUnit class that Gradle launches, and
+ * JVM under wine. The contract suite is a JUnit class that Gradle launches, and
  * Gradle cannot run there. So the two halves sat a metre apart -- a Windows JVM
  * carrying the test classes, and a suite nothing on that JVM knew how to start.
  *

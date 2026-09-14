@@ -377,7 +377,7 @@ internal class WasapiBackend private constructor(
         if (hr < 0) return@use null
         val pointer = out.get(ValueLayout.ADDRESS, 0)
         val id = WasapiCom.readWide(pointer)
-        // GetId hands over shell-allocated memory; the caller owns it.
+        // GetId hands over shell-allocated memory, and the caller owns it.
         com.coTaskMemFree(pointer)
         id
     }
@@ -467,7 +467,7 @@ internal class WasapiBackend private constructor(
         // Narrowed from the hex, never negated by hand -- see WasapiAbi.
         private val E_FAIL: Int = 0x80004005u.toInt()
 
-        /** A sink cannot enumerate, select or subscribe; only the backend can. */
+        /** A sink cannot enumerate, select or subscribe. Only the backend can. */
         private val SINK_CAPABILITIES = Capabilities.of(
             Capability.STREAM_VOLUME,
             Capability.STREAM_IDENTITY,

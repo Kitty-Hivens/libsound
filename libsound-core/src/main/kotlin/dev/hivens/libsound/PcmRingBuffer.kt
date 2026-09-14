@@ -6,7 +6,7 @@ import kotlin.concurrent.withLock
 /**
  * The bridge between a consumer that pushes and a device that pulls.
  *
- * Native backends ask for data through a callback; skinema hands it over
+ * Native backends ask for data through a callback, and skinema hands it over
  * through a blocking write. A ring sits between them either way, so this is not
  * an adapter added for symmetry -- it is the shape the problem already has.
  *
@@ -93,7 +93,7 @@ public class PcmRingBuffer(
 
     /**
      * Copy up to [length] bytes in, without blocking. Returns how many were
-     * accepted, rounded down to a whole frame; a shortfall counts towards
+     * accepted, rounded down to a whole frame. A shortfall counts towards
      * [overruns]. Returns 0 on a closed ring.
      */
     public fun write(src: ByteArray, offset: Int, length: Int): Int {
@@ -117,7 +117,7 @@ public class PcmRingBuffer(
      *
      * Returns false when the ring was closed before everything fit, or when
      * [timeoutNanos] elapsed -- a non-positive timeout waits indefinitely.
-     * Bytes written before the timeout stay written; a caller that cares which
+     * Bytes written before the timeout stay written, and a caller that cares which
      * ones is using the wrong method.
      */
     public fun writeFully(src: ByteArray, offset: Int, length: Int, timeoutNanos: Long = 0): Boolean {
@@ -148,7 +148,7 @@ public class PcmRingBuffer(
 
     /**
      * Fill [length] bytes out, never blocking. Returns how many were real
-     * audio; the remainder of [length] is zeroed and counts towards
+     * audio. The remainder of [length] is zeroed and counts towards
      * [underruns].
      */
     public fun read(dst: ByteArray, offset: Int, length: Int): Int {

@@ -47,7 +47,7 @@ internal class PipeWireLibrary private constructor(
     }
 
     companion object {
-        /** Exact soname first; the bare name only as a development courtesy. */
+        /** Exact soname first, the bare name only as a development courtesy. */
         val LIB_CANDIDATES: List<String> = listOf("libpipewire-0.3.so.0", "libpipewire-0.3.so")
 
         /** Everything past the fourth argument of pw_stream_set_control is variadic. */
@@ -90,7 +90,7 @@ internal class PipeWireLibrary private constructor(
             Triple("pw_thread_loop_timed_wait", I32, listOf(ADDR, I32)),
             // The second argument is a C bool, not an int. They travel in the
             // same register here and this is only ever called with zero, so the
-            // wrong layout worked; declared properly because Panama checks
+            // wrong layout worked. Declared properly because Panama checks
             // neither, and a stray high bit would turn this into a wait for an
             // accept nothing in this binding ever sends.
             Triple("pw_thread_loop_signal", null, listOf(ADDR, ValueLayout.JAVA_BOOLEAN)),

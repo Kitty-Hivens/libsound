@@ -130,7 +130,7 @@ internal class Objc private constructor(
          * alias -> (symbol, return layout or null, arguments).
          *
          * `objc_msgSend` appears several times because its ABI is the ABI of
-         * whatever method is being sent; one entry per shape this backend uses.
+         * whatever method is being sent, so there is one entry per shape this backend uses.
          */
         private val LOAD_SET: List<Triple<String, String, FunctionDescriptor>> = listOf(
             Triple("objc_getClass", "objc_getClass", FunctionDescriptor.of(ADDR, ADDR)),

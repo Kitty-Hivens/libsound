@@ -57,7 +57,7 @@ internal class CoreAudioBackend private constructor(
      * `AudioObjectAddPropertyListener` returns a status and the first cut threw
      * it away, so a machine where the HAL refused the listener still claimed
      * events that would never arrive. Every other entry here is decided by what
-     * this code does; that one is decided by what the system allowed.
+     * this code does. That one is decided by what the system allowed.
      *
      * Set once, by [installListeners], before anything can read it.
      */
@@ -203,7 +203,7 @@ internal class CoreAudioBackend private constructor(
         if (rc != CoreAudioAbi.NO_ERROR) 0 else out.get(ValueLayout.JAVA_INT, 0)
     }
 
-    /** Sum of the output channels across the device's streams; zero means an input. */
+    /** Sum of the output channels across the device's streams. Zero means an input. */
     private fun outputChannels(deviceId: Int): Int = Arena.ofConfined().use { call ->
         val address = call.allocate(CoreAudioAbi.ADDRESS_SIZE, 4)
         lib.address(address, CoreAudioAbi.PROPERTY_STREAM_CONFIGURATION, CoreAudioAbi.SCOPE_OUTPUT_SELECTOR)

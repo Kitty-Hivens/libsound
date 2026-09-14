@@ -29,7 +29,7 @@ import kotlin.math.sin
  * The libpulse side has a call for this and this side has a property: a capture
  * stream naming another node in `target.object` is linked to that node's output
  * rather than to a device. Which means the mistake available here is different
- * and worse. A call that fails, fails; a target the graph does not recognise is
+ * and worse. A call that fails, fails. A target the graph does not recognise is
  * a stream that connects to whatever was going anyway, and a caller that asked
  * to record one application is handed a microphone in a room instead.
  *

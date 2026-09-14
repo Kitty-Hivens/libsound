@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory
  * change them.
  *
  * Separate from [AudioBackends] because they answer different questions. A
- * player asks for a channel to write into; a shell asks what everyone else is
+ * player asks for a channel to write into, and a shell asks what everyone else is
  * doing. Most consumers want one or the other, and the two open their own
  * connections so that neither's traffic sits on the other's path.
  *

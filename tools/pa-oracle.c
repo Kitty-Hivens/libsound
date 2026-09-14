@@ -4,7 +4,7 @@
  * Not part of the build. Run it by hand against the headers of the libpulse
  * the target systems carry, and transcribe its output into the Kotlin ABI
  * table. libtray and libnotify guessed a struct size instead and wrote past
- * an arena on every call for two releases; this program is the alternative.
+ * an arena on every call for two releases. This program is the alternative.
  *
  *   gcc -o pa-oracle pa-oracle.c $(pkg-config --cflags --libs libpulse)
  *   ./pa-oracle

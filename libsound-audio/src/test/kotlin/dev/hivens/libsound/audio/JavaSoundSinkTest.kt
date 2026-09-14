@@ -26,7 +26,7 @@ private fun javaSoundAvailable(): Boolean = runCatching {
  *
  * This is the row that matters most on Windows and macOS, where JavaSound is the
  * whole implementation until the native backends land. The behaviours it asserts
- * were measured on Linux; running the same assertions on the other two runners
+ * were measured on Linux, and running the same assertions on the other two runners
  * is how the measurement stops being a Linux measurement.
  */
 class JavaSoundSinkContractTest : AudioSinkContract() {

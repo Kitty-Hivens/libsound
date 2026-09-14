@@ -123,7 +123,7 @@ public interface AudioSource : AutoCloseable {
      * How far behind the microphone the read head is, in nanoseconds.
      *
      * The whole path, device included, where [Capability.TOTAL_LATENCY] is
-     * present; what is waiting to be collected and nothing else where it is
+     * present, and what is waiting to be collected and nothing else where it is
      * absent. Zero when the backend cannot tell at all, which is itself
      * information rather than an error. The output side's rule reversed, and
      * the same warning applies: a consumer must not add its own estimate of the

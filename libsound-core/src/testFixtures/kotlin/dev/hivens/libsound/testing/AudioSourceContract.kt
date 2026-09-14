@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicReference
  * tests of a source that can be driven exactly, which is [FakeAudioSource].
  *
  * One rule is deliberately weaker here than its sink counterpart. The sink
- * suite proves a flush by watching buffered latency fall to zero; a source
+ * suite proves a flush by watching buffered latency fall to zero. A source
  * cannot, because [AudioSource.latencyNanos] reports the whole path and a
  * device's own latency does not go away when its buffer is emptied. So this
  * suite asserts that a flush is legal where a seek makes it and that the
@@ -119,7 +119,7 @@ public abstract class AudioSourceContract {
      *
      * Twenty milliseconds. A real source is running from the instant it opens,
      * so the position is a fraction of a millisecond past zero by the time it
-     * can be read; a count carried over from an earlier take is seconds, which
+     * can be read. A count carried over from an earlier take is seconds, which
      * this catches and that does not.
      */
     private fun freshStartFrames(): Long = format.framesFor(20_000_000L)

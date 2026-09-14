@@ -105,7 +105,7 @@ public data class AudioFormat(
     /** Bytes in one sample frame -- one sample per channel. */
     public val bytesPerFrame: Int get() = channels * encoding.bytesPerSample
 
-    /** Whole frames in [bytes]; a partial trailing frame is not counted. */
+    /** Whole frames in [bytes], not counting a partial trailing frame. */
     public fun framesIn(bytes: Long): Long = bytes / bytesPerFrame
 
     /** Bytes occupied by [frames] frames. */

@@ -86,7 +86,7 @@ internal object MediaPlayerAbi {
 
     /**
      * Short where the symbol is long, and long where it looks like it should be
-     * short. Printed from the framework's own globals; deriving them from the
+     * short. Printed from the framework's own globals, because deriving them from the
      * symbol names would have got three of the six wrong.
      */
     const val KEY_TITLE = "title"

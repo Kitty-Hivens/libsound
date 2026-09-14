@@ -57,7 +57,7 @@ private object PulseFixture {
 /**
  * The contract, against a real sound server.
  *
- * Runs only where one is reachable. On CI that is Linux with a null sink; the
+ * Runs only where one is reachable. On CI that is Linux with a null sink. The
  * gate turns a missing server into a loud failure when the row was supposed to
  * have one, and into a skip on a developer machine that has not started it.
  */
@@ -171,7 +171,7 @@ class PulseBackendTest {
             val listing = pactlSinkInputs()
             Assumptions.assumeTrue(listing.contains(APP_NAME), "pactl did not list this stream")
             // libpulse prints a map as its own position names. This is 5.1 in
-            // FFmpeg's interleaving order, which is what was handed over; the
+            // FFmpeg's interleaving order, which is what was handed over. The
             // default a null map would have produced has no LFE in it at all.
             listing.contains("front-left,front-right,front-center,lfe,rear-left,rear-right") shouldBe true
         }
@@ -401,7 +401,7 @@ class PulseBackendTest {
             val half = ByteArray(format.sampleRate / 2 * format.bytesPerFrame)
             sink.write(half, 0, half.size)
             val latency = sink.latencyNanos()
-            // A zero would mean the timing info never arrived; anything past a
+            // A zero would mean the timing info never arrived, and anything past a
             // second would mean the buffer request was ignored.
             latency shouldBeGreaterThan 0L
             (latency < 1_000_000_000L) shouldBe true
