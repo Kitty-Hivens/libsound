@@ -110,7 +110,7 @@ internal object SmtcAbi {
 
     // -- the timeline, so a widget can draw a position ------------------------
 
-    /** Reached by activating the class; it has no statics to ask for. */
+    /** Reached by activating the class, which has no statics to ask for. */
     const val CLASS_TIMELINE_PROPERTIES = "Windows.Media.SystemMediaTransportControlsTimelineProperties"
 
     const val ACTIVATION_FACTORY_ACTIVATE_INSTANCE = 6
@@ -128,7 +128,7 @@ internal object SmtcAbi {
 
     // -- RoInitialize ----------------------------------------------------------
 
-    /** The apartment every thread here enters; none of them pumps a message loop. */
+    /** The apartment every thread here enters. None of them pumps a message loop. */
     const val RO_INIT_MULTITHREADED = 1
 
     // -- identifiers -----------------------------------------------------------

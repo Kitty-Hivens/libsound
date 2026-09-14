@@ -1,7 +1,7 @@
 # Testing libsound by hand
 
 One platform of the three cannot be verified by CI. GitHub's Windows runners
-have no output device, so a sink cannot open there at all; its macOS runners do
+have no output device, so a sink cannot open there at all. Its macOS runners do
 have one, which is why macOS is checked automatically and Windows is not.
 
 That is what this page is for. It takes about ten minutes and needs no
@@ -29,7 +29,7 @@ and stands on its own.
 ## What you need
 
 - **A JDK, version 22 or newer.** [Temurin](https://adoptium.net/) is the usual
-  choice. Check with `java -version`; anything below 22 will not start, because
+  choice. Check with `java -version`. Anything below 22 will not start, because
   the library uses a Java feature that did not exist before it.
 - **Working speakers or headphones**, with the volume up. Part of the check is
   whether you can hear a tone.
@@ -56,7 +56,7 @@ tone starts:
 
 - **Windows** -- press `Win`+`R`, type `sndvol`, press Enter. The window is
   titled "Volume Mixer" and shows one column per application that is playing.
-- **macOS** -- there is no per-application mixer in the OS at all; skip that
+- **macOS** -- there is no per-application mixer in the OS at all, so skip that
   part and answer "n/a" for the questions about it.
 
 Press Enter when it is open, and watch it while the tone plays.

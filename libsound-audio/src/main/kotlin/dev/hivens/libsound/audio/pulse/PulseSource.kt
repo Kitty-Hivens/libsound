@@ -79,7 +79,7 @@ internal class PulseSource(
     @Volatile
     private var openFormat: AudioFormat? = null
 
-    /** Read by the read loop on every pass; a close has to break a parked reader. */
+    /** Read by the read loop on every pass, because a close has to break a parked reader. */
     @Volatile
     private var abort = false
 

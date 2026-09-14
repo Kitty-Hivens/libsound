@@ -69,7 +69,7 @@ internal class CoreAudioLibrary private constructor(
             Triple("AudioOutputUnitStop", I32, listOf(ADDR)),
 
             // A device's name and uid arrive as CFStringRef and have to be read
-            // out and released; nothing else here touches CoreFoundation.
+            // out and released. Nothing else here touches CoreFoundation.
             Triple("CFStringGetCString", I8, listOf(ADDR, ADDR, I64, I32)),
             Triple("CFStringGetLength", I64, listOf(ADDR)),
             Triple("CFRelease", null, listOf(ADDR)),

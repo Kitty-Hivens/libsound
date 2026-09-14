@@ -176,7 +176,7 @@ internal class WinRt private constructor(
         const val S_OK = 0
 
         /**
-         * Somebody put this thread in another apartment; ours still works there.
+         * Somebody put this thread in another apartment, and ours still works there.
          * The value comes from `tools/wasapi-oracle.c`, which prints it for the
          * audio side and covers this one by being the same constant.
          */
@@ -231,7 +231,7 @@ internal class WinRt private constructor(
             return segment
         }
 
-        /** NUL-terminated UTF-16LE; every Windows text argument here is one. */
+        /** NUL-terminated UTF-16LE, which every Windows text argument here is. */
         fun wide(arena: Arena, text: String): MemorySegment {
             val chars = text.toCharArray()
             val segment = arena.allocate((chars.size + 1) * 2L, 2)

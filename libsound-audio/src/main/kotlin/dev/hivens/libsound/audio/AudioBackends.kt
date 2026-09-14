@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory
  *
  * The fallback chain is part of the design rather than an error path. A machine
  * with no sound server, a missing libpulse or a refused connection still plays
- * audio; what it loses is stream identity, system volume and device selection,
+ * audio. What it loses is stream identity, system volume and device selection,
  * and it reports that loss through [AudioBackend.capabilities] instead of
  * failing at the call site where a consumer would have to guess why.
  *
@@ -50,7 +50,7 @@ public object AudioBackends {
      * Open the best backend available on this machine.
      *
      * [applicationName] is what the desktop shows for the connection itself,
-     * distinct from the per-stream name in `SinkConfig`; on a server that
+     * distinct from the per-stream name in `SinkConfig`. On a server that
      * supports neither it is dropped.
      *
      * Returns null only when the JVM cannot play audio at all -- headless, or a
@@ -74,7 +74,7 @@ public object AudioBackends {
      *
      * This is the same question [AudioBackend.capabilities] answers, asked one
      * step earlier. Asking it afterwards works too and is what a consumer that
-     * adapts should do; naming it here is for the one that cannot adapt,
+     * adapts should do. Naming it here is for the one that cannot adapt,
      * because for it the capability is not a feature to hide but the reason it
      * chose a backend.
      *

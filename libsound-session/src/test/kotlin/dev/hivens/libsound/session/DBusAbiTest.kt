@@ -25,7 +25,7 @@ class DBusAbiTest {
     @Test
     fun `the iterator scratch is pointer-aligned, not byte-aligned`() {
         // The half of the mistake that a bigger reservation does not fix. A byte
-        // sequence layout carries an alignment of one; libdbus writes pointers
+        // sequence layout carries an alignment of one, and libdbus writes pointers
         // in there, which x86_64 tolerates and aarch64 need not.
         DBusAbi.MESSAGE_ITER_LAYOUT.byteAlignment() shouldBe 8L
         Arena.ofConfined().use { arena ->

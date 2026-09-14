@@ -15,7 +15,7 @@ import dev.hivens.libsound.PcmEncoding
  * first step of any libpulse version bump.
  *
  * Taken from libpulse 17.0.0, x86_64. The layouts that matter are small and
- * have been stable for the life of the 1.x ABI; the ones that are not stable
+ * have been stable for the life of the 1.x ABI, and the ones that are not
  * (`pa_sink_info` and friends) are read field by field at the offsets below
  * rather than mapped wholesale, so a field appended upstream costs nothing.
  */
@@ -122,7 +122,7 @@ internal object PulseAbi {
     const val SINK_INPUT_PROPLIST = 344L
     const val SINK_INPUT_CORKED = 352L
 
-    /** Only the head is read; the struct is 376 bytes and most of it is not ours. */
+    /** Only the head is read. The struct is 376 bytes and most of it is not ours. */
     const val SINK_INPUT_HEAD = 360L
 
     /** Stream properties a mixer shows, read out of the sink input's proplist. */
@@ -213,7 +213,7 @@ internal object PulseAbi {
      */
     const val SOURCE_OUTPUT_HAS_VOLUME = 356L
 
-    /** Only the head is read; the struct is 376 bytes and the tail is not ours. */
+    /** Only the head is read. The struct is 376 bytes and the tail is not ours. */
     const val SOURCE_OUTPUT_HEAD = 360L
 
     // -- device state ---------------------------------------------------------
@@ -229,7 +229,7 @@ internal object PulseAbi {
 
     const val MODULE_INFO_NAME = 8L
 
-    /** Only the head is read; the argument and proplist are not our business. */
+    /** Only the head is read. The argument and proplist are not our business. */
     const val MODULE_INFO_HEAD = 16L
 
     /**

@@ -64,7 +64,7 @@ internal class WasapiCom private constructor(
      * its apartment state allocated until the process does.
      *
      * The cost is small and bounded by how many distinct threads ever touch a
-     * sink; it is a real leak only for a consumer that spawns short-lived
+     * sink, and it is a real leak only for a consumer that spawns short-lived
      * threads to play audio from. That is a stated limitation rather than an
      * oversight, which is why `CoUninitialize` stays bound below: the day this
      * is worth balancing, the binding is what makes it possible.
@@ -163,7 +163,7 @@ internal class WasapiCom private constructor(
 
         // -- wide strings --------------------------------------------------------
 
-        /** Allocate a NUL-terminated UTF-16LE string; every COM text argument is one. */
+        /** Allocate a NUL-terminated UTF-16LE string, since every COM text argument is one. */
         fun wide(arena: Arena, text: String): MemorySegment {
             val chars = text.toCharArray()
             val segment = arena.allocate((chars.size + 1) * 2L, 2)
@@ -214,7 +214,7 @@ internal class WasapiCom private constructor(
         const val MAX_WIDE_BYTES = 4096L
 
         /**
-         * The thread is already in a different apartment; ours works there
+         * The thread is already in a different apartment, and ours works there
          * anyway. Printed by the oracle, after a first cut computed the two's
          * complement by hand and landed 65290 away from it.
          */

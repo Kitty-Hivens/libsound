@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Test
  * encoder that emits the same bytes has got the encoding right.
  *
  * That matters more here than the usual argument for oracles. A wrong slot
- * index crashes; a wrong POD is a well-formed object with a field in the wrong
+ * index crashes. A wrong POD is a well-formed object with a field in the wrong
  * place, which the server answers by negotiating something else or by ignoring
  * a property, and neither is visible from the client at all. There is no
  * exception to catch and no log line to read, so a byte comparison is the only

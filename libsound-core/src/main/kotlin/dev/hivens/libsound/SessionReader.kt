@@ -6,7 +6,7 @@ package dev.hivens.libsound
  * [id] is the bus name or its platform equivalent -- stable while the player
  * lives, reused by nobody, and the key to correlate two snapshots of the same
  * player. [identity] is what the player calls itself and is fit for display and
- * nothing else; two Firefox windows share it.
+ * nothing else, since two windows of one browser share it.
  */
 public data class ForeignPlayer(
     /** What [SessionReader.control] takes to name this player. */
@@ -81,7 +81,7 @@ public interface SessionReader : AutoCloseable {
 
     /**
      * Every player currently publishing. Ordering is the platform's, which is
-     * to say arbitrary; a consumer that wants "the one the user means" picks by
+     * to say arbitrary. A consumer that wants "the one the user means" picks by
      * [ForeignPlayer.playback] and its own policy.
      */
     public fun players(): List<ForeignPlayer>

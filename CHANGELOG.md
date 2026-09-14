@@ -25,7 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   a ring nothing would drain.
 - `AudioSink.latencyNanos` on the native backend added three quantities as
   though they shared a unit. Only one of the three is counted in the graph's
-  rate; the other two are in the stream's own, and a third part of the path was
+  rate. The other two are in the stream's own, and a third part of the path was
   not counted at all. A stream at 48 kHz on a graph at 44.1 was exactly the case
   it got wrong.
 - `SinkConfig.realtime` was ignored by the native backend. Harmless while that
@@ -98,8 +98,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with one exception. Which device is default comes from the metadata object the
   session manager writes it into, bound and listened to rather than guessed at.
   A device's own volume and mute come from a parameter of its node, subscribed
-  rather than polled, so a slider somebody else moved arrives as an event; both
-  scales agree with the libpulse side without conversion. One application's
+  rather than polled, so a slider somebody else moved arrives as an event, and
+  both scales agree with the libpulse side without conversion. One application's
   output can be recorded, aimed by the same id `VolumeMixer` hands out, and an
   id naming nothing on the graph is refused rather than left to connect to
   whatever was going anyway, which for a capture would be a microphone.
@@ -480,7 +480,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `libsound-audio`: the Windows output channel and mixer over WASAPI, and the
   macOS one over CoreAudio. The Windows ABI executes on every push against a
   Windows JVM under wine, which checks the vtable slots and the interface
-  identifiers rather than the hardware; the CoreAudio contract suite runs
+  identifiers rather than the hardware. The CoreAudio contract suite runs
   against a real output unit on a macOS runner.
 - `libsound-session`: the media session, both directions. MPRIS publishes a
   player the desktop drives and reads everyone else's; SMTC and
@@ -521,7 +521,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   that every backend has to pass.
 - `PcmRingBuffer`, the push/pull bridge, with the two failure directions kept
   separate: a device callback cannot wait, so a read fills the shortfall with
-  silence and counts an underrun; a producer can wait and must, so the blocking
+  silence and counts an underrun. A producer can wait and must, so the blocking
   write parks and only the non-blocking one reports a partial accept.
 - `PullPump`, driving a `PcmSource` into a sink for consumers that are shaped
   around a callback rather than a push loop.

@@ -224,7 +224,7 @@ internal class MprisReader private constructor(
         }
     }
 
-    /** A player appearing or leaving; the bus tells everyone. */
+    /** A player appearing or leaving, which the bus tells everyone about. */
     private fun onNameOwnerChanged(message: MemorySegment) {
         Arena.ofConfined().use { call ->
             val iter = call.allocate(DBusAbi.MESSAGE_ITER_LAYOUT)

@@ -218,7 +218,7 @@ internal class MprisSession private constructor(
             }
             Mpris.PEER_INTERFACE -> {
                 // Ping is how a desktop checks we are still here. Answering it
-                // costs nothing; not answering it looks like a hung player.
+                // costs nothing, and not answering it looks like a hung player.
                 if (member == "Ping") replyEmpty(message) else replyUnknownMethod(message, iface, member)
                 true
             }
@@ -281,7 +281,7 @@ internal class MprisSession private constructor(
             }
         }
         // The reply goes first. A handler is the consumer's code and may take
-        // its time; the caller is blocked until we answer, and making a desktop
+        // its time. The caller is blocked until we answer, and making a desktop
         // wait on a launcher's UI thread is how a shell freezes.
         replyEmpty(message)
         command?.let { fire(it) }
@@ -413,7 +413,7 @@ internal class MprisSession private constructor(
             }
             // The value is the third argument, it has to be there, and it has
             // to be a variant. Recursing into an iterator that ran out asserts
-            // inside libdbus and aborts the process; recursing into an array
+            // inside libdbus and aborts the process, and recursing into an array
             // because the signature was `ssad` reads its first element and acts
             // on it. Set is `ssv` and nothing else.
             val value = if (symbols.argType(iter) == DBusAbi.TYPE_VARIANT) {

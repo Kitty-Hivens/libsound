@@ -34,7 +34,7 @@
 
 #define SECTION(name) printf("\n== %s ==\n", name)
 
-/* A vtable is an array of function pointers; the slot index is the offset in
+/* A vtable is an array of function pointers, and the slot index is the offset in
  * pointer-sized units. */
 #define SLOT(vt, m) \
     printf("  %-52s = %2llu\n", #m, (unsigned long long)(offsetof(vt, m) / sizeof(void *)))
@@ -354,7 +354,7 @@ int main(void) {
      * value the binding compares against, so it is measured like the rest. */
     HEX(RPC_E_CHANGED_MODE);
 
-    /* REFERENCE_TIME is 100-nanosecond units; every duration in this API is in
+    /* REFERENCE_TIME is 100-nanosecond units. Every duration in this API is in
      * them, and getting the factor wrong is a buffer off by a factor of ten. */
     SECTION("time base");
     printf("  %-52s = %llu\n", "REFERENCE_TIME units per second", 10000000ULL);

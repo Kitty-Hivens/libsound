@@ -114,7 +114,7 @@ class AudioBackendsTest {
             val sink = it.createSink(SinkConfig(applicationName = "libsound selection test"))
             sink.use { _ ->
                 // A sink has no device list and no way to change its device
-                // after creation; claiming either would have a consumer offering
+                // after creation, so claiming either would have a consumer offering
                 // a control that reaches nothing.
                 (Capability.DEVICE_ENUMERATION in sink.capabilities) shouldBe false
                 (Capability.DEVICE_SELECTION in sink.capabilities) shouldBe false

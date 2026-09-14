@@ -68,7 +68,7 @@ class MprisNamesTest {
             val path = Mpris.trackPath(id)
             Mpris.OBJECT_PATH_PATTERN.matches(path) shouldBe true
         }
-        // ASCII letters and digits survive readably; everything else is escaped
+        // ASCII letters and digits survive readably, and everything else is escaped
         // rather than replaced.
         Mpris.trackPath("track42") shouldBe "/dev/hivens/libsound/track/track42"
     }
@@ -142,7 +142,7 @@ class MprisNamesTest {
 
     @Test
     fun `a bus name survives a human application name`() {
-        // The suffix is the consumer's own name; the library fixes only the prefix.
+        // The suffix is the consumer's own name. The library fixes only the prefix.
         Mpris.busName("Aurora") shouldBe "org.mpris.MediaPlayer2.Aurora"
         Mpris.busName("My Player") shouldBe "org.mpris.MediaPlayer2.My_Player"
         // A name element may not start with a digit.

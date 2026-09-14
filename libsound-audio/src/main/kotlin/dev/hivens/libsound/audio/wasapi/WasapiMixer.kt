@@ -59,7 +59,7 @@ internal class WasapiMixer private constructor(
 
     private val listeners = CopyOnWriteArrayList<(StreamEvent) -> Unit>()
 
-    /** Kept apart on purpose; see the libpulse mixer for why one snapshot is wrong. */
+    /** Kept apart on purpose. See the libpulse mixer for why one snapshot is wrong. */
     private val originalVolumes = ConcurrentHashMap<String, Float>()
     private val originalMutes = ConcurrentHashMap<String, Boolean>()
 
@@ -91,7 +91,7 @@ internal class WasapiMixer private constructor(
     private lateinit var sessionEventsVtable: MemorySegment
     private lateinit var sessionNotification: MemorySegment
 
-    /** The manager the notification is registered on; released last. */
+    /** The manager the notification is registered on, released last. */
     private var registeredManager: MemorySegment = MemorySegment.NULL
 
     override val capabilities: Capabilities = Capabilities.of(
@@ -115,7 +115,7 @@ internal class WasapiMixer private constructor(
             rememberVolume(id.value)
             withVolumeOf(id.value) { simpleVolume ->
                 // The event context is our own guid so that our own change comes
-                // back through OnSimpleVolumeChanged marked as ours; passing null
+                // back through OnSimpleVolumeChanged marked as ours. Passing null
                 // would make every change look like it came from elsewhere.
                 Arena.ofConfined().use { call ->
                     com.method(
@@ -650,7 +650,7 @@ internal class WasapiMixer private constructor(
     fun onRelease(unusedSelf: MemorySegment): Int = 1
 
     fun onSessionCreated(unusedSelf: MemorySegment, unusedControl: MemorySegment): Int {
-        // The control handed over here belongs to the caller; taking a reference
+        // The control handed over here belongs to the caller, and taking a reference
         // to it would need an AddRef this object cannot honour on teardown. The
         // next walk picks the session up and watches it properly.
         fire {
@@ -899,7 +899,7 @@ internal class WasapiMixer private constructor(
 
         private const val PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-        /** Matched to [WasapiCom.MAX_WIDE_BYTES]; a longer buffer could not be read anyway. */
+        /** Matched to [WasapiCom.MAX_WIDE_BYTES], since a longer buffer could not be read anyway. */
         private const val MAX_PATH_CHARS = 2_048
 
         private const val SYSTEM_SOUNDS_NAME = "System Sounds"
@@ -908,7 +908,7 @@ internal class WasapiMixer private constructor(
          * Ours to choose rather than a system value: an event context is any
          * guid the caller invents. Stamped on every change we make so that our
          * own change arrives back through OnSimpleVolumeChanged identifiable as
-         * ours; a null context would make every change look like somebody
+         * ours. A null context would make every change look like somebody
          * else's.
          */
         private const val EVENT_CONTEXT = "6F3A1B4C-2E5D-4A87-9C10-1B7E9D4A5C22"

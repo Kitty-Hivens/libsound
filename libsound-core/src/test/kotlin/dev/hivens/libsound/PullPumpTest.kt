@@ -40,7 +40,7 @@ class PullPumpTest {
 
     @Test
     fun `a short read is padded with silence rather than shortening the period`() {
-        // Handing the device less than a period is what produces a click; the
+        // Handing the device less than a period is what produces a click. The
         // gap is audible either way, and silence keeps the frame count -- and
         // therefore the clock -- honest.
         val sink = openSink()

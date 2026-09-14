@@ -42,7 +42,7 @@ public data class AudioStream(
      * [applicationName] -- "Playback Stream" names no application.
      */
     public val mediaName: String? = null,
-    /** What the stream says it is for; the same roles our own output can request. */
+    /** What the stream says it is for, from the same roles our own output can request. */
     public val mediaRole: MediaRole? = null,
     /** The device it is currently playing to. */
     public val device: DeviceId? = null,
@@ -206,7 +206,7 @@ public interface VolumeMixer : AutoCloseable {
      *
      * Recorded and put back by [restoreAll], and it carries the strongest
      * version of that obligation in this interface. A volume left low is
-     * something a user can find and fix; a card left on a profile nobody chose
+     * something a user can find and fix. A card left on a profile nobody chose
      * is a machine whose speakers have stopped working with nothing on screen
      * to explain it.
      */
@@ -286,7 +286,7 @@ public interface VolumeMixer : AutoCloseable {
 
     /**
      * Subscribe to streams appearing, leaving and changing. The handler runs on
-     * a thread the backend owns; hop before touching UI state.
+     * a thread the backend owns, so hop before touching UI state.
      */
     public fun onStreamsChanged(handler: (StreamEvent) -> Unit): () -> Unit
 

@@ -57,7 +57,7 @@ internal class JavaSoundBackend private constructor(
 
     override fun createSink(config: SinkConfig): AudioSink {
         // config carries an application name, an icon and a role. None of them
-        // can be attached to a JavaSound line; they are dropped here rather
+        // can be attached to a JavaSound line, so they are dropped here rather
         // than approximated, and STREAM_IDENTITY says so.
         //
         // config.latency goes the same way. 200 ms is this backend's measured

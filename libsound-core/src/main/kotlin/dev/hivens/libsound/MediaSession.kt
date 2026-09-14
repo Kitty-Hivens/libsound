@@ -190,7 +190,7 @@ public sealed interface SessionCommand {
     /** Exit, at the desktop's request. Delivered only where [SessionConfig.canQuit] allows it. */
     public data object Quit : SessionCommand
 
-    /** Move by [offsetMicros] from the current position; negative seeks back. */
+    /** Move by [offsetMicros] from the current position. Negative seeks back. */
     public data class Seek(
         /** How far to move, relative to wherever the player is now. */
         public val offsetMicros: Long,
@@ -198,7 +198,7 @@ public sealed interface SessionCommand {
 
     /**
      * Jump to an absolute position. [trackId] names the track the sender
-     * believed was playing; a mismatch against the current track means the
+     * believed was playing. A mismatch against the current track means the
      * command is stale and must be dropped, which is why it is carried at all.
      */
     public data class SetPosition(
@@ -357,8 +357,8 @@ public interface MediaSession : AutoCloseable {
 
     /**
      * Subscribe to commands. The handler runs on the session's own dispatch
-     * thread; hop before touching UI state. The returned function unsubscribes
-     * and is idempotent.
+     * thread, so hop before touching UI state. The returned function
+     * unsubscribes and is idempotent.
      *
      * Register before the first [publish] if the desktop is meant to offer
      * transport controls. MPRIS answers `CanControl` from whether anything is
