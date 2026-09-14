@@ -57,7 +57,7 @@ internal class WasapiSink(
      * The contract requires [close] to break a [write] that is in flight, so
      * the two run concurrently by design. Reading a pointer into a local and
      * calling through it afterwards is safe in the JavaSound sink, where the
-     * local keeps a Java object alive; here the local is an address and
+     * local keeps a Java object alive. Here the local is an address and
      * `Release` is what decides whether the object behind it still exists.
      *
      * That is not a theoretical difference. Closing against four writers over
@@ -100,7 +100,7 @@ internal class WasapiSink(
     @Volatile
     private var bufferFrames = 0
 
-    /** Ticks per second of the device clock; frames are derived through it. */
+    /** Ticks per second of the device clock, which frames are derived through. */
     @Volatile
     private var clockFrequency = 0L
 
@@ -241,7 +241,7 @@ internal class WasapiSink(
         while (writtenFrames < totalFrames) {
             if (closed.get()) throw AudioException("sink closed while writing")
             var waitMillis = 0L
-            // The COM work runs under the lock; the wait below does not. A
+            // The COM work runs under the lock and the wait below does not. A
             // close is then delayed by one buffer round trip at most, and can
             // never land between reading a pointer and calling through it.
             synchronized(interfaceLock) {
@@ -477,8 +477,8 @@ internal class WasapiSink(
      *
      * Always, rather than only past stereo, and the reason is what the plain
      * form cannot carry. `wFormatTag` says PCM or nothing, so a float stream
-     * has no tag; `wBitsPerSample` is the container, so a 24-bit stream in a
-     * 32-bit sample has nowhere to say which; and there is no field at all for
+     * has no tag. `wBitsPerSample` is the container, so a 24-bit stream in a
+     * 32-bit sample has nowhere to say which. And there is no field at all for
      * what each channel is. The tail below answers all three, and writing one
      * shape rather than two means there is one path to be wrong about.
      */
@@ -655,7 +655,7 @@ internal class WasapiSink(
     }
 
     private fun releaseBuffer(renderClient: MemorySegment, frames: Int) {
-        // Every GetBuffer owes a ReleaseBuffer; skipping one on an error path
+        // Every GetBuffer owes a ReleaseBuffer, and skipping one on an error path
         // wedges the engine on this stream until the client is destroyed.
         hr(
             com.method(
@@ -701,7 +701,7 @@ internal class WasapiSink(
             client = MemorySegment.NULL
             device = MemorySegment.NULL
             // Released inside the lock rather than after it. Nulling the fields
-            // stops the next caller from finding a pointer; it does nothing for
+            // stops the next caller from finding a pointer. It does nothing for
             // the caller already holding one, and that is the caller a release
             // outside the lock would pull the object out from under.
             //

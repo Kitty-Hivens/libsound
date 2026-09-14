@@ -520,7 +520,7 @@ Together, around the thing you were playing:
 val mixer = VolumeMixers.open("Example")
 if (mixer == null) {
     // macOS has no per-application volume in any public API. The video
-    // still plays; it just plays over the music.
+    // still plays, it just plays over the music.
     playVideo()
     return
 }

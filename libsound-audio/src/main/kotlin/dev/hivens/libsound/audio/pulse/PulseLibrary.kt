@@ -20,7 +20,7 @@ import java.lang.invoke.MethodHandle
  *
  * The library is loaded by exact soname. The unversioned `libpulse.so` symlink
  * belongs to the `-dev` package and is absent on most machines that can play
- * audio perfectly well; loading it by the name a developer sees would make the
+ * audio perfectly well, and loading it by the name a developer sees would make the
  * backend unavailable exactly where it should work.
  */
 internal class PulseLibrary private constructor(
@@ -40,7 +40,7 @@ internal class PulseLibrary private constructor(
 
     companion object {
         /**
-         * Loaded by soname, never by absolute path. Exact soname first; the
+         * Loaded by soname, never by absolute path. Exact soname first, the
          * bare name only as a development courtesy.
          *
          * Not only a style choice: a distribution that keeps no `/usr/lib` --
@@ -49,7 +49,7 @@ internal class PulseLibrary private constructor(
          * that an unwrapped process there finds nothing, which is why the
          * failure says so rather than passing a silent null upward.
          */
-        /** Longer than any libpulse error string; a ceiling, not an expectation. */
+        /** Longer than any libpulse error string. A ceiling, not an expectation. */
         private const val STRERROR_MAX_BYTES = 4096L
 
         val LIB_CANDIDATES = listOf("libpulse.so.0", "libpulse.so", "libpulse.0.dylib")
@@ -242,5 +242,5 @@ internal class PulseLibrary private constructor(
     }
 }
 
-/** Allocate a NUL-terminated UTF-8 string; libpulse takes `const char *` throughout. */
+/** Allocate a NUL-terminated UTF-8 string, because libpulse takes `const char *` throughout. */
 internal fun Arena.allocateUtf8(value: String): MemorySegment = allocateFrom(value)

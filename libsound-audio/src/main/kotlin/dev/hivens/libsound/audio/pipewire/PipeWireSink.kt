@@ -164,7 +164,7 @@ internal class PipeWireSink(
     @Volatile
     private var fed = false
 
-    /** Read by the process callback; replaced wholesale on each open. */
+    /** Read by the process callback, and replaced wholesale on each open. */
     @Volatile
     private var ring: PcmRingBuffer? = null
 

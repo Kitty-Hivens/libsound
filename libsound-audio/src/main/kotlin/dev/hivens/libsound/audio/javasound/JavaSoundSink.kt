@@ -32,7 +32,7 @@ import kotlin.math.max
  * 2. `flush()` credits every discarded frame as played -- the reported position
  *    jumps *forward* to the total ever written. See [flushCredit].
  * 3. The position only advances while writes are flowing, and tracks real time
- *    to within a percent when they are. Steady state is trustworthy; the
+ *    to within a percent when they are. Steady state is trustworthy. The
  *    transient after an open or a flush is not, which the seek handshake
  *    already avoids by freezing the device first.
  */
@@ -98,12 +98,12 @@ internal class JavaSoundSink(
         if (closed) throw AudioException("sink is closed")
         // AudioException rather than the argument check this used to be. A
         // consumer walks a ladder down from what the media is and catches what
-        // the contract promises; an IllegalArgumentException goes straight past
+        // the contract promises. An IllegalArgumentException goes straight past
         // it and out of the player.
         val javaFormat = JavaSoundFormats.javaFormatOf(format)
             ?: throw AudioException("JavaSound has no encoding for ${format.encoding}")
         if (!accepts(format)) throw AudioException("no JavaSound output line takes $format")
-        // A reopen drops the old line first; without this the previous line
+        // A reopen drops the old line first. Without this the previous line
         // keeps the device and its buffered tail.
         line?.let { old ->
             runCatching { old.stop() }
@@ -161,7 +161,7 @@ internal class JavaSoundSink(
             if (accepted <= 0) {
                 if (closed || line == null) throw AudioException("sink closed while writing")
                 // A stopped or flushed line accepts nothing until it runs
-                // again; keep waiting, because close is what breaks this. The
+                // again, so keep waiting, because close is what breaks this. The
                 // wait has to cost something, though: spinning here burns a
                 // core for as long as the line stays stopped, which is the
                 // failure the WASAPI sink already sleeps to avoid.
@@ -246,7 +246,7 @@ internal class JavaSoundSink(
         line = null
         openFormat = null
         if (current != null) {
-            // stop before close so a write parked inside the line returns; this
+            // stop before close so a write parked inside the line returns. This
             // is the only lever JavaSound offers, because the wait belongs to
             // the JDK rather than to us.
             runCatching { current.stop() }

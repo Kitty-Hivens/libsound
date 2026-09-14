@@ -108,7 +108,7 @@ internal class PipeWireSource(
     @Volatile
     private var captureFailure: String? = null
 
-    /** Holds the events struct and its stubs; closed only after the stream is destroyed. */
+    /** Holds the events struct and its stubs, closed only after the stream is destroyed. */
     private val stubArena: Arena = Arena.ofShared()
 
     override val format: AudioFormat? get() = openFormat

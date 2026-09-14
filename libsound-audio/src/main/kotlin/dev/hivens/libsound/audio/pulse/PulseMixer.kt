@@ -151,7 +151,7 @@ internal class PulseMixer private constructor(
      */
     private val roundTrip = ReentrantLock()
 
-    /** Handlers never run on the mainloop thread; see PulseBackend for why. */
+    /** Handlers never run on the mainloop thread. See PulseBackend for why. */
     private val dispatch = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "libsound-mixer-events").apply { isDaemon = true }
     }
@@ -253,7 +253,7 @@ internal class PulseMixer private constructor(
             val playback = walk("pa_context_get_sink_input_info_list", sinkInputStub) ?: return emptyList()
             val capture = walk("pa_context_get_source_output_info_list", sourceOutputStub) ?: emptyList()
             // Name any device we have not seen yet. Priming at open catches the
-            // devices that existed then; this catches one plugged in since,
+            // devices that existed then, and this catches one plugged in since,
             // which is otherwise a row whose device column stays blank for the
             // life of the mixer.
             playback.asSequence().map { it.deviceIndex }.distinct()
@@ -302,7 +302,7 @@ internal class PulseMixer private constructor(
         }
     }
 
-    /** A capture stream moves to another input; the call differs, the shape does not. */
+    /** A capture stream moves to another input. The call differs, the shape does not. */
     override fun moveTo(id: StreamId, device: DeviceId): Boolean {
         val handle = PulseStreamHandle.parse(id) ?: return false
         if (closed.get()) return false
@@ -544,7 +544,7 @@ internal class PulseMixer private constructor(
         return lastDeviceIndexes[handle]
     }
 
-    /** Reads only the monitor source name; the device list has its own callback. */
+    /** Reads only the monitor source name. The device list has its own callback. */
     fun onMonitorSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
         runCatching {
             if (eol != 0) {
@@ -1027,7 +1027,7 @@ internal class PulseMixer private constructor(
     }
 
     fun onSubscribe(unusedContext: MemorySegment, event: Int, index: Int, unusedUserData: MemorySegment) {
-        // The event packs facility and kind into one int; reading either without
+        // The event packs facility and kind into one int, and reading either without
         // masking gives a number matching nothing.
         val direction = when (event and PulseAbi.SUBSCRIPTION_EVENT_FACILITY_MASK) {
             PulseAbi.SUBSCRIPTION_EVENT_SINK_INPUT -> StreamDirection.PLAYBACK

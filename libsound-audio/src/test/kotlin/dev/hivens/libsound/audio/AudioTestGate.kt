@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Assumptions
  * So `LIBSOUND_REQUIRE` names the backends this run is *supposed* to exercise.
  * A named backend that turns out to be unavailable fails the build. An unnamed
  * one is skipped, which is the convenience a developer wants on a laptop with no
- * sound server. CI names what the row is for; a laptop names nothing.
+ * sound server. CI names what the row is for, and a laptop names nothing.
  *
  *     LIBSOUND_REQUIRE=pulse,javasound ./gradlew test
  */

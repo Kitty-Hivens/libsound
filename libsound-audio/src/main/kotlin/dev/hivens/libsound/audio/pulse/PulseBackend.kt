@@ -357,7 +357,7 @@ internal class PulseBackend private constructor(
     fun onSinkInfo(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
         runCatching {
             if (eol != 0) {
-                // Positive is end of list, negative is an error; either way
+                // Positive is end of list, negative is an error. Either way
                 // nothing more is coming and the caller must stop waiting.
                 if (eol < 0) log.debug("sink info list ended with {}", eol)
                 collectComplete = true
@@ -419,7 +419,7 @@ internal class PulseBackend private constructor(
         }
     }
 
-    /** One reply per existing sample, then an end of list; absence is the answer. */
+    /** One reply per existing sample, then an end of list. Absence is the answer. */
     fun onSampleInfo(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
         runCatching {
             if (eol != 0) {
