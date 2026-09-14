@@ -277,6 +277,20 @@ internal class PipeWireRegistry private constructor(
      */
     private val createdModules = HashMap<String, MemorySegment>()
 
+    /**
+     * Which device name each loaded module makes, by the token its own destroy
+     * listener carries.
+     *
+     * A module can go without being asked: the one this loads imports
+     * `pw_impl_module_schedule_destroy`, so a handle kept past that names freed
+     * memory. The listener is how this hears, and the token is what tells it
+     * which entry to drop, since the callback is handed a pointer of our
+     * choosing and not the module.
+     */
+    private val moduleNames = HashMap<Int, String>()
+
+    private var nextModuleToken = 1
+
     /** The sequence number the barrier is waiting for, and whether it arrived. */
     @Volatile
     private var pendingSeq = NO_SEQ
@@ -504,10 +518,13 @@ internal class PipeWireRegistry private constructor(
                     createdSinks.clear()
                     // And the modules, which make a device the same way from
                     // this process's side rather than the graph's.
-                    createdModules.values.forEach { module ->
+                    // Copied first: destroying one calls back into here and
+                    // takes its own entry out of the map being walked.
+                    createdModules.values.toList().forEach { module ->
                         runCatching { lib.handle("pw_impl_module_destroy").invokeExact(module) as Unit }
                     }
                     createdModules.clear()
+                    moduleNames.clear()
                     // Every bound proxy before the registry that handed them
                     // out, and all of it before the connection they went on.
                     nodeProxies.keys.toList().forEach { releaseNode(it) }
@@ -700,6 +717,24 @@ internal class PipeWireRegistry private constructor(
             )
             fire()
         }.onFailure { log.debug("node info threw: {}", it.message) }
+    }
+
+    /**
+     * A module this connection loaded, gone.
+     *
+     * Either because something here destroyed it, in which case the entry is
+     * already out and this does nothing, or because it took itself down, which
+     * is the case this exists for: the handle is freed and must not be
+     * destroyed again.
+     *
+     * On the loop's own thread, like every other event here, which is where the
+     * two maps below are allowed to be touched.
+     */
+    fun onModuleDestroy(data: MemorySegment) {
+        runCatching {
+            val name = moduleNames.remove(data.address().toInt()) ?: return
+            createdModules.remove(name)
+        }.onFailure { log.debug("module destroy threw: {}", it.message) }
     }
 
     /**
@@ -1117,6 +1152,15 @@ internal class PipeWireRegistry private constructor(
                     ) as MemorySegment
                     if (module.address() == 0L) return@locked false
                     createdModules[name] = module
+                    // Listened to before it is handed out, so a module that
+                    // fails during its own initialisation is still heard.
+                    val token = nextModuleToken++
+                    moduleNames[token] = name
+                    val hook = stubArena.allocate(SpaAbi.HOOK_SIZE, 8)
+                    hook.fill(0)
+                    lib.handle("pw_impl_module_add_listener").invokeExact(
+                        module, hook, moduleEvents, MemorySegment.ofAddress(token.toLong()),
+                    ) as Unit
                     true
                 }
             }
@@ -1590,6 +1634,31 @@ internal class PipeWireRegistry private constructor(
 
     private val metadataHook: MemorySegment by lazy {
         stubArena.allocate(SpaAbi.HOOK_SIZE, 8).apply { fill(0) }
+    }
+
+    /**
+     * A loaded module's events, of which one slot is filled.
+     *
+     * One struct for every module, because it only says what to call. Which
+     * module it is about travels as the listener's own data, the way a bound
+     * node's global id does.
+     */
+    private val moduleEvents: MemorySegment by lazy {
+        val struct = stubArena.allocate(SpaAbi.MODULE_EVENTS_SIZE, 8)
+        struct.fill(0)
+        struct.set(ValueLayout.JAVA_INT, SpaAbi.MODULE_EVENTS_VERSION, SpaAbi.VERSION_MODULE_EVENTS)
+        struct.set(
+            ValueLayout.ADDRESS, SpaAbi.MODULE_EVENTS_DESTROY,
+            Linker.nativeLinker().upcallStub(
+                MethodHandles.lookup().findVirtual(
+                    PipeWireRegistry::class.java, "onModuleDestroy",
+                    MethodType.methodType(Void.TYPE, MemorySegment::class.java),
+                ).bindTo(this),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS),
+                stubArena,
+            ),
+        )
+        struct
     }
 
     /**

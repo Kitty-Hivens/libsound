@@ -32,6 +32,7 @@
 /* Metadata is an extension rather than core, and the default sink lives in it. */
 #include <pipewire/extensions/metadata.h>
 #include <pipewire/extensions/profiler.h>
+#include <pipewire/impl-module.h>
 #include <spa/param/profiler.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
@@ -412,6 +413,17 @@ int main(void) {
         const struct spa_pod *pod = spa_pod_builder_pop(&builder, &outer);
         dump("ProfileEvent", pod, SPA_POD_SIZE(pod));
     }
+
+    /* A module loaded into this process's own context is this connection's to
+     * remove, and it can also remove itself: the combine module imports
+     * pw_impl_module_schedule_destroy. So the handle has to be dropped when it
+     * goes, or the next destroy runs on freed memory. */
+    SECTION("a loaded module, and hearing that it went");
+    P(sizeof(struct pw_impl_module_events));
+    P(offsetof(struct pw_impl_module_events, version));
+    P(offsetof(struct pw_impl_module_events, destroy));
+    P(offsetof(struct pw_impl_module_events, free));
+    P(PW_VERSION_IMPL_MODULE_EVENTS);
 
     /* Properties are built from a dict rather than from pw_properties_new,
      * which is variadic: a Panama downcall to a variadic function needs a

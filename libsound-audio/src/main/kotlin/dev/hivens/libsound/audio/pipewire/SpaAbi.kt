@@ -585,6 +585,19 @@ internal object SpaAbi {
     const val MODULE_COMBINE_STREAM = "libpipewire-module-combine-stream"
 
     /**
+     * Four slots, of which one is filled: a module that is going says so.
+     *
+     * Needed because a module can go without being asked. The combine module
+     * imports `pw_impl_module_schedule_destroy`, so a handle held past that
+     * names freed memory, and destroying it a second time is native and
+     * uncatchable.
+     */
+    const val MODULE_EVENTS_SIZE = 40L
+    const val MODULE_EVENTS_VERSION = 0L
+    const val MODULE_EVENTS_DESTROY = 8L
+    const val VERSION_MODULE_EVENTS = 0
+
+    /**
      * Which devices a combined sink forwards to, as the rule that module
      * selects them with.
      *
