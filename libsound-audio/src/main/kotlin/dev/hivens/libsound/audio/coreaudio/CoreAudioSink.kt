@@ -177,6 +177,12 @@ internal class CoreAudioSink(
         // ours: AudioUnitSetProperty refuses a format it cannot render, and
         // checkStatus turns that into the AudioException a consumer walking a
         // ladder is already catching.
+        // Not open from here until the last line of this method says otherwise.
+        // Everything below can fail, and a consumer walking down a ladder of
+        // encodings reads isOpen and format between the rungs: left standing,
+        // the previous format would describe a unit that has been disposed, and
+        // writableFrames would offer room in a ring nothing drains.
+        openFormat = null
         disposeUnit()
         // The old ring goes with the old unit. Nothing drains it any more, so a
         // producer parked on it would stay parked through a reopen that looked
@@ -350,11 +356,18 @@ internal class CoreAudioSink(
         return format.nanosFor((buffered / format.bytesPerFrame).toLong())
     }
 
-    /** What the ring has room for, which is where a write parks when it has none. */
+    /**
+     * What the ring has room for, which is where a write parks when it has none.
+     *
+     * The closed flag and the ring's own as well as the format, because close
+     * closes the ring to free a parked producer and a closed ring still reports
+     * its whole capacity as free.
+     */
     override fun writableFrames(): Long {
+        if (closed.get()) return 0L
         val format = openFormat ?: return 0L
-        val free = ring?.free() ?: return 0L
-        return (free / format.bytesPerFrame).toLong()
+        val current = ring ?: return 0L
+        return if (current.isClosed()) 0L else (current.free() / format.bytesPerFrame).toLong()
     }
 
     /**
