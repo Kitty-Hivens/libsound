@@ -1448,13 +1448,19 @@ channel count is read off, and a volume written off the array's length would
 have set two channels of that device and left four where they were, which is the
 failure the refusal in `setProps` exists to prevent.
 
-**Combining two devices is not built.** It is a module the daemon loads rather
-than an object a client creates: the core's method table has no call that loads
-one, and the daemon's shipped configuration does not load the module that would
-register a factory. On a graph whose owner loaded it by hand there would be a
-factory, and finding it by name and checking what it answers is the part that
-does not exist here. Nothing is asked, so nothing is refused, and the mixer's
-own documentation says so where a consumer would read it.
+**Combining two devices is built, and by the route the profiler opened.** The
+graph registers no factory for one and the core has no call that loads a module,
+which is where this stopped before. What it does have is loading a module into
+this process's own context, which is also how the profiler's protocol arrives.
+A module loaded there adds nothing to anybody else's graph and gives the device
+the lifetime `createVirtualSink` is written under, because it goes when the
+context goes.
+
+The devices are named one match apiece rather than matched by pattern: that
+module's own default rule takes every sink on the machine, so a caller naming
+two would otherwise be handed all of them. Names go inside that rule, so the
+ones that could change it are refused rather than escaped, which is the rule the
+libpulse mixer already follows for its own flat argument string.
 
 **Cards, profiles and ports are not built, and the reason is that nothing here
 can exercise them.** They are reachable: `PipeWire:Interface:Device` with

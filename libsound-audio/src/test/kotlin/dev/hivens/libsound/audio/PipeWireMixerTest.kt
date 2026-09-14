@@ -3,6 +3,7 @@ package dev.hivens.libsound.audio
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.Capability
+import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.StreamDirection
@@ -13,7 +14,6 @@ import dev.hivens.libsound.audio.pipewire.PipeWireBackend
 import dev.hivens.libsound.audio.pipewire.PipeWireMixer
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.shouldNotBe
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -148,33 +148,32 @@ class PipeWireMixerTest {
     fun `the default device moves, and restore leaves it where the caller put it`() {
         val mixer = checkNotNull(mixer)
         val was = checkNotNull(checkNotNull(backend).defaultDevice()) { "this graph has no default" }
-        val name = "libsound_pw_default_${ProcessHandle.current().pid()}"
-        val made = checkNotNull(mixer.createVirtualSink(name))
-        try {
-            mixer.setDefaultDevice(made) shouldBe true
-            eventually("the default to move") {
-                checkNotNull(backend).defaultDevice()?.takeIf { it.id == made }
+        // Made by a second mixer on purpose. A device this mixer created would
+        // be removed by the very restore under test, and the session manager
+        // would then pick a fallback of its own, which from outside looks
+        // exactly like this mixer having put the old default back.
+        val owner = checkNotNull(PipeWireMixer.openOrNull("$appName owner"))
+        owner.use { other ->
+            val name = "libsound_pw_default_${ProcessHandle.current().pid()}"
+            val made = checkNotNull(other.createVirtualSink(name))
+            try {
+                mixer.setDefaultDevice(made) shouldBe true
+                eventually("the default to move") {
+                    checkNotNull(backend).defaultDevice()?.takeIf { it.id == made }
+                }
+                // The one thing this interface changes and does not put back. A
+                // default somebody picked through a settings screen is a
+                // decision, not a change made on their behalf.
+                mixer.restoreAll()
+                Thread.sleep(SETTLE_MILLIS)
+                withClue("restore moved a default the caller had chosen") {
+                    checkNotNull(backend).defaultDevice()?.id shouldBe made
+                }
+            } finally {
+                // Put back by hand, because the mixer is right not to.
+                mixer.setDefaultDevice(was.id)
+                other.removeVirtualSink(made)
             }
-            // The one thing this interface changes and does not put back. A
-            // default somebody picked through a settings screen is a decision,
-            // not a change made on their behalf, so restoring it would undo the
-            // thing they asked for.
-            //
-            // What the restore does take away is the device itself, since this
-            // process created it, so the graph is left naming one that is not
-            // there and the default reads as unknown. A mixer that recorded
-            // defaults would have put the old one back instead, and that is the
-            // difference this can see.
-            mixer.restoreAll()
-            withClue("restore put back a default the caller had replaced") {
-                checkNotNull(backend).defaultDevice()?.id shouldNotBe was.id
-            }
-        } finally {
-            // Put back by hand, because the mixer is right not to. The device
-            // this pointed at is about to go, and a graph left naming one that
-            // does not exist is a graph the cases after this one play into.
-            mixer.setDefaultDevice(was.id)
-            mixer.removeVirtualSink(made)
         }
     }
 
@@ -438,6 +437,59 @@ class PipeWireMixerTest {
     }
 
     @Test
+    fun `two devices are played to as one`() {
+        val mixer = checkNotNull(mixer)
+        val pid = ProcessHandle.current().pid()
+        // Two of this process's own, so nothing on the machine takes part but
+        // what this case made.
+        val first = checkNotNull(mixer.createVirtualSink("libsound_pw_leg_a_$pid"))
+        val second = checkNotNull(mixer.createVirtualSink("libsound_pw_leg_b_$pid"))
+        val name = "libsound_pw_both_$pid"
+        try {
+            val both = checkNotNull(mixer.combineSinks(name, listOf(first, second))) {
+                "the graph refused a combined device"
+            }
+            both.value shouldBe name
+            // A second connection reading the graph rather than this one
+            // remembering what it asked for.
+            eventually("the combined device to reach another connection") {
+                checkNotNull(backend).devices().any { it.id == both }.takeIf { there -> there }
+            }
+
+            play()
+            val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
+            eventually("the move to be taken") { mixer.moveTo(row.id, both).takeIf { it } }
+            eventually("the stream to land on the combined device") {
+                mixer.streams().firstOrNull { it.id == row.id && it.device == both }
+            }
+
+            // Taken back through the same call a factory device is, because a
+            // caller holding an id has no reason to know which kind it has.
+            mixer.removeVirtualSink(both) shouldBe true
+            eventually("the combined device to go") {
+                checkNotNull(backend).devices().none { it.id == both }.takeIf { gone -> gone }
+            }
+        } finally {
+            mixer.removeVirtualSink(first)
+            mixer.removeVirtualSink(second)
+        }
+    }
+
+    @Test
+    fun `a name that would change the rule it travels in is refused`() {
+        // The device names go inside a rule that selects them, so one carrying
+        // a quote would be read as more rule than was meant. Refused rather
+        // than escaped: the set of names a device may have is not this
+        // library's to widen.
+        val mixer = checkNotNull(mixer)
+        val fine = DeviceId("libsound_pw_target")
+        mixer.combineSinks("has a quote\"", listOf(fine)) shouldBe null
+        mixer.combineSinks("libsound_pw_ok", listOf(DeviceId("} ] evil"))) shouldBe null
+        // And an empty set of devices, which is a combined sink of nothing.
+        mixer.combineSinks("libsound_pw_ok", emptyList()) shouldBe null
+    }
+
+    @Test
     fun `a device this process made goes when the mixer closes`() {
         // The other half of the obligation the interface states. restoreAll is
         // the half a consumer calls and is tested below. This is the half that
@@ -563,6 +615,9 @@ class PipeWireMixerTest {
 
         /** Above anything a null sink's own path carries, which is nothing. */
         const val SILENCE = 0.05f
+
+        /** Long enough for a restore to have reached a second connection if it were coming. */
+        const val SETTLE_MILLIS = 500L
 
         /** Long enough for a blocking write to come back once its sink is closed. */
         const val JOIN_MILLIS = 5_000L
