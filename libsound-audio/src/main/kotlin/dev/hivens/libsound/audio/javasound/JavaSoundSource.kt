@@ -68,7 +68,7 @@ internal class JavaSoundSource(
         if (closed) throw AudioException("source is closed")
         // AudioException rather than the argument check this used to be. A
         // consumer walks a ladder down from what the media is and catches what
-        // the contract promises; an IllegalArgumentException goes straight past
+        // the contract promises. An IllegalArgumentException goes straight past
         // it and out of the player.
         val javaFormat = JavaSoundFormats.javaFormatOf(format)
             ?: throw AudioException("JavaSound has no encoding for ${format.encoding}")

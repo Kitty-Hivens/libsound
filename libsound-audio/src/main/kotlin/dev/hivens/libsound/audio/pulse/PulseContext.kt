@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * mainloop and [signal], and a producer parked waiting for buffer space returns
  * in milliseconds -- measured, in the Phase 0 spike -- without the stream being
  * destroyed. The sink contract still requires close to unblock a write, because
- * a backend that does not own its wait has no cheaper option; this one simply
+ * a backend that does not own its wait has no cheaper option. This one simply
  * has a better lever available above that floor.
  *
  * ## Arena lifetime

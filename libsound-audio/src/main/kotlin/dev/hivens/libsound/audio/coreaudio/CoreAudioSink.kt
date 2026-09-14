@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicLong
  * It takes the ring's lock and copies, and does nothing else -- no allocation
  * beyond what reinterpreting a native pointer costs, no logging, no native call.
  * A garbage collection pause can still land on it and be heard, which is true of
- * every JVM audio path including JavaSound's; the honest mitigation is the
+ * every JVM audio path including JavaSound's, and the honest mitigation is the
  * buffer depth below, not a claim that it cannot happen.
  */
 internal class CoreAudioSink(
@@ -105,7 +105,7 @@ internal class CoreAudioSink(
      */
     private val underruns = AtomicLong(0)
 
-    /** Read by the render callback; replaced wholesale on each open. */
+    /** Read by the render callback, and replaced wholesale on each open. */
     @Volatile
     private var ring: PcmRingBuffer? = null
 
@@ -249,7 +249,7 @@ internal class CoreAudioSink(
 
                 val asbd = setup.allocate(CoreAudioAbi.ASBD_SIZE, 8)
                 writeStreamFormat(asbd, format)
-                // The *input* scope of an output unit is what we feed; its
+                // The *input* scope of an output unit is what we feed, and its
                 // output scope is the device. Setting the format on the wrong
                 // one is accepted and then plays nothing.
                 checkStatus(
@@ -426,7 +426,7 @@ internal class CoreAudioSink(
             )
 
             // The format asked for is interleaved, so one buffer is what comes
-            // back. Anything else is a format we did not request; silencing the
+            // back. Anything else is a format we did not request, and silencing the
             // extras is the only response that is not noise.
             for (index in 1 until buffers) {
                 zero(list, index)
@@ -460,7 +460,7 @@ internal class CoreAudioSink(
             // thread.
             if (real < wanted) underruns.incrementAndGet()
         } catch (e: Throwable) {
-            // A throw crossing an upcall boundary is undefined; nothing here is
+            // A throw crossing an upcall boundary is undefined. Nothing here is
             // worth risking that for, and a period of silence is survivable.
             runCatching { zero(ioData.reinterpret(CoreAudioAbi.BUFFER_LIST_BUFFERS + CoreAudioAbi.BUFFER_SIZE), 0) }
             renderFailure = e.message

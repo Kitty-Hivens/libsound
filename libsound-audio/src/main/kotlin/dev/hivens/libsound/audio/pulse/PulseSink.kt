@@ -142,7 +142,7 @@ internal class PulseSink(
     /** So a machine without RealtimeKit says so once rather than per write. */
     private val realtimeRefusalLogged = AtomicBoolean(false)
 
-    /** Native scratch for the copy into `pa_stream_write`; reallocated per open. */
+    /** Native scratch for the copy into `pa_stream_write`, reallocated per open. */
     private var scratchArena: Arena? = null
     private var scratch: MemorySegment = MemorySegment.NULL
 

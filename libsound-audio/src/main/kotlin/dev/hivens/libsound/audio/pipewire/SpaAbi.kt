@@ -406,7 +406,7 @@ internal object SpaAbi {
     /**
      * What the session manager decided, against `default.configured.audio.sink`
      * which is what a person asked for. The configured one names a device that
-     * may not be present; this one names the device audio is actually going to.
+     * may not be present. This one names the device audio is actually going to.
      */
     const val METADATA_KEY_DEFAULT_SINK = "default.audio.sink"
     const val METADATA_KEY_DEFAULT_SOURCE = "default.audio.source"

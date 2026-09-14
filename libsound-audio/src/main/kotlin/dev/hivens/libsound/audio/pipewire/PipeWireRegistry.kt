@@ -372,11 +372,11 @@ internal class PipeWireRegistry private constructor(
      * The device the session manager calls the default, or null.
      *
      * Null covers three cases a consumer treats alike and this cannot tell
-     * apart: no metadata object on the graph at all, which is a graph with no
-     * session manager; a default that has been cleared; and a default naming a
-     * node this list has not got, which is what a monitor is on a graph with no
-     * real input. The contract already defines null as unknown, and the three
-     * are honestly unknown rather than distinguishable.
+     * apart. There may be no metadata object on the graph at all, which is a
+     * graph with no session manager. The default may have been cleared. Or it
+     * may name a node this list has not got, which is what a monitor is on a
+     * graph with no real input. The contract already defines null as unknown,
+     * and the three are honestly unknown rather than distinguishable.
      */
     fun defaultDevice(direction: StreamDirection): AudioDevice? {
         val default = defaultName(direction) ?: return null
@@ -946,7 +946,7 @@ internal class PipeWireRegistry private constructor(
      * and nothing else on the graph does.
      *
      * The subscription is not a question. Asking is `enum_params`, which
-     * answers once; this asks to be told again whenever the value changes, so a
+     * answers once. This asks to be told again whenever the value changes, so a
      * slider somebody else moved arrives here as an event rather than being
      * discovered at the next re-read.
      *

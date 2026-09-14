@@ -67,7 +67,7 @@ internal class PulseMeter private constructor(
                     val pointer = data.get(ValueLayout.ADDRESS, 0)
                     if (pointer.address() != 0L && bytes >= Float.SIZE_BYTES) {
                         // The last float in the fragment is the most recent
-                        // window; earlier ones are already stale by the time a
+                        // window. Earlier ones are already stale by the time a
                         // meter would draw them.
                         val peak = pointer.reinterpret(bytes)
                             .get(ValueLayout.JAVA_FLOAT, bytes - Float.SIZE_BYTES)
@@ -118,7 +118,7 @@ internal class PulseMeter private constructor(
          * Attach a meter to [sinkInputIndex] on [monitorSource], or null when the
          * server refuses.
          *
-         * The caller holds the mainloop lock for none of this; every step takes
+         * The caller holds the mainloop lock for none of this. Every step takes
          * it itself.
          */
         fun openOrNull(
