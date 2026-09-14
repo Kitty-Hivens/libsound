@@ -73,6 +73,16 @@ internal class PulseSource(
             baseCapabilities
         }
 
+    /**
+     * The stream, read and written only under the mainloop lock.
+     *
+     * Volatile is not enough on its own. A caller that copies the pointer into a
+     * local and calls through it afterwards is safe where the local keeps a Java
+     * object alive, and this local is an address: [disconnectStream] unrefs it,
+     * and an unref is what decides whether the object behind it still exists.
+     * So the read, the null check and the call all happen inside one
+     * `pulse.locked`, which is the same lock the disconnect takes.
+     */
     @Volatile
     private var stream: MemorySegment = MemorySegment.NULL
 
@@ -345,9 +355,9 @@ internal class PulseSource(
     override fun stop(): Unit = cork(true)
 
     override fun flush() {
-        val current = stream
-        if (current.address() == 0L) return
         pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             // The tail this side is holding belongs to the same discarded audio
             // as whatever the server is holding.
             leftover = ByteArray(0)
@@ -359,10 +369,10 @@ internal class PulseSource(
     }
 
     override fun framePosition(): Long {
-        val current = stream
         val format = openFormat ?: return 0L
-        if (current.address() == 0L) return lastKnownFrames
         return pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked lastKnownFrames
             Arena.ofConfined().use { call ->
                 val out = call.allocate(ValueLayout.JAVA_LONG)
                 val rc = lib.handle("pa_stream_get_time").invokeExact(current, out) as Int
@@ -382,9 +392,9 @@ internal class PulseSource(
      * be read was actually spoken.
      */
     override fun latencyNanos(): Long {
-        val current = stream
-        if (current.address() == 0L) return 0L
         return pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked 0L
             Arena.ofConfined().use { call ->
                 val usec = call.allocate(ValueLayout.JAVA_LONG)
                 val negative = call.allocate(ValueLayout.JAVA_INT)
@@ -425,17 +435,15 @@ internal class PulseSource(
      * Null when the query fails, which leaves the request as the best answer
      * available.
      */
-    private fun grantedFragsizeBytes(): Int? {
+    private fun grantedFragsizeBytes(): Int? = pulse.locked {
         val current = stream
-        if (current.address() == 0L) return null
-        return pulse.locked {
-            val attr = lib.handle("pa_stream_get_buffer_attr").invokeExact(current) as MemorySegment
-            if (attr.address() == 0L) return@locked null
-            runCatching {
-                attr.reinterpret(PulseAbi.BUFFER_ATTR_SIZE)
-                    .get(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_FRAGSIZE)
-            }.getOrNull()?.takeIf { it > 0 }
-        }
+        if (current.address() == 0L) return@locked null
+        val attr = lib.handle("pa_stream_get_buffer_attr").invokeExact(current) as MemorySegment
+        if (attr.address() == 0L) return@locked null
+        runCatching {
+            attr.reinterpret(PulseAbi.BUFFER_ATTR_SIZE)
+                .get(ValueLayout.JAVA_INT, PulseAbi.BUFFER_ATTR_FRAGSIZE)
+        }.getOrNull()?.takeIf { it > 0 }
     }
 
     /** Caller holds the mainloop lock. */
@@ -451,9 +459,9 @@ internal class PulseSource(
     }
 
     private fun cork(on: Boolean) {
-        val current = stream
-        if (current.address() == 0L) return
         pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             val op = lib.handle("pa_stream_cork")
                 .invokeExact(current, if (on) 1 else 0, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
             pulse.releaseOperation(op)
@@ -484,9 +492,9 @@ internal class PulseSource(
      * the position looks frozen on a device that is running.
      */
     private fun awaitTimingInfo() {
-        val current = stream
-        if (current.address() == 0L) return
         pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             val op = lib.handle("pa_stream_update_timing_info")
                 .invokeExact(current, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
             pulse.releaseOperation(op)
@@ -494,6 +502,8 @@ internal class PulseSource(
         val deadline = System.nanoTime() + TIMING_TIMEOUT_NANOS
         while (System.nanoTime() < deadline) {
             val ready = pulse.locked {
+                val current = stream
+                if (current.address() == 0L) return@locked true
                 Arena.ofConfined().use { call ->
                     val out = call.allocate(ValueLayout.JAVA_LONG)
                     (lib.handle("pa_stream_get_time").invokeExact(current, out) as Int) == 0
@@ -518,10 +528,10 @@ internal class PulseSource(
     }
 
     private fun applyVolume() {
-        val current = stream
-        if (current.address() == 0L) return
         val format = openFormat ?: return
         pulse.locked {
+            val current = stream
+            if (current.address() == 0L) return@locked
             val index = lib.handle("pa_stream_get_index").invokeExact(current) as Int
             Arena.ofConfined().use { call ->
                 val cvolume = call.allocate(PulseAbi.CVOLUME_SIZE, 4)
