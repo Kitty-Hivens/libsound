@@ -456,11 +456,37 @@ class PipeWireMixerTest {
                 checkNotNull(backend).devices().any { it.id == both }.takeIf { there -> there }
             }
 
-            play()
+            // What makes it one device rather than two: the combined sink
+            // plays into each leg through a stream of its own, so both legs
+            // gain a row the moment the device exists and before anything has
+            // been pointed at it.
+            val legs = eventually("a row on each leg") {
+                val rows = mixer.streams()
+                val a = rows.firstOrNull { it.device == first }
+                val b = rows.firstOrNull { it.device == second }
+                if (a != null && b != null) listOf(a, b) else null
+            }
+
+            play(amplitude = LOUD)
             val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
             eventually("the move to be taken") { mixer.moveTo(row.id, both).takeIf { it } }
             eventually("the stream to land on the combined device") {
                 mixer.streams().firstOrNull { it.id == row.id && it.device == both }
+            }
+
+            // And the audio reaches both, which is the claim the name makes and
+            // the one routing alone does not support: a leg linked but never
+            // written to looks identical from the graph's shape.
+            for (leg in legs) {
+                val peaks = CopyOnWriteArrayList<Float>()
+                val cancel = mixer.meter(leg.id) { peaks.add(it) }
+                try {
+                    withClue("a leg of the combined device carried no audio") {
+                        eventually("a level on ${leg.device}") { peaks.firstOrNull { it > SILENCE } }
+                    }
+                } finally {
+                    cancel()
+                }
             }
 
             // Taken back through the same call a factory device is, because a
