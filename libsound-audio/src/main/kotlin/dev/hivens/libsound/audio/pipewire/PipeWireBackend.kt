@@ -69,7 +69,7 @@ internal class PipeWireBackend private constructor(
     private val sources = CopyOnWriteArrayList<PipeWireSource>()
 
     override fun createSink(config: SinkConfig): AudioSink {
-        val sink = PipeWireSink(loop, config, SINK_CAPABILITIES)
+        val sink = PipeWireSink(loop, config, SINK_CAPABILITIES, registry)
         register(sinks, sink)
         return sink
     }

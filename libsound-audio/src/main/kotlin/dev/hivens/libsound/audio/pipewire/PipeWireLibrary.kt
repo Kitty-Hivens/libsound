@@ -108,6 +108,10 @@ internal class PipeWireLibrary private constructor(
             Triple("pw_stream_dequeue_buffer", ADDR, listOf(ADDR)),
             Triple("pw_stream_queue_buffer", I32, listOf(ADDR, ADDR)),
             Triple("pw_stream_update_params", I32, listOf(ADDR, ADDR, I32)),
+            // Which node on the graph this stream became. The profiler names
+            // nodes by that id, so a stream asking whether it missed a cycle
+            // has to know which row of the answer is its own.
+            Triple("pw_stream_get_node_id", I32, listOf(ADDR)),
 
             // The properties a node is named and placed by. Built with the
             // varargs constructor's non-varargs sibling, because a Panama
@@ -126,6 +130,12 @@ internal class PipeWireLibrary private constructor(
             // other backend takes a second connection to avoid.
             Triple("pw_context_new", ADDR, listOf(ADDR, ADDR, I64)),
             Triple("pw_context_destroy", null, listOf(ADDR)),
+            // A module into this process's own context, not the daemon's.
+            // Binding an extension interface needs that extension's protocol
+            // marshaller, and the marshaller ships inside the module rather
+            // than in protocol-native: a client that has not loaded it cannot
+            // name the type, and the bind comes back null with nothing said.
+            Triple("pw_context_load_module", ADDR, listOf(ADDR, ADDR, ADDR, ADDR)),
             Triple("pw_context_connect", ADDR, listOf(ADDR, ADDR, I64)),
             Triple("pw_core_disconnect", I32, listOf(ADDR)),
 

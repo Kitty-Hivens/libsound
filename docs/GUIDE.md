@@ -284,13 +284,15 @@ play()
 return sink.underrunCount() > before
 ```
 
-A rise is an answer and a steady zero is not the opposite of one. Where the
-server reports the gap, as libpulse does, the count is the device's own account.
-Where the backend counts inside a callback the device drives, which is the
-native PipeWire path and CoreAudio, it sees a callback that ran and found too
-little and cannot see one that did not run in time. Both are gaps a listener
-hears. So back a profile off when the number climbs, and do not read a zero at
-the shortest profiles as proof that nothing went wrong.
+A rise is an answer and a steady zero is not always the opposite of one. There
+are two gaps a listener hears: the device asked for audio and there was too
+little of it, and the device asked while this client was not there to answer. A
+backend counting inside a callback sees the first and not the second, since a
+callback that never ran counts nothing. The libpulse path reports both because
+the server keeps its own account, and the native PipeWire path reports both
+because the graph does and it asks. CoreAudio reports the first only. So back a
+profile off when the number climbs, and on CoreAudio do not read a zero at the
+shortest profiles as proof that nothing went wrong.
 
 ## Recording
 

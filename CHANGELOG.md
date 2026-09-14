@@ -144,6 +144,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is a different lifetime from the module the libpulse mixer loads and the one
   this call's own obligation wants: a virtual sink left behind is a device
   somebody finds in their settings and cannot account for.
+- The native PipeWire sink counts both kinds of gap. It counted cycles where the
+  graph asked for audio and the ring had less, which is the one a process
+  callback can see, and missed the one a short latency profile actually
+  produces: a cycle this node did not answer at all, which increments nothing
+  because nothing ran. Measured at a 2.67 ms quantum with a thread allocating
+  hard beside the stream, the graph recorded 112 missed cycles in twenty seconds
+  while the number a consumer is told to watch stayed at zero.
+
+  The graph keeps that count and publishes it through the profiler object, which
+  is where `pw-top` reads its error column, so the registry binds it and the sink
+  adds this node's share. Two things had to be found out rather than read: a
+  global need not carry a property dict and this one carries none, which the
+  registry was dropping before it looked at the type, and a profile event is a
+  struct of objects rather than one object, which a reader expecting the second
+  found nothing in and said nothing about. Both are asserted against bytes the
+  library's own builder emits.
+
+  Binding an extension interface also needs that extension's protocol marshaller,
+  which ships inside its module rather than in `protocol-native`, so the module
+  is loaded into this process's own context the way `pw-top` loads it. A graph
+  whose daemon does not publish a profiler contributes nothing here and the count
+  stays what it was.
 - `AudioSink.writableFrames`, which is how many whole frames the device will take
   without the write parking. The blocking write is the pacing a decode loop
   wants and the wrong shape for a consumer that already has a loop: a thread
