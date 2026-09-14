@@ -138,7 +138,7 @@ public class FakeAudioSource(
                 if (closed) throw AudioException("source closed while reading")
                 if (buffered.isEmpty()) {
                     // Parked exactly where a real device parks. Nothing here
-                    // fills the buffer on its own; the test drives it, or
+                    // fills the buffer on its own. The test drives it, or
                     // close() breaks it.
                     dataAvailable.await()
                     continue

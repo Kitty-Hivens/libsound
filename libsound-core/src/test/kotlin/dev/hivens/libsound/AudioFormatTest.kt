@@ -37,7 +37,7 @@ class AudioFormatTest {
     fun `frame arithmetic survives a hundred hours`() {
         // 100 h at 48 kHz is 1.728e10 frames, and the naive
         // `frames * 1_000_000_000` overflows Long above about 9.2e9 frames --
-        // roughly 53 h. A soak run reaches that; a unit test with a few seconds
+        // roughly 53 h. A soak run reaches that, and a unit test with a few seconds
         // of audio never would, which is why this case is written down.
         val format = AudioFormat(48_000)
         val frames = 48_000L * 3_600 * 100

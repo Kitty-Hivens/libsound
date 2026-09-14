@@ -116,7 +116,7 @@ class PcmRingBufferTest {
     @Test
     fun `readFully parks until the device has captured the frames`() {
         // The capture direction's pacing, and the mirror of the test above. The
-        // device writes and cannot wait; the consumer reads and must, because
+        // device writes and cannot wait. The consumer reads and must, because
         // the read returning is what tells a recorder that time has passed.
         val ring = ring(8)
         val started = CountDownLatch(1)
