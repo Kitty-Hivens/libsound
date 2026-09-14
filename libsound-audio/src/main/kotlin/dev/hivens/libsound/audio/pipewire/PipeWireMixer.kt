@@ -300,6 +300,17 @@ internal class PipeWireMixer private constructor(
         return awaitDevice(name, channels)
     }
 
+    /**
+     * Whether a name can travel inside a rule without changing it.
+     *
+     * Characters only, and no length, which is the difference from [plain]. The
+     * targets are devices the graph already has, and a name this library did
+     * not choose: `alsa_output.pci-0000_00_1f.3.analog-stereo` is ordinary and
+     * past any ceiling worth setting.
+     */
+    private fun safeInRule(name: String): Boolean =
+        name.isNotBlank() && name.all { it.isLetterOrDigit() || it == '_' || it == '.' || it == '-' }
+
     override fun removeVirtualSink(id: DeviceId): Boolean = registry.removeNullSink(id.value)
 
     /**
@@ -317,17 +328,27 @@ internal class PipeWireMixer private constructor(
      * module's own default rule takes every sink on the machine, so a caller
      * naming two would otherwise be handed all of them.
      *
-     * Stereo, because the interface offers no channel count here and that is
-     * the module's own default. Names carrying anything but letters, digits and
-     * the three punctuation marks a device name uses are refused rather than
-     * escaped: they travel inside a rule, and one with a quote in it would be
-     * read as more rule than was meant.
+     * What the module lays it out as is what comes back. The interface names
+     * no channel count here, so there is nothing to hold it to and nothing to
+     * refuse it for: a device the graph made is handed over rather than taken
+     * away again.
+     *
+     * Names carrying anything but letters, digits and the three punctuation
+     * marks a device name uses are refused rather than escaped, because they
+     * travel inside a rule and one with a quote in it would be read as more
+     * rule than was meant. The length ceiling applies to the name this makes
+     * and not to the devices it names, which the graph named already and which
+     * are routinely longer than any ceiling worth setting.
      */
     override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? {
         if (closed.get() || devices.isEmpty()) return null
-        if (!plain(name) || devices.any { !plain(it.value) }) return null
+        if (!plain(name) || devices.any { !safeInRule(it.value) }) return null
         if (!registry.createCombinedSink(name, devices.map { it.value })) return null
-        return awaitDevice(name, COMBINED_CHANNELS)
+        // No count to check against. The interface names none for a combined
+        // sink, so refusing one the module laid out differently would invent a
+        // third reason for null that the interface does not have, and would
+        // take back a device the graph had made.
+        return awaitDevice(name, channels = null)
     }
 
     /**
@@ -349,12 +370,12 @@ internal class PipeWireMixer private constructor(
      * build. Handing back an id for one would be handing back something every
      * later call answers false for.
      */
-    private fun awaitDevice(name: String, channels: Int): DeviceId? {
+    private fun awaitDevice(name: String, channels: Int?): DeviceId? {
         val deadline = System.nanoTime() + APPEAR_TIMEOUT_NANOS
         while (System.nanoTime() < deadline) {
             val laid = registry.deviceChannels(name)
             if (laid != null) {
-                if (laid == channels) return DeviceId(name)
+                if (channels == null || laid == channels) return DeviceId(name)
                 // Honoured or refused, never narrowed. A caller that asked for
                 // a six channel bus and was handed a stereo one finds out by
                 // hearing four of its channels vanish.
@@ -662,9 +683,6 @@ internal class PipeWireMixer private constructor(
 
         /** Fast enough to look live, slow enough to cost nothing worth measuring. */
         private const val METER_WINDOWS_PER_SECOND = 20
-
-        /** What a combined sink is, since the interface names no count for one. */
-        private const val COMBINED_CHANNELS = 2
 
         /** Long enough for a description, short enough not to be part of a rule. */
         private const val MAX_DEVICE_NAME = 64
