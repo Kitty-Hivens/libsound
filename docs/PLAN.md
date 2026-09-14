@@ -1288,7 +1288,7 @@ of the proxy's method table, and every offset comes from the oracle.
 
 **Recording one application is a property here rather than a call**, and that
 changes what going wrong looks like. `pa_stream_set_monitor_stream` fails when it
-fails; a `target.object` the graph does not recognise is a stream that connects
+fails. A `target.object` the graph does not recognise is a stream that connects
 to whatever was going anyway, which for a capture is a microphone in a room. So
 the id is resolved before it is used. It arrives from `VolumeMixer`, which speaks
 the pulse protocol whichever backend is playing, and its number is the object
@@ -1377,8 +1377,8 @@ invisible while the native backend was reachable only by asking. Loading
 libpipewire and starting a thread loop touches no socket, measured, so on a
 machine with the library installed and no graph running both succeeded and
 `connectOrNull` answered with a backend whose first sink would fail. Harmless
-while nothing selected it; not harmless as a rung, because by then the selection
-has committed and the rung below is gone. The registry's connect is the test for
+while nothing selected it, and not harmless as a rung, because by then the
+selection has committed and the rung below is gone. The registry's connect is the test for
 a graph now, rather than an extra a backend could do without.
 
 ### 13.10 Open questions
@@ -1413,7 +1413,7 @@ mechanism this backend already uses:
 
 | | How |
 |---|---|
-| `streams()` | The registry already keeps the `Stream/Output/Audio` nodes and their serials. Their properties come with the global; their volume is the same bound-node `SPA_PARAM_Props` a device's is. |
+| `streams()` | The registry already keeps the `Stream/Output/Audio` nodes and their serials. Their properties come with the global, and their volume is the same bound-node `SPA_PARAM_Props` a device's is. |
 | `setVolume`, `setMuted`, `setDeviceVolume`, `setDeviceMuted` | `pw_node_set_param` with a Props object. The encoder writes one already and the oracle dumps a reference to check it against. |
 | `moveTo` | `target.object` on the node, which is what a capture stream is already aimed with. |
 | `setDefaultDevice` | `pw_metadata_set_property` on the object this already binds to read the default from. |
