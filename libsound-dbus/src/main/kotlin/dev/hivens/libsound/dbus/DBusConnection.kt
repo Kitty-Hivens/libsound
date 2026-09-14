@@ -64,9 +64,31 @@ class DBusConnection private constructor(
 
     private val handlers = mutableListOf<(MemorySegment) -> Boolean>()
 
+    /**
+     * Held across every submission and across the flag flip and the drain in
+     * [close], so nothing is queued onto a thread that has stopped.
+     *
+     * Checking the flag and then queueing is two steps, and [close] can run
+     * whole between them: the message then sits in a queue nobody polls, it is
+     * never unreffed, and its caller waits out the full reply timeout for an
+     * answer no thread is going to produce.
+     */
+    private val submission = Any()
+
     private val ioThread = Thread(::run, "libsound-dbus-$threadLabel").apply { isDaemon = true }
 
     val isOpen: Boolean get() = open.get()
+
+    /** Queue [into], or answer false because the connection is closing. */
+    private fun <T> submit(into: LinkedBlockingQueue<T>, item: T): Boolean = synchronized(submission) {
+        if (!open.get()) return false
+        into.put(item)
+        true
+    }
+
+    /** Everything a queue is still holding. Called under [submission] by [close]. */
+    private fun <T> drain(from: LinkedBlockingQueue<T>): List<T> =
+        generateSequence { from.poll() }.toList()
 
     /**
      * Register a message handler. Returns true from the handler when it consumed
@@ -87,11 +109,7 @@ class DBusConnection private constructor(
      */
     fun send(message: MemorySegment) {
         if (message.address() == 0L) return
-        if (!open.get()) {
-            runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
-            return
-        }
-        outgoing.put(message)
+        if (!submit(outgoing, message)) release(message)
     }
 
     /**
@@ -113,12 +131,13 @@ class DBusConnection private constructor(
         onError: ((String) -> Unit)? = null,
     ): MemorySegment? {
         if (!open.get()) {
-            runCatching { symbols.handle("dbus_message_unref").invokeExact(message) as Unit }
+            release(message)
             return null
         }
         if (Thread.currentThread() === ioThread) return blockingCall(message, timeoutMillis, onError)
         val future = CompletableFuture<MemorySegment?>()
-        tasks.put(
+        val queued = submit(
+            tasks,
             Runnable {
                 val reply = runCatching { blockingCall(message, timeoutMillis, onError) }.getOrNull()
                 // The caller may have stopped waiting. A reply nobody takes is
@@ -127,6 +146,13 @@ class DBusConnection private constructor(
                 if (!future.complete(reply) && reply != null) release(reply)
             },
         )
+        if (!queued) {
+            // Closed between the check above and the queue. The message is ours
+            // to give back, and the caller hears now rather than after the full
+            // timeout on a thread that has already stopped.
+            release(message)
+            return null
+        }
         return runCatching {
             // Past the peer's own timeout, plus slack for the loop to pick the
             // task up. A caller that waits forever here is a caller the I/O
@@ -234,7 +260,7 @@ class DBusConnection private constructor(
         if (!open.get()) return null
         if (Thread.currentThread() === ioThread) return body()
         val future = CompletableFuture<T?>()
-        tasks.put(Runnable { future.complete(runCatching(body).getOrNull()) })
+        if (!submit(tasks, Runnable { future.complete(runCatching(body).getOrNull()) })) return null
         return runCatching {
             future.get(DEFAULT_REPLY_TIMEOUT_MS.toLong() + TASK_PICKUP_SLACK_MS, TimeUnit.MILLISECONDS)
         }.getOrElse {
@@ -271,21 +297,23 @@ class DBusConnection private constructor(
     }
 
     override fun close() {
-        if (!open.compareAndSet(true, false)) return
+        // Under the submission monitor, so a caller that is between its own
+        // check and its queue either gets in ahead of the drain below or is
+        // refused. Outside it, a message could land after the drain and stay
+        // there, unsent and unreffed, with its caller waiting out the timeout.
+        if (!synchronized(submission) { open.compareAndSet(true, false) }) return
         ioThread.join(JOIN_TIMEOUT_MS)
 
         // Anything the loop enqueued after its last drain, unreffed rather than
         // leaked to libdbus.
-        while (true) {
-            val leftover = outgoing.poll() ?: break
-            runCatching { symbols.handle("dbus_message_unref").invokeExact(leftover) as Unit }
-        }
+        val leftovers = synchronized(submission) { drain(outgoing) }
+        leftovers.forEach { release(it) }
 
         // And the round trips nobody will run now. Left alone, each one's caller
         // waits out its whole timeout for a thread that has stopped -- seven
         // seconds of nothing, on a path taken during shutdown.
-        while (true) {
-            val orphan = tasks.poll() ?: break
+        val orphans = synchronized(submission) { drain(tasks) }
+        orphans.forEach { orphan ->
             runCatching { orphan.run() }
                 .onFailure { log.debug("queued bus task failed during shutdown: {}", it.message) }
         }
