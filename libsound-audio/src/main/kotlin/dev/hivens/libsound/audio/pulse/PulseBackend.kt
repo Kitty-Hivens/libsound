@@ -818,12 +818,6 @@ internal class PulseBackend private constructor(
         private val SAMPLE_PROBE_NAME = "libsound-cache-probe-${ProcessHandle.current().pid()}"
 
         /**
-         * What a *sink* can do, which is not what the backend can do. A sink
-         * cannot enumerate devices, cannot subscribe to device events, and has
-         * no way to change the device it was created against -- handing it the
-         * backend's set claimed all three.
-         */
-        /**
          * What a source can do. The same shape as a sink's set and for the same
          * reason: it can name itself and set its own volume, and it can neither
          * enumerate devices nor subscribe to their events.
@@ -840,6 +834,12 @@ internal class PulseBackend private constructor(
             Capability.CHANNEL_PLACEMENT,
         )
 
+        /**
+         * What a *sink* can do, which is not what the backend can do. A sink
+         * cannot enumerate devices, cannot subscribe to device events, and has
+         * no way to change the device it was created against -- handing it the
+         * backend's set claimed all three.
+         */
         private val SINK_CAPABILITIES = Capabilities.of(
             Capability.STREAM_VOLUME,
             Capability.STREAM_IDENTITY,
