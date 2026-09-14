@@ -67,6 +67,20 @@ internal class PipeWireRegistry private constructor(
     private val context: MemorySegment,
     private val core: MemorySegment,
     private val registry: MemorySegment,
+    /**
+     * Whether this connection subscribes to the graph's account of each cycle.
+     *
+     * Off unless something will read it, and the reason is what the
+     * subscription actually delivers. The daemon sends one event per graph
+     * cycle, which at a short quantum is hundreds a second, and each one
+     * describes every node on the graph: its id, its name and its timings. That
+     * is a continuous account of every other application's audio arriving in
+     * this process, for a number only a sink asks for. It stays on the machine
+     * and nothing here keeps any of it but the counts, and it is still a wider
+     * read than the feature needs, so only the connection that backs sinks
+     * takes it.
+     */
+    private val wantsCycles: Boolean,
 ) : AutoCloseable {
 
     private val log = LoggerFactory.getLogger("libsound.PipeWire")
@@ -277,6 +291,20 @@ internal class PipeWireRegistry private constructor(
      */
     private val createdModules = HashMap<String, MemorySegment>()
 
+    /**
+     * Which device name each loaded module makes, by the token its own destroy
+     * listener carries.
+     *
+     * A module can go without being asked: the one this loads imports
+     * `pw_impl_module_schedule_destroy`, so a handle kept past that names freed
+     * memory. The listener is how this hears, and the token is what tells it
+     * which entry to drop, since the callback is handed a pointer of our
+     * choosing and not the module.
+     */
+    private val moduleNames = HashMap<Int, String>()
+
+    private var nextModuleToken = 1
+
     /** The sequence number the barrier is waiting for, and whether it arrived. */
     @Volatile
     private var pendingSeq = NO_SEQ
@@ -379,16 +407,21 @@ internal class PipeWireRegistry private constructor(
     /**
      * Cycles the graph says this node missed, or null where it cannot say.
      *
-     * Null on a graph whose daemon does not load the profiler module, and null
-     * for a node no cycle has mentioned yet. Zero is a different answer and
-     * says the graph has spoken for this node and counted nothing.
+     * Null on a graph whose daemon does not load the profiler module, null for
+     * a node no cycle has mentioned yet, and null for a node this registry has
+     * not been told about. Zero is a different answer and says the graph has
+     * spoken for this node and counted nothing.
      *
-     * The count belongs to the node rather than to a connection, and a node
-     * exists from the moment a stream connects, so nothing has to be subtracted
-     * for a baseline: a stream that has just opened is asking about a node
-     * whose count starts where the node did.
+     * The third null is the one that matters and it is not caution. A global id
+     * is recycled, which this file says two hundred lines up and which was
+     * measured on this machine by making and destroying a sink three times and
+     * getting one id back each time. So a count left under an id names whatever
+     * took that id next, and the stream that took it would be handed a number
+     * it did not earn. Answered only while the node is one this registry
+     * currently knows, and the entry is dropped again when a node appears under
+     * an id, not only when one leaves.
      */
-    fun missedCycles(node: Int): Long? = missed[node]
+    fun missedCycles(node: Int): Long? = if (nodes.containsKey(node)) missed[node] else null
 
     /** The same, for a node named the way the graph lists it. */
     fun missedCycles(name: String): Long? =
@@ -499,10 +532,13 @@ internal class PipeWireRegistry private constructor(
                     createdSinks.clear()
                     // And the modules, which make a device the same way from
                     // this process's side rather than the graph's.
-                    createdModules.values.forEach { module ->
+                    // Copied first: destroying one calls back into here and
+                    // takes its own entry out of the map being walked.
+                    createdModules.values.toList().forEach { module ->
                         runCatching { lib.handle("pw_impl_module_destroy").invokeExact(module) as Unit }
                     }
                     createdModules.clear()
+                    moduleNames.clear()
                     // Every bound proxy before the registry that handed them
                     // out, and all of it before the connection they went on.
                     nodeProxies.keys.toList().forEach { releaseNode(it) }
@@ -698,6 +734,24 @@ internal class PipeWireRegistry private constructor(
     }
 
     /**
+     * A module this connection loaded, gone.
+     *
+     * Either because something here destroyed it, in which case the entry is
+     * already out and this does nothing, or because it took itself down, which
+     * is the case this exists for: the handle is freed and must not be
+     * destroyed again.
+     *
+     * On the loop's own thread, like every other event here, which is where the
+     * two maps below are allowed to be touched.
+     */
+    fun onModuleDestroy(data: MemorySegment) {
+        runCatching {
+            val name = moduleNames.remove(data.address().toInt()) ?: return
+            createdModules.remove(name)
+        }.onFailure { log.debug("module destroy threw: {}", it.message) }
+    }
+
+    /**
      * One cycle of the graph, as the profiler describes it.
      *
      * An object carrying a block per node that followed the driver through that
@@ -796,6 +850,9 @@ internal class PipeWireRegistry private constructor(
             ?: entries[SpaAbi.KEY_DEVICE_DESCRIPTION]
             ?: name
         val serial = entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull() ?: NO_SERIAL
+        // A node appearing under an id means any count left under that id
+        // belonged to a different node, because the graph recycles them.
+        missed.remove(id)
         nodes[id] = GraphNode(
             name = name,
             label = label,
@@ -1060,7 +1117,10 @@ internal class PipeWireRegistry private constructor(
                     // both get past the question and the second proxy replaces
                     // the first in the map, leaving a device on the graph that
                     // nothing here can destroy any more.
-                    if (createdSinks.containsKey(name)) return@locked false
+                    // Both maps, because a name already carrying a module
+                    // would end up naming two devices, and the call that takes
+                    // one back would report success having removed the other.
+                    if (createdSinks.containsKey(name) || createdModules.containsKey(name)) return@locked false
                     val proxy = createObject(SpaAbi.FACTORY_ADAPTER, nodeType, SpaAbi.VERSION_NODE, entries)
                     if (proxy.address() == 0L) return@locked false
                     createdSinks[name] = proxy
@@ -1090,6 +1150,9 @@ internal class PipeWireRegistry private constructor(
      * sink and the module's own default is the same.
      */
     fun createCombinedSink(name: String, targets: List<String>): Boolean = calls.withLock {
+        // The caller's obligation, stated here rather than left as a property
+        // of the one call site: every name travels unescaped inside the rule
+        // built below, so one carrying a quote or a bracket rewrites it.
         if (closed.get() || targets.isEmpty()) return@withLock false
         val matches = targets.joinToString(" ") { "{ node.name = \"$it\" }" }
         val args = buildString {
@@ -1109,6 +1172,15 @@ internal class PipeWireRegistry private constructor(
                     ) as MemorySegment
                     if (module.address() == 0L) return@locked false
                     createdModules[name] = module
+                    // Listened to before it is handed out, so a module that
+                    // fails during its own initialisation is still heard.
+                    val token = nextModuleToken++
+                    moduleNames[token] = name
+                    val hook = stubArena.allocate(SpaAbi.HOOK_SIZE, 8)
+                    hook.fill(0)
+                    lib.handle("pw_impl_module_add_listener").invokeExact(
+                        module, hook, moduleEvents, MemorySegment.ofAddress(token.toLong()),
+                    ) as Unit
                     true
                 }
             }
@@ -1372,7 +1444,7 @@ internal class PipeWireRegistry private constructor(
      * zero. [missedCycles] is null there and says so.
      */
     private fun bindProfiler(id: Int) {
-        if (profilerId != NO_GLOBAL) return
+        if (!wantsCycles || profilerId != NO_GLOBAL) return
         val proxy = bind(id, profilerType, SpaAbi.VERSION_PROFILER)
         if (proxy.address() == 0L) {
             log.debug("bind of the profiler answered null")
@@ -1585,6 +1657,31 @@ internal class PipeWireRegistry private constructor(
     }
 
     /**
+     * A loaded module's events, of which one slot is filled.
+     *
+     * One struct for every module, because it only says what to call. Which
+     * module it is about travels as the listener's own data, the way a bound
+     * node's global id does.
+     */
+    private val moduleEvents: MemorySegment by lazy {
+        val struct = stubArena.allocate(SpaAbi.MODULE_EVENTS_SIZE, 8)
+        struct.fill(0)
+        struct.set(ValueLayout.JAVA_INT, SpaAbi.MODULE_EVENTS_VERSION, SpaAbi.VERSION_MODULE_EVENTS)
+        struct.set(
+            ValueLayout.ADDRESS, SpaAbi.MODULE_EVENTS_DESTROY,
+            Linker.nativeLinker().upcallStub(
+                MethodHandles.lookup().findVirtual(
+                    PipeWireRegistry::class.java, "onModuleDestroy",
+                    MethodType.methodType(Void.TYPE, MemorySegment::class.java),
+                ).bindTo(this),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS),
+                stubArena,
+            ),
+        )
+        struct
+    }
+
+    /**
      * The profiler's events, which is one slot and the version in front of it.
      *
      * Built here rather than at the global that needs one, for the reason the
@@ -1697,7 +1794,10 @@ internal class PipeWireRegistry private constructor(
         private const val ROUND_TRIP_SECONDS = 2
 
         /** Open a connection of its own and start watching, or null where there is no graph. */
-        fun openOrNull(applicationName: String): PipeWireRegistry? {
+        fun openOrNull(
+            applicationName: String,
+            wantsCycles: Boolean = false,
+        ): PipeWireRegistry? {
             val loop = PipeWireLoop.startOrNull("$applicationName registry") ?: return null
             val lib = loop.lib
             var context = MemorySegment.NULL
@@ -1718,12 +1818,12 @@ internal class PipeWireRegistry private constructor(
                     context = lib.handle("pw_context_new")
                         .invokeExact(loop.loop, MemorySegment.NULL, 0L) as MemorySegment
                     check(context.address() != 0L) { "pw_context_new failed" }
-                    loadProfiler(lib, context)
+                    if (wantsCycles) loadProfiler(lib, context)
                     core = lib.handle("pw_context_connect")
                         .invokeExact(context, MemorySegment.NULL, 0L) as MemorySegment
                     check(core.address() != 0L) { "pw_context_connect failed" }
                     val registry = getRegistry(lib, core)
-                    PipeWireRegistry(loop, context, core, registry).apply {
+                    PipeWireRegistry(loop, context, core, registry, wantsCycles).apply {
                         installCoreListener()
                         installListener()
                     }

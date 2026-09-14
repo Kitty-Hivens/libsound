@@ -416,7 +416,16 @@ class PipeWireMixerTest {
                 it.id == device.id && it.volume != null && abs(it.volume!! - 0.2f) < TOLERANCE
             }
         }
-        mixer.setDeviceMuted(device.id, true) shouldBe true
+        // The opposite of what the device was found at, so the read below says
+        // the write landed whichever way round this graph starts.
+        val flipped = !(device.muted ?: false)
+        mixer.setDeviceMuted(device.id, flipped) shouldBe true
+        // Read back for the same reason the volume is: a setter answering true
+        // covers the graph having taken the write, and the half of this case's
+        // name that says the mute goes through is that value coming back.
+        eventually("the device mute to come back") {
+            checkNotNull(backend).devices().firstOrNull { it.id == device.id && it.muted == flipped }
+        }
 
         // The obligation is stronger here than on a row: a device volume left
         // low is the one a person is most likely to blame on their hardware.
@@ -456,11 +465,50 @@ class PipeWireMixerTest {
                 checkNotNull(backend).devices().any { it.id == both }.takeIf { there -> there }
             }
 
-            play()
+            play(amplitude = LOUD)
             val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
             eventually("the move to be taken") { mixer.moveTo(row.id, both).takeIf { it } }
             eventually("the stream to land on the combined device") {
                 mixer.streams().firstOrNull { it.id == row.id && it.device == both }
+            }
+
+            // What makes it one device rather than two: the combined sink plays
+            // into each leg through a stream of its own. Looked up here rather
+            // than when the device was made, because a row read before the
+            // audio is flowing is one the module may have replaced by the time
+            // it is metered, and a meter aimed at a row that has gone hands
+            // back a cancel and never calls its handler.
+            val legs = eventually("a row on each leg") {
+                val rows = mixer.streams()
+                val a = rows.firstOrNull { it.device == first }
+                val b = rows.firstOrNull { it.device == second }
+                if (a != null && b != null) a to b else null
+            }
+
+            // And the audio reaches both, which is the claim the name makes and
+            // the one routing alone does not support: a leg linked but never
+            // written to looks identical from the graph's shape.
+            //
+            // Both meters are opened before either is waited on. Taking them in
+            // turn would let a row that went away between the two reads look
+            // exactly like a leg carrying nothing.
+            val onFirst = CopyOnWriteArrayList<Float>()
+            val onSecond = CopyOnWriteArrayList<Float>()
+            val cancelFirst = mixer.meter(legs.first.id) { onFirst.add(it) }
+            val cancelSecond = mixer.meter(legs.second.id) { onSecond.add(it) }
+            try {
+                withClue("the graph stopped listing a leg's row before it could be metered") {
+                    mixer.streams().count { it.id == legs.first.id || it.id == legs.second.id } shouldBe 2
+                }
+                withClue("the first leg of the combined device carried no audio") {
+                    eventually("a level on $first") { onFirst.firstOrNull { it > SILENCE } }
+                }
+                withClue("the second leg of the combined device carried no audio") {
+                    eventually("a level on $second") { onSecond.firstOrNull { it > SILENCE } }
+                }
+            } finally {
+                cancelFirst()
+                cancelSecond()
             }
 
             // Taken back through the same call a factory device is, because a

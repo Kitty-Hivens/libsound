@@ -32,6 +32,7 @@
 /* Metadata is an extension rather than core, and the default sink lives in it. */
 #include <pipewire/extensions/metadata.h>
 #include <pipewire/extensions/profiler.h>
+#include <pipewire/impl-module.h>
 #include <spa/param/profiler.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
@@ -347,8 +348,10 @@ int main(void) {
     /* And the bytes, so the reader is checked against the builder here the way
      * the Props reader already is. A follower block is a struct of ten fields
      * and only two of them are wanted, so what the decoder has to get right is
-     * walking past the eight it does not read. */
-    SECTION("a reference POD: a Profiler object with one follower block");
+     * walking past the eight it does not read. Two blocks, because the key
+     * repeats within the object and a reader keyed by a map loses all but the
+     * last of them. */
+    SECTION("a reference POD: a Profiler object with a follower block per node");
     {
         uint8_t storage[1024];
         struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
@@ -365,6 +368,22 @@ int main(void) {
         spa_pod_builder_int(&builder, 3);
         spa_pod_builder_fraction(&builder, 1024, 48000);
         spa_pod_builder_int(&builder, 7);
+        spa_pod_builder_bool(&builder, false);
+        spa_pod_builder_pop(&builder, &struct_frame);
+        /* A second block under the same key, because that is how the object
+         * carries a graph: one per node. A reader that collapses an object into
+         * a map keeps the last of these and drops the rest. */
+        spa_pod_builder_prop(&builder, SPA_PROFILER_followerBlock, 0);
+        spa_pod_builder_push_struct(&builder, &struct_frame);
+        spa_pod_builder_int(&builder, 50);
+        spa_pod_builder_string(&builder, "another");
+        spa_pod_builder_long(&builder, 5);
+        spa_pod_builder_long(&builder, 6);
+        spa_pod_builder_long(&builder, 7);
+        spa_pod_builder_long(&builder, 8);
+        spa_pod_builder_int(&builder, 3);
+        spa_pod_builder_fraction(&builder, 1024, 48000);
+        spa_pod_builder_int(&builder, 0);
         spa_pod_builder_bool(&builder, false);
         spa_pod_builder_pop(&builder, &struct_frame);
         const struct spa_pod *pod = spa_pod_builder_pop(&builder, &object_frame);
@@ -412,6 +431,17 @@ int main(void) {
         const struct spa_pod *pod = spa_pod_builder_pop(&builder, &outer);
         dump("ProfileEvent", pod, SPA_POD_SIZE(pod));
     }
+
+    /* A module loaded into this process's own context is this connection's to
+     * remove, and it can also remove itself: the combine module imports
+     * pw_impl_module_schedule_destroy. So the handle has to be dropped when it
+     * goes, or the next destroy runs on freed memory. */
+    SECTION("a loaded module, and hearing that it went");
+    P(sizeof(struct pw_impl_module_events));
+    P(offsetof(struct pw_impl_module_events, version));
+    P(offsetof(struct pw_impl_module_events, destroy));
+    P(offsetof(struct pw_impl_module_events, free));
+    P(PW_VERSION_IMPL_MODULE_EVENTS);
 
     /* Properties are built from a dict rather than from pw_properties_new,
      * which is variadic: a Panama downcall to a variadic function needs a

@@ -102,6 +102,24 @@ internal object SpaAbi {
     const val STREAM_FLAG_AUTOCONNECT = 0x0000_0001
     const val STREAM_FLAG_INACTIVE = 0x0000_0002
     const val STREAM_FLAG_MAP_BUFFERS = 0x0000_0004
+    /**
+     * Run the process callback on the graph's own real-time thread.
+     *
+     * Transcribed and deliberately not taken. Measured on a 2.67 ms quantum
+     * with a thread allocating hard beside the stream, four runs each way: the
+     * cycles this node missed came out 116, 104, 115 and 43 without it and 107,
+     * 176, 55 and 26 with it. The spread covers the difference, and the set
+     * with the flag holds both the best run and the worst.
+     *
+     * So there is no benefit to weigh against what it costs, which is where a
+     * stall lands. Without it a late callback is this stream's own problem.
+     * With it the node is on the graph's real-time thread and a stall is an
+     * xrun for every client sharing that graph, including ones that have
+     * nothing to do with this process.
+     *
+     * One machine, one quantum, one collector. A consumer whose numbers say
+     * otherwise has a case this measurement does not cover.
+     */
     const val STREAM_FLAG_RT_PROCESS = 0x0000_0010
 
     /**
@@ -565,6 +583,19 @@ internal object SpaAbi {
      * oracle prints neither.
      */
     const val MODULE_COMBINE_STREAM = "libpipewire-module-combine-stream"
+
+    /**
+     * Four slots, of which one is filled: a module that is going says so.
+     *
+     * Needed because a module can go without being asked. The combine module
+     * imports `pw_impl_module_schedule_destroy`, so a handle held past that
+     * names freed memory, and destroying it a second time is native and
+     * uncatchable.
+     */
+    const val MODULE_EVENTS_SIZE = 40L
+    const val MODULE_EVENTS_VERSION = 0L
+    const val MODULE_EVENTS_DESTROY = 8L
+    const val VERSION_MODULE_EVENTS = 0
 
     /**
      * Which devices a combined sink forwards to, as the rule that module

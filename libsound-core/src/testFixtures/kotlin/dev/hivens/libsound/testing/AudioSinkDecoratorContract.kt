@@ -169,8 +169,8 @@ public abstract class AudioSinkDecoratorContract {
         // The other end of the latency rule. A decorator that reported less than
         // the device would send a consumer polling it away while the device was
         // waiting for audio, which is a stall the consumer cannot see the cause
-        // of. One that holds frames may report its own room on top; one that
-        // holds none reports the device's unchanged.
+        // of. One that holds frames may report its own room on top, and one
+        // that holds none reports the device's unchanged.
         decorate(device).use { sink ->
             sink.open(format)
             (sink.writableFrames() >= device.writableFrames()) shouldBe true

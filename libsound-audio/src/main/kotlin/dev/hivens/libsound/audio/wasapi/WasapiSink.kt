@@ -370,9 +370,16 @@ internal class WasapiSink(
     override fun writableFrames(): Long = synchronized(interfaceLock) {
         val audioClient = client
         if (openFormat == null || audioClient.address() == 0L) return 0L
-        return Arena.ofConfined().use { call ->
-            (bufferFrames - readPadding(call, audioClient)).coerceAtLeast(0).toLong()
-        }
+        // Answered rather than thrown. readPadding raises when the endpoint has
+        // gone, and the interface lists open and write as the two calls that
+        // throw: a consumer polling this in its own loop would meet an
+        // exception where the other four backends hand it a zero and let it
+        // come back. The device going is what the next write reports.
+        return runCatching {
+            Arena.ofConfined().use { call ->
+                (bufferFrames - readPadding(call, audioClient)).coerceAtLeast(0).toLong()
+            }
+        }.getOrDefault(0L)
     }
 
     /**

@@ -244,7 +244,10 @@ internal class PipeWireBackend private constructor(
             val loop = PipeWireLoop.startOrNull(applicationName) ?: return null
             var opened: PipeWireRegistry? = null
             return runCatching {
-                val registry = PipeWireRegistry.openOrNull(applicationName)
+                // The one connection that asks for the graph's account of each
+                // cycle, because sinks made here report it. A mixer's takes no
+                // such subscription.
+                val registry = PipeWireRegistry.openOrNull(applicationName, wantsCycles = true)
                     ?: throw IllegalStateException("no graph answered")
                 opened = registry
                 log.info("pipewire {} reached natively", loop.lib.version() ?: "?")
