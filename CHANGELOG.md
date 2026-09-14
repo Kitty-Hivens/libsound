@@ -15,6 +15,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   a thread that is not the writer while a watchdog may close the sink. The read,
   the check and the call now sit inside one locked block, and teardown claims
   the pointer inside the same one.
+- **The same read outside the lock, in the places that pass missed.** The
+  libpulse capture stream took the field before taking the lock in seven of its
+  methods, and the native capture stream published its pointer after the lock
+  had been given up rather than inside it. The second is the shape the playback
+  side already carries a comment about: a close arriving in that gap finds
+  nothing to disconnect, frees the arena holding the upcall stubs, and leaves a
+  connected stream calling through them on the next graph cycle.
+- Taking the libpulse mainloop lock after the context had begun tearing down
+  was a jump into freed memory rather than a call that fails, and a caller that
+  passed a backend's or a mixer's closed check a moment earlier did exactly
+  that. The lock is refused once the teardown has begun, which narrows the
+  window the way the native loop already does and turns the rest into something
+  a caller can catch.
+- An `open` that failed on the libpulse backend left the previous format
+  standing while `isOpen` answered false, so a consumer walking a ladder of
+  encodings read back the shape of the track before.
+- Opening a WASAPI sink leaked an `IMMDevice` and an `IAudioClient` on every
+  failure, and failing is the ordinary case rather than the rare one: the
+  contract suite opens every encoding in turn and the audio engine will not take
+  a 64-bit float. Opening the backend leaked its device enumerator the same way.
+- A level meter that connected its stream and then could not attach its read
+  callback answered null and walked away from the stream, leaving a recording of
+  another application's audio that nobody reads and nothing tears down.
+- `VolumeMixer.combineSinks` on the libpulse mixer refused the devices it was
+  handed. The name and the targets both travel inside a flat module argument and
+  both were held to one rule, and that rule carries a length ceiling meant for a
+  name this library invents. A sink the server named is routinely longer, so
+  combining two ordinary cards answered null.
+- The libpulse mixer kept a row for every stream the machine had ever played
+  while nothing was subscribed to it. The subscription callback gave up at the
+  subscriber check, and the bookkeeping that forgets a stream sat inside the
+  dispatch that check skipped.
+- `AudioSink.underrunCount` on CoreAudio counted the renders between `open` and
+  the first write, which is the defect the native backend's entry below
+  describes and the same burst at every open and every track change.
+- A D-Bus message queued as the connection closed stayed in a queue nobody
+  polls. For a send that is a message libdbus never gets back, and for a round
+  trip it is also the caller waiting out its whole timeout for an answer no
+  thread is going to produce.
 - A readiness wait with no bound. `open` on the native backend waited on a
   condition nothing was obliged to signal, so a graph that stopped changing the
   stream's state hung the caller for good and the timeout the code documented
