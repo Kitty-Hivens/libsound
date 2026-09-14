@@ -432,11 +432,20 @@ internal class PulseMixer private constructor(
         return unloadModule(index)
     }
 
+    /**
+     * One device playing what several play, as a server module.
+     *
+     * Both the name and the targets travel unescaped inside a flat argument
+     * string, so anything carrying a space or a quote is refused rather than
+     * escaped. The length ceiling applies to the name this makes and not to the
+     * devices it names, which the server named already: see [safeInArgument].
+     */
     override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? {
         if (closed.get()) return null
         val safe = sanitise(name) ?: return null
         if (devices.isEmpty()) return null
-        val slaves = devices.map { sanitise(it.value) ?: return null }
+        if (devices.any { !safeInArgument(it.value) }) return null
+        val slaves = devices.map { it.value }
         return loadModule(
             safe,
             "module-combine-sink",
@@ -699,7 +708,22 @@ internal class PulseMixer private constructor(
      * exactly what happened.
      */
     private fun sanitise(name: String): String? =
-        name.takeIf { it.isNotBlank() && it.length <= MAX_DEVICE_NAME && it.all(::isNameCharacter) }
+        name.takeIf { it.length <= MAX_DEVICE_NAME && safeInArgument(it) }
+
+    /**
+     * The same question for a device the server named rather than one this
+     * library minted.
+     *
+     * Characters only, and no length, which is the whole difference from
+     * [sanitise]. A sink is routinely called something like
+     * `alsa_output.usb-Focusrite_Scarlett_2i2_USB_Y7CW0123456-00.analog-stereo`,
+     * which is past any ceiling worth setting, so holding a combined sink's
+     * targets to the one above refused the call on most real hardware. The
+     * ceiling belongs to the name this library chooses, which is also the
+     * description a person reads.
+     */
+    private fun safeInArgument(name: String): Boolean =
+        name.isNotBlank() && name.all(::isNameCharacter)
 
     private fun isNameCharacter(character: Char): Boolean =
         character.isLetterOrDigit() || character == '_' || character == '.' || character == '-'
