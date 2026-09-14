@@ -51,13 +51,22 @@ import java.util.concurrent.atomic.AtomicLong
  * that trap and each needed a different correction, so counting is the answer
  * that does not depend on which kind this turns out to be.
  *
- * ## The process callback runs on the graph's thread
+ * ## Which thread the process callback runs on, and what it may do there
  *
- * It takes the ring's lock and copies, and does nothing else. No allocation
+ * This connection's own loop thread, not the graph's real-time one.
+ * `PW_STREAM_FLAG_RT_PROCESS` is what moves it, and it is not set: the
+ * measurement behind that is on [SpaAbi.STREAM_FLAG_RT_PROCESS]. What the flag
+ * decides is where a stall lands. Without it a late callback is this stream's
+ * own problem, and with it the node is on the graph's real-time thread and a
+ * stall becomes an xrun for every client sharing that graph.
+ *
+ * The callback is written to the tighter rule regardless, because the ring is
+ * shared with a consumer's writer and the graph is waiting on it either way.
+ * It takes the ring's lock and copies, and does nothing else: no allocation
  * beyond reinterpreting a mapped pointer, no logging, no native call back into
  * the library. A garbage collection can still land on it and be heard, which is
- * true of every JVM audio path; the honest mitigation is the ring depth, not a
- * claim that it cannot happen.
+ * true of every JVM audio path, and the honest mitigation is the ring depth
+ * rather than a claim that it cannot happen.
  */
 internal class PipeWireSink(
     private val loop: PipeWireLoop,
@@ -82,6 +91,9 @@ internal class PipeWireSink(
      */
     @Volatile
     private var nodeId = SpaAbi.ID_ANY
+
+    /** The largest count reported so far in this open, which is what makes it monotonic. */
+    private val highWater = AtomicLong(0)
 
     /**
      * The base set, plus the one entry decided per thread at runtime.
@@ -235,12 +247,13 @@ internal class PipeWireSink(
         scratch = ByteArray(MAX_FRAMES_PER_PERIOD * frameBytes)
         framesRendered.set(0)
         underruns.set(0)
+        highWater.set(0)
         // A reopen replaces the stream, so the node this was counting for is
         // gone and the next state change names the new one.
         nodeId = SpaAbi.ID_ANY
         fed = false
 
-        val fresh = Arena.ofConfined().use { setup ->
+        Arena.ofConfined().use { setup ->
             val props = properties(setup, format)
             val params = setup.allocate(ValueLayout.ADDRESS, 1)
             val pod = SpaPod.audioFormat(format, SpaAbi.PARAM_ENUM_FORMAT)
@@ -270,11 +283,17 @@ internal class PipeWireSink(
                     lib.handle("pw_stream_destroy").invokeExact(created) as Unit
                     throw AudioException("pw_stream_connect = $rc")
                 }
-                created
+                // Published here rather than after the lock is given up, which
+                // is what this field's own rule says and what the state-changed
+                // callback relies on. Assigned outside, two things went wrong:
+                // a state change dispatched in the gap read a null stream and
+                // lost the node id for good, and a close arriving in the gap
+                // found nothing to disconnect, freed the arena holding the
+                // upcall stubs, and left a live stream calling into it.
+                stream = created
             }
         }
 
-        stream = fresh
         // Everything past here can fail, and a sink that failed to open is a
         // sink that is not open: the stream goes and the format stays null, so
         // isOpen answers false and write refuses rather than parking on a ring
@@ -450,7 +469,13 @@ internal class PipeWireSink(
      * a node lasts exactly as long as the stream that made it, and an open
      * makes a new one.
      */
-    override fun underrunCount(): Long = underruns.get() + missedCycles()
+    override fun underrunCount(): Long =
+        // Clamped upward, because the contract promises monotonic within one
+        // open and the graph's half can fall: the profiler can leave the graph,
+        // and the node this counts for can be removed while this sink is still
+        // open. A count that went backwards would read to a consumer as a
+        // latency profile becoming safe.
+        highWater.updateAndGet { seen -> maxOf(seen, underruns.get() + missedCycles()) }
 
     /** What the graph says this stream's node missed, or zero where it cannot say. */
     private fun missedCycles(): Long {
@@ -496,6 +521,10 @@ internal class PipeWireSink(
         ring?.close()
         disconnectStream()
         openFormat = null
+        // The id goes with the stream that had it. Left standing, a read after
+        // close would eventually name whatever node took that id next, and the
+        // graph recycles them.
+        nodeId = SpaAbi.ID_ANY
         renderFailure?.let { log.warn("the process callback failed at least once: {}", it) }
         // Only here. The stream is destroyed, so no callback can be in flight
         // and nothing native still holds a pointer into this arena.

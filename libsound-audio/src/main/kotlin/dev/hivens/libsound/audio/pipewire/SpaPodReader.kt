@@ -25,7 +25,11 @@ import java.lang.foreign.ValueLayout
  *
  * ## What it decodes, and what it walks past
  *
- * Booleans, ids, ints, longs, floats, arrays of the first three, and structs.
+ * Booleans, ids, ints, longs, floats, arrays of ids, ints or floats, and
+ * structs. An array of booleans or of longs is not decoded, because nothing the
+ * graph sends here is one: a channel map is ids, a per-channel volume is
+ * floats.
+ *
  * Everything else comes back as null, and the position of what follows it is
  * unaffected: every pod declares its own size and the walk steps by that size
  * whatever the type is, so an unknown value is skipped correctly rather than
@@ -61,10 +65,15 @@ internal object SpaPodReader {
      * Every property of an object pod, by key, or empty for anything that is
      * not one.
      *
-     * Values come back as [Boolean], [Int], [Long], [Float], [IntArray] or
-     * [FloatArray]. A type this does not decode is left out rather than
-     * guessed at, so a caller asking for a key it understands is never handed
-     * something it does not.
+     * Values come back as [Boolean], [Int], [Long], [Float], [IntArray],
+     * [FloatArray], or a [List] of those for a struct, whose entries are null
+     * where the field's own type is one this does not decode. A type this does
+     * not decode is left out rather than guessed at, so a caller asking for a
+     * key it understands is never handed something it does not.
+     *
+     * A key the object carries more than once keeps its last value here. The
+     * profiler's object is written that way and [objectEntries] is what reads
+     * it.
      */
     fun objectProperties(pod: MemorySegment): Map<Int, Any> {
         val found = LinkedHashMap<Int, Any>()
@@ -115,6 +124,10 @@ internal object SpaPodReader {
         val size = header.get(INT32, SpaAbi.POD_SIZE_OFFSET.toLong())
         val type = header.get(INT32, SpaAbi.POD_TYPE_OFFSET.toLong())
         if (size < 0 || size > MAX_POD_BYTES) return emptyList()
+        // An object needs room for the type and id its body opens with, which
+        // is the floor the other entry point applies. Both answer nothing for a
+        // pod too short to be what it says it is.
+        if (type == SpaAbi.TYPE_OBJECT && size < SpaAbi.POD_OBJECT_BODY_SIZE) return emptyList()
         val declared = POD_HEADER + size
         val end = if (pod.isNative) declared else minOf(declared, pod.byteSize().toInt())
         val whole = view(pod, end) ?: return emptyList()
@@ -126,7 +139,7 @@ internal object SpaPodReader {
             val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
             val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
             val childBody = at + POD_HEADER
-            if (childSize < 0 || childBody + childSize > end) break
+            if (childSize < 0 || childSize > end - childBody) break
             if (childType == SpaAbi.TYPE_OBJECT) found += entriesAt(whole, childBody, childSize, end)
             at = childBody + padded(childSize)
         }
@@ -187,7 +200,10 @@ internal object SpaPodReader {
             // A size the object it sits in cannot hold is where the walk stops.
             // Continuing would read whatever the graph allocated next, and the
             // bytes come from another process.
-            if (size < 0 || body + size > end) break
+            // Subtracted rather than added, because a length near the top of
+            // the range makes the sum wrap negative and pass a check written
+            // the other way round. The bytes come from another process.
+            if (size < 0 || size > end - body) break
             valueOf(whole, body, size, type, 0)?.let { found += key to it }
             at = body + padded(size)
         }
@@ -211,7 +227,7 @@ internal object SpaPodReader {
             val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
             val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
             val childBody = at + POD_HEADER
-            if (childSize < 0 || childBody + childSize > limit) break
+            if (childSize < 0 || childSize > limit - childBody) break
             found += valueOf(whole, childBody, childSize, childType, depth + 1)
             at = childBody + padded(childSize)
         }

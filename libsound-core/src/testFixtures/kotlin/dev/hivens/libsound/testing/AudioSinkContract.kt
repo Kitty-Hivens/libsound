@@ -134,6 +134,18 @@ public abstract class AudioSinkContract {
                     withClue("accepts($encoding) was false, so open owes an AudioException") {
                         (opened.exceptionOrNull() is AudioException) shouldBe true
                     }
+                    // And the two answers agree about what is left. Backends
+                    // differ in whether a refusal disturbs a stream already
+                    // running: the ones that can ask before they act leave it
+                    // alone and stay open on the old format, which is the
+                    // better answer, and the ones whose device is the only
+                    // authority have already dropped it. What none may do is
+                    // say it is not open and still offer somewhere to write.
+                    if (!sink.isOpen) {
+                        withClue("a sink that is not open still offered room") {
+                            sink.writableFrames() shouldBe 0L
+                        }
+                    }
                 }
             }
         }

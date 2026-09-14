@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test
  *
  * Every other ABI table in this repository is transcribed from an oracle and
  * believed. This one is compared, because it can be: `tools/pipewire-oracle.c`
- * builds the same two objects with `spa_pod_builder` and dumps them, and an
+ * builds each of these objects with `spa_pod_builder` and dumps them, and an
  * encoder that emits the same bytes has got the encoding right.
  *
  * That matters more here than the usual argument for oracles. A wrong slot
@@ -141,7 +141,6 @@ class SpaPodTest {
         // reader that stepped by anything but each pod's own declared size
         // would come back with the latency where the count belongs.
         val entries = SpaPodReader.objectEntries(PROFILER_FOLLOWER.fromHex())
-        entries.size shouldBe 1
         val (key, value) = entries.first()
         key shouldBe SpaAbi.PROFILER_FOLLOWER_BLOCK
         val block = value as List<*>
@@ -171,13 +170,22 @@ class SpaPodTest {
 
     @Test
     fun `an object carrying one key many times keeps every one of them`() {
-        // The profiler writes a block per node under the same key. A map would
-        // keep the last node on the graph and silently drop the rest, which is
-        // why the reader offers the entries in order as well.
+        // The profiler writes a block per node under the same key, and the
+        // reference object carries two of them. Both come back, in the order
+        // the builder wrote them.
         val doubled = PROFILER_FOLLOWER.fromHex()
-        SpaPodReader.objectProperties(doubled).keys shouldBe setOf(SpaAbi.PROFILER_FOLLOWER_BLOCK)
-        SpaPodReader.objectEntries(doubled).map { it.first } shouldBe
-            listOf(SpaAbi.PROFILER_FOLLOWER_BLOCK)
+        val entries = SpaPodReader.objectEntries(doubled)
+        entries.map { it.first } shouldBe
+            listOf(SpaAbi.PROFILER_FOLLOWER_BLOCK, SpaAbi.PROFILER_FOLLOWER_BLOCK)
+        entries.map { (it.second as List<*>)[SpaAbi.PROFILER_BLOCK_ID] } shouldBe listOf(49, 50)
+
+        // And what the map form does with the same bytes, which is why the
+        // entries exist: one key, and the first node gone.
+        val collapsed = SpaPodReader.objectProperties(doubled)
+        collapsed.keys shouldBe setOf(SpaAbi.PROFILER_FOLLOWER_BLOCK)
+        withClue("the map kept the last block written and dropped the node before it") {
+            (collapsed.getValue(SpaAbi.PROFILER_FOLLOWER_BLOCK) as List<*>)[SpaAbi.PROFILER_BLOCK_ID] shouldBe 50
+        }
     }
 
     @Test
@@ -277,18 +285,13 @@ class SpaPodTest {
                 "0c 00 00 00 0d 00 00 00"
 
         /**
-         * `spa_pod_builder_add_object` for a Props carrying a volume, a mute
-         * and two channel volumes. 96 bytes, and the reference the decoder is
-         * checked against: it holds the three types the format object has none
-         * of, a float, a boolean and an array of floats.
-         */
-        /**
-         * `tools/pipewire-oracle.c`, a Profiler object with one follower block
-         * built by the library's own builder. Ten fields, of which this reader
-         * takes the first and the ninth.
+         * `tools/pipewire-oracle.c`, a Profiler object built by the library's
+         * own builder. Two follower blocks under the one key, which is how the
+         * object carries a graph: a block per node, ten fields each, of which
+         * this reader takes the first and the ninth. 376 bytes.
          */
         const val PROFILER_FOLLOWER =
-            "c0 00 00 00 0f 00 00 00 0a 00 04 00 00 00 00 00 " +
+            "70 01 00 00 0f 00 00 00 0a 00 04 00 00 00 00 00 " +
                 "01 00 02 00 00 00 00 00 a8 00 00 00 0e 00 00 00 " +
                 "04 00 00 00 04 00 00 00 31 00 00 00 00 00 00 00 " +
                 "0e 00 00 00 08 00 00 00 6c 69 62 73 6f 75 6e 64 " +
@@ -300,6 +303,17 @@ class SpaPodTest {
                 "03 00 00 00 00 00 00 00 08 00 00 00 0b 00 00 00 " +
                 "00 04 00 00 80 bb 00 00 04 00 00 00 04 00 00 00 " +
                 "07 00 00 00 00 00 00 00 04 00 00 00 02 00 00 00 " +
+                "00 00 00 00 00 00 00 00 01 00 02 00 00 00 00 00 " +
+                "a0 00 00 00 0e 00 00 00 04 00 00 00 04 00 00 00 " +
+                "32 00 00 00 00 00 00 00 08 00 00 00 08 00 00 00 " +
+                "61 6e 6f 74 68 65 72 00 08 00 00 00 05 00 00 00 " +
+                "05 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
+                "06 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
+                "07 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
+                "08 00 00 00 00 00 00 00 04 00 00 00 04 00 00 00 " +
+                "03 00 00 00 00 00 00 00 08 00 00 00 0b 00 00 00 " +
+                "00 04 00 00 80 bb 00 00 04 00 00 00 04 00 00 00 " +
+                "00 00 00 00 00 00 00 00 04 00 00 00 02 00 00 00 " +
                 "00 00 00 00 00 00 00 00"
 
         /**
@@ -334,6 +348,12 @@ class SpaPodTest {
                 "04 00 00 00 04 00 00 00 00 00 00 00 00 00 00 00 " +
                 "04 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00"
 
+        /**
+         * `spa_pod_builder_add_object` for a Props carrying a volume, a mute
+         * and two channel volumes. 96 bytes, and the reference the decoder is
+         * checked against: it holds the three types the format object has none
+         * of, a float, a boolean and an array of floats.
+         */
         const val PROPS_VOLUME =
             "58 00 00 00 0f 00 00 00 02 00 04 00 02 00 00 00 " +
                 "03 00 01 00 00 00 00 00 04 00 00 00 06 00 00 00 " +

@@ -139,6 +139,11 @@ internal class PipeWireLibrary private constructor(
             // And the other half of that, because a module loaded into this
             // context is this connection's to remove.
             Triple("pw_impl_module_destroy", null, listOf(ADDR)),
+            // And hearing that one went on its own, which the combine module
+            // can do: it imports pw_impl_module_schedule_destroy. A handle kept
+            // past that is a pointer into freed memory, and destroying it again
+            // is native and uncatchable.
+            Triple("pw_impl_module_add_listener", null, listOf(ADDR, ADDR, ADDR, ADDR)),
             Triple("pw_context_connect", ADDR, listOf(ADDR, ADDR, I64)),
             Triple("pw_core_disconnect", I32, listOf(ADDR)),
 

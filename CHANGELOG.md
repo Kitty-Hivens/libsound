@@ -161,8 +161,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   global need not carry a property dict and this one carries none, which the
   registry was dropping before it looked at the type, and a profile event is a
   struct of objects rather than one object, which a reader expecting the second
-  found nothing in and said nothing about. Both are asserted against bytes the
-  library's own builder emits.
+  found nothing in and said nothing about. The event's shape is asserted against
+  bytes the library's own builder emits. The dictless global is not, because a
+  builder has no way to produce one: what covers it is a live graph, where the
+  profiler is exactly such a global and the suite requires it to be found.
 
   Binding an extension interface also needs that extension's protocol marshaller,
   which ships inside its module rather than in `protocol-native`, so the module
