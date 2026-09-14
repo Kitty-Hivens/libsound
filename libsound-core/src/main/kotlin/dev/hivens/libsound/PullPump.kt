@@ -27,7 +27,7 @@ public fun interface PcmSource {
  *
  * A source that returns short does not stall the device -- the remainder of the
  * period goes out as silence and counts in [silenceFrames]. Feeding the device
- * late is the failure that produces a click; feeding it silence is the failure
+ * late is the failure that produces a click. Feeding it silence is the failure
  * that produces a gap, and a gap keeps the clock honest where a click does not.
  */
 public class PullPump(
@@ -62,7 +62,7 @@ public class PullPump(
 
     private val thread = Thread(::run, threadName).apply { isDaemon = true }
 
-    /** Begin pulling. Idempotent; a pump that has ended or closed does not restart. */
+    /** Begin pulling. Idempotent, and a pump that has ended or closed does not restart. */
     public fun start() {
         if (closed.get() || ended) return
         if (running.compareAndSet(false, true) && !thread.isAlive) thread.start()
@@ -112,7 +112,7 @@ public class PullPump(
                 chunk.fill(0, aligned, chunk.size)
                 silence += format.framesIn((chunk.size - aligned).toLong())
             }
-            // The blocking write is the pacing; nothing here sleeps on a timer.
+            // The blocking write is the pacing. Nothing here sleeps on a timer.
             sink.write(chunk, 0, chunk.size)
         }
     }

@@ -60,7 +60,7 @@ public class FakeAudioSink(
     public var writesWhileStopped: Int = 0
         private set
 
-    /** How many times [open] has been called; a track switch reopens. */
+    /** How many times [open] has been called. A track switch reopens. */
     public var opens: Int = 0
         private set
 
@@ -143,7 +143,7 @@ public class FakeAudioSink(
                 val room = bufferFrames - bufferedFrames
                 if (room <= 0) {
                     // Parked exactly where a real device parks. Nothing here
-                    // drains on its own; the test drives it, or close() breaks it.
+                    // drains on its own. The test drives it, or close() breaks it.
                     roomAvailable.await()
                     continue
                 }

@@ -2,7 +2,7 @@ package dev.hivens.libsound
 
 /**
  * What a stream tells the system it is for. Maps onto PulseAudio's
- * `media.role`, and onto the nearest equivalent elsewhere; a backend that has
+ * `media.role`, and onto the nearest equivalent elsewhere. A backend that has
  * no equivalent drops it rather than approximating.
  */
 public enum class MediaRole(
@@ -21,7 +21,7 @@ public enum class MediaRole(
  *
  * The identity fields are not decoration -- they are half of why this library
  * exists. A stream with a name, an icon and a role is addressable by an
- * EasyEffects rule and legible in the desktop's mixer; an anonymous one is a
+ * EasyEffects rule and legible in the desktop's mixer. An anonymous one is a
  * row labelled with the JVM's process name.
  */
 public data class SinkConfig(
@@ -52,7 +52,7 @@ public data class SinkConfig(
     /**
      * Target buffer depth, overriding [latency] for a caller that knows exactly
      * what it wants. Smaller means a shorter stall after a flush and a faster
-     * response to a volume change; too small underruns under load, and an
+     * response to a volume change. Too small underruns under load, and an
      * underrun freezes a clock exactly like the stall it was meant to avoid.
      * Null takes the profile's number.
      */
@@ -240,7 +240,7 @@ public interface AudioBackend : AutoCloseable {
 
     /**
      * Subscribe to device add, remove and default-change, in both directions.
-     * The handler runs on a thread the backend owns; hop before touching UI
+     * The handler runs on a thread the backend owns, so hop before touching UI
      * state. The returned function unsubscribes and is idempotent. A no-op
      * subscription when [Capability.DEVICE_EVENTS] is absent.
      *

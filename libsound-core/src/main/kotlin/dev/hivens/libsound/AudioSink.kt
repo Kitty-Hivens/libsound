@@ -10,8 +10,8 @@ package dev.hivens.libsound
  * from [framePosition] depend on a set of behaviours that no signature states,
  * and a backend can satisfy every method here while breaking synchronisation
  * in ways that look like decoder bugs. skinema learned each of these the
- * expensive way against JavaSound; they are written down so a second backend
- * does not have to.
+ * expensive way against JavaSound, and they are written down so a second
+ * backend does not have to.
  *
  * Every rule below is asserted by the contract suite that ships in this
  * module's test fixtures. A backend that passes it is a backend a clock can
@@ -55,7 +55,7 @@ package dev.hivens.libsound
  * A consumer's clock reads the playhead from a thread that is not the one
  * writing, and it reads it often. So a read must not wait for the write in
  * flight to finish. What it may wait for is one transfer to the device, which
- * is a buffer round trip at worst; what it may never wait for is the length of
+ * is a buffer round trip at worst. What it may never wait for is the length of
  * the write, which at [LatencyProfile.RELAXED] is a fifth of a second and
  * against a stopped device is forever.
  *
@@ -71,7 +71,7 @@ package dev.hivens.libsound
  * ### framePosition() need not be monotonic across a flush
  *
  * Some backends reconcile their counters around a flush or a restart. The
- * clock above carries the monotonic clamp; a sink must not invent numbers to
+ * clock above carries the monotonic clamp. A sink must not invent numbers to
  * fake monotonicity, because a fabricated position is worse than a visibly
  * jumpy one. Report what the device says.
  *
@@ -146,7 +146,7 @@ package dev.hivens.libsound
  * absent, the sink hands over a channel count and nothing else, the device
  * applies its own convention, and a 5.1 stream can come out with the rears and
  * the sides exchanged. Mono and stereo are the same everywhere and need no
- * question asked; past them, this is the question.
+ * question asked. Past them, this is the question.
  *
  * ## Failure policy
  *

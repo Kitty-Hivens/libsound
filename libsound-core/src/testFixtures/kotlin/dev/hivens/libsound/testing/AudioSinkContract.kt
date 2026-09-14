@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * The behaviours every [AudioSink] has to have, as executable assertions.
  *
- * The interface's KDoc explains why each rule exists; this is where a backend
+ * The interface's KDoc explains why each rule exists. This is where a backend
  * finds out whether it actually follows them. Extend it, hand back a sink, and
  * a backend that breaks the seek handshake fails here instead of in a
  * consumer's video sync three phases later.
@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Writes are half a second at a time, which is not arbitrary. A real server
  * will not start playing until its prebuffer is met, and that defaults to the
- * whole target buffer; a suite that wrote a few milliseconds and then asked
+ * whole target buffer, and a suite that wrote a few milliseconds and then asked
  * whether the device had moved would be asking about a device that had
  * correctly not started yet.
  */
@@ -214,7 +214,7 @@ public abstract class AudioSinkContract {
             sink.stop()
             val frozen = sink.framePosition()
             advance(sink, halfSecondFrames() / 2)
-            // The seek handshake freezes first and reads second; a position that
+            // The seek handshake freezes first and reads second. A position that
             // keeps moving here steps a mastered clock backward later.
             //
             // A tolerance, not equality: cork is asynchronous on a real server,
@@ -486,7 +486,7 @@ public abstract class AudioSinkContract {
     public fun `a partial frame is rejected`() {
         newSink().use { sink ->
             sink.open(format)
-            // Half a frame would shift every channel after it; better a loud
+            // Half a frame would shift every channel after it, so better a loud
             // failure at the call site than swapped stereo for the rest of the
             // stream.
             assertThrows<IllegalArgumentException> {

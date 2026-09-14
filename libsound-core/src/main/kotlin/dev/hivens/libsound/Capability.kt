@@ -5,7 +5,7 @@ package dev.hivens.libsound
  *
  * Queried, never discovered by failing. macOS has no per-application volume at
  * all, so a settings screen must be able to ask before it draws a control that
- * could not work; a JavaSound fallback loses stream identity and device
+ * could not work. A JavaSound fallback loses stream identity and device
  * selection and has to say so rather than silently ignoring both.
  */
 public enum class Capability {
