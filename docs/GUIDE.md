@@ -203,12 +203,13 @@ own estimate of the missing part on top. A pacer that did would get it wrong
 differently on every machine, which is why this number is specified rather than
 left to each caller.
 
-**A zero means the backend cannot tell, not that there is no latency.** Nothing
-here separates that from a zero because nothing is queued, the way
-`Capability.UNDERRUN_COUNT` separates the two kinds of zero for underruns. That
-asymmetry is a gap in the contract rather than something to work around, and what
-a consumer does when it meets a zero is pace from the playhead alone rather than
-claim an offset it cannot measure.
+**A zero is not a backend saying it cannot tell.** None of them says that. A
+zero is a sink that is not open, a queue with nothing in it, or a query the
+server did not answer, and which of the last two you can be looking at follows
+from `Capability.TOTAL_LATENCY`: where it is present the device's own share is
+there for as long as the stream is, so a zero on an open sink is a query that
+did not answer and will answer next time; where it is absent the number is your
+own queue and a zero means you have written nothing the device has not taken.
 
 Seeking is the one sequence that looks arbitrary and is not:
 
