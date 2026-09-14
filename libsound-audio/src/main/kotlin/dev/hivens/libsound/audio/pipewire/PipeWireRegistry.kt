@@ -67,6 +67,20 @@ internal class PipeWireRegistry private constructor(
     private val context: MemorySegment,
     private val core: MemorySegment,
     private val registry: MemorySegment,
+    /**
+     * Whether this connection subscribes to the graph's account of each cycle.
+     *
+     * Off unless something will read it, and the reason is what the
+     * subscription actually delivers. The daemon sends one event per graph
+     * cycle, which at a short quantum is hundreds a second, and each one
+     * describes every node on the graph: its id, its name and its timings. That
+     * is a continuous account of every other application's audio arriving in
+     * this process, for a number only a sink asks for. It stays on the machine
+     * and nothing here keeps any of it but the counts, and it is still a wider
+     * read than the feature needs, so only the connection that backs sinks
+     * takes it.
+     */
+    private val wantsCycles: Boolean,
 ) : AutoCloseable {
 
     private val log = LoggerFactory.getLogger("libsound.PipeWire")
@@ -1424,7 +1438,7 @@ internal class PipeWireRegistry private constructor(
      * zero. [missedCycles] is null there and says so.
      */
     private fun bindProfiler(id: Int) {
-        if (profilerId != NO_GLOBAL) return
+        if (!wantsCycles || profilerId != NO_GLOBAL) return
         val proxy = bind(id, profilerType, SpaAbi.VERSION_PROFILER)
         if (proxy.address() == 0L) {
             log.debug("bind of the profiler answered null")
@@ -1774,7 +1788,10 @@ internal class PipeWireRegistry private constructor(
         private const val ROUND_TRIP_SECONDS = 2
 
         /** Open a connection of its own and start watching, or null where there is no graph. */
-        fun openOrNull(applicationName: String): PipeWireRegistry? {
+        fun openOrNull(
+            applicationName: String,
+            wantsCycles: Boolean = false,
+        ): PipeWireRegistry? {
             val loop = PipeWireLoop.startOrNull("$applicationName registry") ?: return null
             val lib = loop.lib
             var context = MemorySegment.NULL
@@ -1795,12 +1812,12 @@ internal class PipeWireRegistry private constructor(
                     context = lib.handle("pw_context_new")
                         .invokeExact(loop.loop, MemorySegment.NULL, 0L) as MemorySegment
                     check(context.address() != 0L) { "pw_context_new failed" }
-                    loadProfiler(lib, context)
+                    if (wantsCycles) loadProfiler(lib, context)
                     core = lib.handle("pw_context_connect")
                         .invokeExact(context, MemorySegment.NULL, 0L) as MemorySegment
                     check(core.address() != 0L) { "pw_context_connect failed" }
                     val registry = getRegistry(lib, core)
-                    PipeWireRegistry(loop, context, core, registry).apply {
+                    PipeWireRegistry(loop, context, core, registry, wantsCycles).apply {
                         installCoreListener()
                         installListener()
                     }

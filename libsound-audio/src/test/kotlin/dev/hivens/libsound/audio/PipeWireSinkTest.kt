@@ -165,7 +165,7 @@ class PipeWireBackendTest {
         // number ever rises, which needs a graph under load rather than a
         // suite. Which fields of the block carry the id and the count is
         // asserted against the builder's own bytes in SpaPodTest.
-        val watcher = checkNotNull(PipeWireRegistry.openOrNull("$APP_NAME watcher")) {
+        val watcher = checkNotNull(PipeWireRegistry.openOrNull("$APP_NAME watcher", wantsCycles = true)) {
             "no PipeWire graph reachable"
         }
         watcher.use { graph ->
