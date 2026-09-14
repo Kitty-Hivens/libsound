@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 /**
  * The layer exercised against a real bus, which is what neither sibling does.
  *
- * libtray and libnotify both compile in CI and stop there; every D-Bus defect
+ * libtray and libnotify both compile in CI and stop there. Every D-Bus defect
  * either has shipped was found by a human watching a desktop. These assertions
  * need a session bus and nothing else -- no tray host, no notification daemon --
  * so they run wherever one exists, including under `dbus-run-session` on a

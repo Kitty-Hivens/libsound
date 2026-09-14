@@ -56,7 +56,7 @@ internal class MpNowPlayingSession private constructor(
 
     private val handlers = CopyOnWriteArrayList<(SessionCommand) -> Unit>()
 
-    /** One update at a time; a publish builds a dictionary and hands it over whole. */
+    /** One update at a time, since a publish builds a dictionary and hands it over whole. */
     private val updating = ReentrantLock()
 
     /** Command handlers never run on the thread the framework calls us on. */

@@ -64,7 +64,7 @@ internal class SmtcSession private constructor(
      */
     private val updating = ReentrantLock()
 
-    /** Button presses arrive on a thread the runtime owns; handlers never run there. */
+    /** Button presses arrive on a thread the runtime owns, and handlers never run there. */
     private val dispatch = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "libsound-smtc-events").apply { isDaemon = true }
     }
@@ -207,7 +207,7 @@ internal class SmtcSession private constructor(
                     rt.release(music)
                 }
             }
-            // Nothing reaches the screen until this runs; the setters above only
+            // Nothing reaches the screen until this runs. The setters above only
             // stage it.
             rt.method(updater, SmtcAbi.UPDATER_UPDATE, FunctionDescriptor.of(I32, ADDR))
                 .invokeExact(updater) as Int
