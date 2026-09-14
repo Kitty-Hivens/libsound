@@ -1117,7 +1117,10 @@ internal class PipeWireRegistry private constructor(
                     // both get past the question and the second proxy replaces
                     // the first in the map, leaving a device on the graph that
                     // nothing here can destroy any more.
-                    if (createdSinks.containsKey(name)) return@locked false
+                    // Both maps, because a name already carrying a module
+                    // would end up naming two devices, and the call that takes
+                    // one back would report success having removed the other.
+                    if (createdSinks.containsKey(name) || createdModules.containsKey(name)) return@locked false
                     val proxy = createObject(SpaAbi.FACTORY_ADAPTER, nodeType, SpaAbi.VERSION_NODE, entries)
                     if (proxy.address() == 0L) return@locked false
                     createdSinks[name] = proxy
@@ -1147,6 +1150,9 @@ internal class PipeWireRegistry private constructor(
      * sink and the module's own default is the same.
      */
     fun createCombinedSink(name: String, targets: List<String>): Boolean = calls.withLock {
+        // The caller's obligation, stated here rather than left as a property
+        // of the one call site: every name travels unescaped inside the rule
+        // built below, so one carrying a quote or a bracket rewrites it.
         if (closed.get() || targets.isEmpty()) return@withLock false
         val matches = targets.joinToString(" ") { "{ node.name = \"$it\" }" }
         val args = buildString {
