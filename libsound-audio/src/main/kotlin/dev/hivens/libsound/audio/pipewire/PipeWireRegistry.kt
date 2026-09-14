@@ -379,16 +379,21 @@ internal class PipeWireRegistry private constructor(
     /**
      * Cycles the graph says this node missed, or null where it cannot say.
      *
-     * Null on a graph whose daemon does not load the profiler module, and null
-     * for a node no cycle has mentioned yet. Zero is a different answer and
-     * says the graph has spoken for this node and counted nothing.
+     * Null on a graph whose daemon does not load the profiler module, null for
+     * a node no cycle has mentioned yet, and null for a node this registry has
+     * not been told about. Zero is a different answer and says the graph has
+     * spoken for this node and counted nothing.
      *
-     * The count belongs to the node rather than to a connection, and a node
-     * exists from the moment a stream connects, so nothing has to be subtracted
-     * for a baseline: a stream that has just opened is asking about a node
-     * whose count starts where the node did.
+     * The third null is the one that matters and it is not caution. A global id
+     * is recycled, which this file says two hundred lines up and which was
+     * measured on this machine by making and destroying a sink three times and
+     * getting one id back each time. So a count left under an id names whatever
+     * took that id next, and the stream that took it would be handed a number
+     * it did not earn. Answered only while the node is one this registry
+     * currently knows, and the entry is dropped again when a node appears under
+     * an id, not only when one leaves.
      */
-    fun missedCycles(node: Int): Long? = missed[node]
+    fun missedCycles(node: Int): Long? = if (nodes.containsKey(node)) missed[node] else null
 
     /** The same, for a node named the way the graph lists it. */
     fun missedCycles(name: String): Long? =
@@ -796,6 +801,9 @@ internal class PipeWireRegistry private constructor(
             ?: entries[SpaAbi.KEY_DEVICE_DESCRIPTION]
             ?: name
         val serial = entries[SpaAbi.KEY_OBJECT_SERIAL]?.toLongOrNull() ?: NO_SERIAL
+        // A node appearing under an id means any count left under that id
+        // belonged to a different node, because the graph recycles them.
+        missed.remove(id)
         nodes[id] = GraphNode(
             name = name,
             label = label,
