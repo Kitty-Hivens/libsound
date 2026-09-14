@@ -230,8 +230,20 @@ public interface AudioSink : AutoCloseable {
 
     /**
      * How far ahead of the speaker the write head currently is, in nanoseconds.
-     * Zero when the backend cannot tell -- which is itself information, so it is
-     * not an error.
+     *
+     * Zero is not a backend saying it cannot tell. None of them says that:
+     * every backend here reads a real number from the device or the server.
+     * What a zero is, in the order a consumer should suspect them, is a sink
+     * that is not open, a queue with nothing in it, and a query the server did
+     * not answer.
+     *
+     * Which of the last two it can be follows from
+     * [Capability.TOTAL_LATENCY] rather than needing a question of its own.
+     * Where it is present the device's own share is there for as long as the
+     * stream is, so a zero on an open sink is a query that did not answer,
+     * which is transient. Where it is absent the number is what this client has
+     * queued and nothing else, so a zero is an empty queue. [isOpen] separates
+     * the first case from both.
      *
      * The whole path where [Capability.TOTAL_LATENCY] is present: what is
      * queued here, plus what the server holds, plus the device's own. That is
