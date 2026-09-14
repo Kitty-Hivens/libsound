@@ -133,6 +133,54 @@ class SpaPodTest {
     }
 
     @Test
+    fun `a follower block is read for the two fields that matter out of ten`() {
+        // The graph's own account of a cycle, and the only place a client can
+        // learn that its node missed one. What has to be right is the walk: the
+        // id is the first field and the count is the ninth, and between them
+        // sit a string and a fraction this decoder does not read at all. A
+        // reader that stepped by anything but each pod's own declared size
+        // would come back with the latency where the count belongs.
+        val entries = SpaPodReader.objectEntries(PROFILER_FOLLOWER.fromHex())
+        entries.size shouldBe 1
+        val (key, value) = entries.first()
+        key shouldBe SpaAbi.PROFILER_FOLLOWER_BLOCK
+        val block = value as List<*>
+        block.size shouldBe 10
+        block[SpaAbi.PROFILER_BLOCK_ID] shouldBe 49
+        block[SpaAbi.PROFILER_BLOCK_XRUNS] shouldBe 7
+        // And the ones it walks past are present as gaps rather than missing,
+        // which is what keeps the two above where they are.
+        block[1] shouldBe null
+        block[7] shouldBe null
+    }
+
+    @Test
+    fun `a profile event is a struct of objects, and every block in it is read`() {
+        // The shape the graph sends, which is not the shape the interface's own
+        // documentation suggests: a struct whose children are objects rather
+        // than one object. A reader that expected the second found nothing and
+        // said nothing, which is how this was missed until a live graph was
+        // asked.
+        val blocks = SpaPodReader.structuredEntries(PROFILE_EVENT.fromHex())
+            .filter { it.first == SpaAbi.PROFILER_FOLLOWER_BLOCK }
+            .map { it.second as List<*> }
+        blocks.size shouldBe 2
+        blocks.map { it[SpaAbi.PROFILER_BLOCK_ID] } shouldBe listOf(49, 50)
+        blocks.map { it[SpaAbi.PROFILER_BLOCK_XRUNS] } shouldBe listOf(7, 0)
+    }
+
+    @Test
+    fun `an object carrying one key many times keeps every one of them`() {
+        // The profiler writes a block per node under the same key. A map would
+        // keep the last node on the graph and silently drop the rest, which is
+        // why the reader offers the entries in order as well.
+        val doubled = PROFILER_FOLLOWER.fromHex()
+        SpaPodReader.objectProperties(doubled).keys shouldBe setOf(SpaAbi.PROFILER_FOLLOWER_BLOCK)
+        SpaPodReader.objectEntries(doubled).map { it.first } shouldBe
+            listOf(SpaAbi.PROFILER_FOLLOWER_BLOCK)
+    }
+
+    @Test
     fun `a property nobody asked to change is left out rather than defaulted`() {
         // The graph merges what it is given, so an object carrying a mute the
         // caller never mentioned would set it to whatever this filled in. A
@@ -234,6 +282,58 @@ class SpaPodTest {
          * checked against: it holds the three types the format object has none
          * of, a float, a boolean and an array of floats.
          */
+        /**
+         * `tools/pipewire-oracle.c`, a Profiler object with one follower block
+         * built by the library's own builder. Ten fields, of which this reader
+         * takes the first and the ninth.
+         */
+        const val PROFILER_FOLLOWER =
+            "c0 00 00 00 0f 00 00 00 0a 00 04 00 00 00 00 00 " +
+                "01 00 02 00 00 00 00 00 a8 00 00 00 0e 00 00 00 " +
+                "04 00 00 00 04 00 00 00 31 00 00 00 00 00 00 00 " +
+                "0e 00 00 00 08 00 00 00 6c 69 62 73 6f 75 6e 64 " +
+                "5f 74 65 73 74 00 00 00 08 00 00 00 05 00 00 00 " +
+                "01 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
+                "02 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
+                "03 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
+                "04 00 00 00 00 00 00 00 04 00 00 00 04 00 00 00 " +
+                "03 00 00 00 00 00 00 00 08 00 00 00 0b 00 00 00 " +
+                "00 04 00 00 80 bb 00 00 04 00 00 00 04 00 00 00 " +
+                "07 00 00 00 00 00 00 00 04 00 00 00 02 00 00 00 " +
+                "00 00 00 00 00 00 00 00"
+
+        /**
+         * The same again in the shape a profile event actually arrives in: a
+         * struct whose children are objects, one per driver, carrying a block
+         * per node. Two blocks here, so a reader that kept only the last would
+         * be caught.
+         */
+        const val PROFILE_EVENT =
+            "78 01 00 00 0e 00 00 00 70 01 00 00 0f 00 00 00 " +
+                "0a 00 04 00 00 00 00 00 01 00 02 00 00 00 00 00 " +
+                "a8 00 00 00 0e 00 00 00 04 00 00 00 04 00 00 00 " +
+                "31 00 00 00 00 00 00 00 0e 00 00 00 08 00 00 00 " +
+                "6c 69 62 73 6f 75 6e 64 5f 74 65 73 74 00 00 00 " +
+                "08 00 00 00 05 00 00 00 01 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 02 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 04 00 00 00 00 00 00 00 " +
+                "04 00 00 00 04 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 0b 00 00 00 00 04 00 00 80 bb 00 00 " +
+                "04 00 00 00 04 00 00 00 07 00 00 00 00 00 00 00 " +
+                "04 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00 " +
+                "01 00 02 00 00 00 00 00 a0 00 00 00 0e 00 00 00 " +
+                "04 00 00 00 04 00 00 00 32 00 00 00 00 00 00 00 " +
+                "08 00 00 00 08 00 00 00 61 6e 6f 74 68 65 72 00 " +
+                "08 00 00 00 05 00 00 00 01 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 02 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 05 00 00 00 04 00 00 00 00 00 00 00 " +
+                "04 00 00 00 04 00 00 00 03 00 00 00 00 00 00 00 " +
+                "08 00 00 00 0b 00 00 00 00 04 00 00 80 bb 00 00 " +
+                "04 00 00 00 04 00 00 00 00 00 00 00 00 00 00 00 " +
+                "04 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00"
+
         const val PROPS_VOLUME =
             "58 00 00 00 0f 00 00 00 02 00 04 00 02 00 00 00 " +
                 "03 00 01 00 00 00 00 00 04 00 00 00 06 00 00 00 " +

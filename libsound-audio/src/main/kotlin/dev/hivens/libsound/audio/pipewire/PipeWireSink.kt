@@ -63,7 +63,25 @@ internal class PipeWireSink(
     private val loop: PipeWireLoop,
     private val config: SinkConfig,
     private val baseCapabilities: Capabilities,
+    /**
+     * The connection that watches the graph, for the half of the underrun
+     * count this stream cannot see about itself. Null leaves that half at zero
+     * and the other half unchanged.
+     */
+    private val registry: PipeWireRegistry? = null,
 ) : AudioSink {
+
+    /**
+     * Which node on the graph this stream became, or [SpaAbi.ID_ANY] before it
+     * became one.
+     *
+     * The profiler names nodes by this, so it is what picks this stream's own
+     * row out of the graph's account of a cycle. Learned from the stream once
+     * it has a node rather than asked for at connect, because a stream that has
+     * just been connected does not have one yet.
+     */
+    @Volatile
+    private var nodeId = SpaAbi.ID_ANY
 
     /**
      * The base set, plus the one entry decided per thread at runtime.
@@ -217,6 +235,9 @@ internal class PipeWireSink(
         scratch = ByteArray(MAX_FRAMES_PER_PERIOD * frameBytes)
         framesRendered.set(0)
         underruns.set(0)
+        // A reopen replaces the stream, so the node this was counting for is
+        // gone and the next state change names the new one.
+        nodeId = SpaAbi.ID_ANY
         fed = false
 
         val fresh = Arena.ofConfined().use { setup ->
@@ -408,23 +429,35 @@ internal class PipeWireSink(
     }
 
     /**
-     * Cycles where the graph asked for audio and the ring had less than it
-     * wanted, which is one of the two ways this stream leaves a gap.
+     * Both ways this stream leaves a gap, added together.
      *
-     * The other is a cycle this node did not finish in time, and nothing here
-     * can count it: the count is incremented inside the process callback, so a
+     * One is a cycle where the graph asked for audio and the ring had less than
+     * it wanted, counted inside the process callback. The other is a cycle this
+     * node did not finish in time, which that callback cannot count because a
      * callback that ran late or did not run increments nothing. Measured
      * against a graph on a 2.67 ms quantum with a thread allocating hard
-     * alongside: the daemon logged 112 missed cycles for this node in twenty
-     * seconds while this number stayed at zero, because whenever the callback
-     * did run the ring had audio for it.
+     * alongside: the daemon recorded 112 missed cycles for this node in twenty
+     * seconds while the first number stayed at zero, because whenever the
+     * callback did run the ring had audio for it.
      *
-     * The graph does keep that count and publishes it through the profiler
-     * object the daemon loads by default, which is where `pw-top` reads its
-     * error column. Binding that and reading this node's entry is what would
-     * make the number whole, and it is not built.
+     * The second comes from the graph's own account of each cycle, which the
+     * daemon publishes through the profiler object it loads in its shipped
+     * configuration and which is where `pw-top` reads its error column. A graph
+     * whose daemon does not load it contributes nothing here, which leaves this
+     * where it was rather than making it wrong.
+     *
+     * Nothing is subtracted for a baseline. The graph counts against the node,
+     * a node lasts exactly as long as the stream that made it, and an open
+     * makes a new one.
      */
-    override fun underrunCount(): Long = underruns.get()
+    override fun underrunCount(): Long = underruns.get() + missedCycles()
+
+    /** What the graph says this stream's node missed, or zero where it cannot say. */
+    private fun missedCycles(): Long {
+        val node = nodeId
+        if (node == SpaAbi.ID_ANY) return 0L
+        return registry?.missedCycles(node) ?: 0L
+    }
 
     /**
      * The stream's own volume, at the system level, which is what
@@ -580,7 +613,18 @@ internal class PipeWireSink(
         unusedState: Int,
         unusedError: MemorySegment,
     ) {
-        runCatching { loop.signal() }
+        runCatching {
+            // On the loop's own thread with its lock held, which is the only
+            // place the stream pointer may be read, and by the time a state has
+            // changed at all the node it asks about exists.
+            if (nodeId == SpaAbi.ID_ANY) {
+                val current = stream
+                if (current.address() != 0L) {
+                    nodeId = lib.handle("pw_stream_get_node_id").invokeExact(current) as Int
+                }
+            }
+            loop.signal()
+        }
     }
 
     /** Bound and deliberately empty: the format this stream asked for is the one it takes. */

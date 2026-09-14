@@ -13,6 +13,7 @@ import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.StreamDirection
 import dev.hivens.libsound.audio.pipewire.PipeWireBackend
+import dev.hivens.libsound.audio.pipewire.PipeWireRegistry
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pulse.PulseAbi
 import dev.hivens.libsound.audio.pulse.PulseBackend
@@ -149,6 +150,54 @@ class PipeWireBackendTest {
 
     @BeforeEach
     fun gate() = PipeWireFixture.gate()
+
+    @Test
+    fun `the graph's own account of a cycle reaches this library`() {
+        // The second half of what a sink reports as underruns. The first is
+        // counted inside the process callback and misses a callback that never
+        // ran, which is the gap a short profile actually produces. Only the
+        // graph sees that one, and it publishes it through the profiler object
+        // the daemon loads in its shipped configuration.
+        //
+        // What this proves is the path: the profiler global found and bound,
+        // the object it sends decoded, the block for this suite's own node
+        // picked out of the several in it. What it does not prove is that the
+        // number ever rises, which needs a graph under load rather than a
+        // suite. Which fields of the block carry the id and the count is
+        // asserted against the builder's own bytes in SpaPodTest.
+        val watcher = checkNotNull(PipeWireRegistry.openOrNull("$APP_NAME watcher")) {
+            "no PipeWire graph reachable"
+        }
+        watcher.use { graph ->
+            withClue("this graph's daemon does not load the profiler module") {
+                graph.hasProfiler() shouldBe true
+            }
+            checkNotNull(PipeWireFixture.backend).createSink(PipeWireFixture.config()).use { sink ->
+                sink.open(AudioFormat(48_000, 2))
+                val frame = ByteArray(4_800 * 4)
+                repeat(5) { sink.write(frame, 0, frame.size) }
+                // Null is what a wrong node id, an unbound profiler or a
+                // misread block would leave here for good. Zero is the graph
+                // saying it counted nothing, which is the healthy answer.
+                val counted = eventually("the graph to speak for this suite's own node") {
+                    graph.missedCycles(APP_NAME)
+                }
+                (counted >= 0L) shouldBe true
+                // And the sink's own number includes it, which is the half a
+                // consumer actually reads.
+                (sink.underrunCount() >= counted) shouldBe true
+            }
+        }
+    }
+
+    private fun <T : Any> eventually(what: String, produce: () -> T?): T {
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (System.nanoTime() < deadline) {
+            produce()?.let { return it }
+            Thread.sleep(50)
+        }
+        throw AssertionError("never appeared: $what")
+    }
 
     @Test
     fun `a 64-bit float opens, which the pulse protocol has no name for`() {
