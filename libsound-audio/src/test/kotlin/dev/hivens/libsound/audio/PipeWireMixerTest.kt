@@ -416,7 +416,16 @@ class PipeWireMixerTest {
                 it.id == device.id && it.volume != null && abs(it.volume!! - 0.2f) < TOLERANCE
             }
         }
-        mixer.setDeviceMuted(device.id, true) shouldBe true
+        // The opposite of what the device was found at, so the read below says
+        // the write landed whichever way round this graph starts.
+        val flipped = !(device.muted ?: false)
+        mixer.setDeviceMuted(device.id, flipped) shouldBe true
+        // Read back for the same reason the volume is: a setter answering true
+        // covers the graph having taken the write, and the half of this case's
+        // name that says the mute goes through is that value coming back.
+        eventually("the device mute to come back") {
+            checkNotNull(backend).devices().firstOrNull { it.id == device.id && it.muted == flipped }
+        }
 
         // The obligation is stronger here than on a row: a device volume left
         // low is the one a person is most likely to blame on their hardware.
