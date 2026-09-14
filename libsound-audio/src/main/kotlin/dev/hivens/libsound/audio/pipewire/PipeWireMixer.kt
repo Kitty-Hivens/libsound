@@ -63,8 +63,6 @@ import kotlin.math.abs
  * [Capability.DEVICE_PROFILES] is absent to say so, rather than present and
  * answering false, so a settings screen asks before it draws.
  *
- * Combining two devices into one is not built either, and it is the only item
- * here that is not one bind away. [combineSinks] says what it is instead.
  *
  * ## Where it differs from the libpulse mixer rather than falling short of it
  *
@@ -305,22 +303,42 @@ internal class PipeWireMixer private constructor(
     override fun removeVirtualSink(id: DeviceId): Boolean = registry.removeNullSink(id.value)
 
     /**
-     * Null. Nothing here asks for one.
+     * One device playing what several play, for as long as this mixer lasts.
      *
-     * Playing one thing to two devices is a module the daemon loads rather than
-     * an object a client creates. The core's method table has no call that
-     * loads a module, and the daemon's shipped configuration does not load the
-     * one that would register a factory, so on an ordinary graph there is
-     * nothing to call. On a graph whose owner loaded it by hand there would be,
-     * and finding it by name and checking what it answers is the part that is
-     * not built.
+     * Not a factory object like [createVirtualSink]: the graph registers no
+     * factory for this and the core has no call that loads a module. What it
+     * does have is loading a module into this process's own context, which is
+     * how the profiler's protocol arrives as well. Nothing is added to anybody
+     * else's graph by it, and what comes back has the lifetime this call's own
+     * obligation wants, because a module in this context goes when the context
+     * does.
      *
-     * Worth stating because the interface reads null as the server refusing,
-     * and [Capability.VIRTUAL_DEVICES] is present here for [createVirtualSink],
-     * so nothing in the capability set tells the two apart. This is the one
-     * place this mixer is narrower than the division the interface draws.
+     * The devices are named one per match rather than matched by pattern. That
+     * module's own default rule takes every sink on the machine, so a caller
+     * naming two would otherwise be handed all of them.
+     *
+     * Stereo, because the interface offers no channel count here and that is
+     * the module's own default. Names carrying anything but letters, digits and
+     * the three punctuation marks a device name uses are refused rather than
+     * escaped: they travel inside a rule, and one with a quote in it would be
+     * read as more rule than was meant.
      */
-    override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? = null
+    override fun combineSinks(name: String, devices: List<DeviceId>): DeviceId? {
+        if (closed.get() || devices.isEmpty()) return null
+        if (!plain(name) || devices.any { !plain(it.value) }) return null
+        if (!registry.createCombinedSink(name, devices.map { it.value })) return null
+        return awaitDevice(name, COMBINED_CHANNELS)
+    }
+
+    /**
+     * Whether a name can travel inside a rule without changing it.
+     *
+     * The same set the libpulse mixer accepts for the same reason, which is
+     * that its own devices are named in a flat argument string.
+     */
+    private fun plain(name: String): Boolean =
+        name.isNotBlank() && name.length <= MAX_DEVICE_NAME &&
+            name.all { it.isLetterOrDigit() || it == '_' || it == '.' || it == '-' }
 
     /**
      * Wait for a device just made to appear on the graph, or give up and undo
@@ -644,6 +662,12 @@ internal class PipeWireMixer private constructor(
 
         /** Fast enough to look live, slow enough to cost nothing worth measuring. */
         private const val METER_WINDOWS_PER_SECOND = 20
+
+        /** What a combined sink is, since the interface names no count for one. */
+        private const val COMBINED_CHANNELS = 2
+
+        /** Long enough for a description, short enough not to be part of a rule. */
+        private const val MAX_DEVICE_NAME = 64
 
         /** How long a device just made has to appear before it is taken back. */
         private const val APPEAR_TIMEOUT_NANOS = 5_000_000_000L
