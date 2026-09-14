@@ -40,7 +40,7 @@ allprojects {
 }
 
 subprojects {
-    // CI logs carry only the console; without the message a failed assertion
+    // CI logs carry only the console, and without the message a failed assertion
     // is a bare file:line, on every module that ever fails.
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
@@ -51,7 +51,7 @@ subprojects {
     }
 
     // Every warning is an error. Warnings otherwise pile up unseen behind the
-    // build cache, which replays a cached compile without re-emitting them; as
+    // build cache, which replays a cached compile without re-emitting them. As
     // errors none of them ever caches green.
     tasks.withType<KotlinCompile>().configureEach {
         compilerOptions.allWarningsAsErrors.set(true)
@@ -94,7 +94,7 @@ subprojects {
     }
 
     // Shared Central Portal publishing for every module that opts in by
-    // applying the vanniktech plugin; modules add only their description.
+    // applying the vanniktech plugin. Modules add only their description.
     plugins.withId("com.vanniktech.maven.publish") {
         configure<MavenPublishBaseExtension> {
             // The javadoc jar carries the KDoc, because otherwise it carries
@@ -139,7 +139,7 @@ subprojects {
 
     plugins.withId("signing") {
         // CI hands the key over as signingInMemoryKey and the publish plugin
-        // wires that up itself; a machine with the key in its keyring has no
+        // wires that up itself. A machine with the key in its keyring has no
         // such property and signs through the gpg agent. Setting both would
         // leave whichever ran last in charge.
         if (!inMemoryKey.isPresent) {

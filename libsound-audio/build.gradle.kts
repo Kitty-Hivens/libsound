@@ -39,7 +39,7 @@ dependencies {
     // having it.
     implementation(project(":libsound-dbus"))
     // SLF4J only -- consumers wire their own binding. Backends log at
-    // DEBUG/INFO/WARN; nothing fires at ERROR in normal operation, because
+    // DEBUG/INFO/WARN. Nothing fires at ERROR in normal operation, because
     // failures degrade through the capability query rather than throwing.
     api(libs.slf4j.api)
 
@@ -77,7 +77,7 @@ tasks.test {
 
 // The hand check for platforms no runner can verify. Windows and macOS runners
 // have no output device worth trusting, so their backends would otherwise reach
-// a release having never executed; this is what a person runs instead.
+// a release having never executed. This is what a person runs instead.
 //
 // In the test source set, so it stays out of the published jar.
 tasks.register<JavaExec>("smoke") {

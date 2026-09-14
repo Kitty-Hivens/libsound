@@ -6,7 +6,7 @@ plugins {
     // The fake backend and the contract suite ship as test fixtures rather
     // than test sources: every backend module has to run the same contract
     // assertions, and a downstream consumer testing its own adapter wants the
-    // fake too. Test sources cannot cross a module boundary; fixtures can,
+    // fake too. Test sources cannot cross a module boundary and fixtures can,
     // without putting test doubles on the main published surface.
     `java-test-fixtures`
     // Dokka before mavenPublish, and the order is load-bearing: the root build
@@ -33,7 +33,7 @@ kotlin {
         jvmTarget.set(JvmTarget.fromTarget(libs.versions.javaCoreTarget.get()))
         freeCompilerArgs.add("-jvm-default=enable")
     }
-    // This is the published contract; every public symbol declares its
+    // This is the published contract, so every public symbol declares its
     // visibility and its return type, so the surface stays deliberate.
     explicitApi()
 }
