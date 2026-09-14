@@ -25,9 +25,12 @@ import org.slf4j.LoggerFactory
  * ## Two rungs on Linux, and the wider one is not the native one
  *
  * The native rung's capabilities are a subset of the libpulse rung's, short by
- * exactly one: [Capability.DEVICE_PROFILES], which covers cards, profiles and
- * ports. Everything else the libpulse mixer does, including virtual devices,
- * the native one does too.
+ * [Capability.DEVICE_PROFILES], which covers cards, profiles and ports.
+ * Everything else the libpulse mixer does, including virtual devices, the
+ * native one does too. One of them conditionally: moving a stream is a line
+ * written into the session manager's metadata object, so
+ * [Capability.STREAM_ROUTING] and [Capability.CAPTURE_ROUTING] are claimed only
+ * on a graph that carries one to write into.
  *
  * That subset is why the widest goes first here, which is the opposite of the
  * order [AudioBackends] uses. There the native rung offered something the one
@@ -68,9 +71,10 @@ public object VolumeMixers {
      *
      * The same question [VolumeMixer.capabilities] answers, asked one step
      * earlier, and for the consumer that cannot adapt rather than the one that
-     * can. On Linux the two rungs differ by [Capability.DEVICE_PROFILES] alone,
-     * and the rung that has it is already first, so what naming it buys is the
-     * refusal: a panel whose whole feature is a card's profile is told null on
+     * can. On Linux the two rungs differ by [Capability.DEVICE_PROFILES], and by
+     * the two routing entries on a graph with no session manager, and the rung
+     * that has them is already first, so what naming one buys is the refusal: a
+     * panel whose whole feature is a card's profile is told null on
      * a machine that offers no such rung, instead of opening one and finding
      * the card list empty.
      *
