@@ -108,7 +108,26 @@ internal class PulseContext private constructor(
         runCatching { signal() }
     }
 
+    /**
+     * Take the mainloop's lock, and refuse once [close] has begun.
+     *
+     * The refusal is the point rather than tidiness. What these calls travel
+     * through is an address in a global scope, so Panama cannot tell a live
+     * `pa_threaded_mainloop` from a freed one: a lock taken after the teardown
+     * is a jump into freed memory rather than a call that fails. Checked here
+     * because every other entry point on this class goes through it.
+     *
+     * This narrows the window and does not close it. What closes it is a caller
+     * holding a lock of its own across both this check and [close], which is
+     * what the backend and the mixer do with their round-trip lock.
+     */
     fun lock() {
+        check(!closed.get()) { "the context is closed" }
+        takeLock()
+    }
+
+    /** The lock itself, for [close], which is the one caller the check is not for. */
+    private fun takeLock() {
         lib.handle("pa_threaded_mainloop_lock").invokeExact(mainloop) as Unit
     }
 
@@ -151,9 +170,16 @@ internal class PulseContext private constructor(
             // touching an object owned by the mainloop, and unref is the one
             // that frees the context -- doing that while the loop thread is
             // dispatching on it is a use-after-free, not a style point.
-            locked {
+            //
+            // Through takeLock rather than lock(), which refuses a closed
+            // context: the flag is set above, and this is the teardown that
+            // refusal exists to protect.
+            takeLock()
+            try {
                 lib.handle("pa_context_disconnect").invokeExact(context) as Unit
                 lib.handle("pa_context_unref").invokeExact(context) as Unit
+            } finally {
+                unlock()
             }
         }.onFailure { log.warn("context teardown threw: {}", it.message) }
         runCatching {
