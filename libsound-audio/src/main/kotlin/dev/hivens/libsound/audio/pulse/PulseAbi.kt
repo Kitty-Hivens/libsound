@@ -248,6 +248,9 @@ internal object PulseAbi {
     const val SERVER_INFO_DEFAULT_SINK_NAME = 48L
     const val SERVER_INFO_DEFAULT_SOURCE_NAME = 56L
 
+    /** Enough of pa_server_info to reach both default names. */
+    const val SERVER_INFO_HEAD = 64L
+
     // -- sample formats ------------------------------------------------------
 
     const val SAMPLE_U8 = 0
