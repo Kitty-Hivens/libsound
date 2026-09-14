@@ -51,13 +51,22 @@ import java.util.concurrent.atomic.AtomicLong
  * that trap and each needed a different correction, so counting is the answer
  * that does not depend on which kind this turns out to be.
  *
- * ## The process callback runs on the graph's thread
+ * ## Which thread the process callback runs on, and what it may do there
  *
- * It takes the ring's lock and copies, and does nothing else. No allocation
+ * This connection's own loop thread, not the graph's real-time one.
+ * `PW_STREAM_FLAG_RT_PROCESS` is what moves it, and it is not set: the
+ * measurement behind that is on [SpaAbi.STREAM_FLAG_RT_PROCESS]. What the flag
+ * decides is where a stall lands. Without it a late callback is this stream's
+ * own problem, and with it the node is on the graph's real-time thread and a
+ * stall becomes an xrun for every client sharing that graph.
+ *
+ * The callback is written to the tighter rule regardless, because the ring is
+ * shared with a consumer's writer and the graph is waiting on it either way.
+ * It takes the ring's lock and copies, and does nothing else: no allocation
  * beyond reinterpreting a mapped pointer, no logging, no native call back into
  * the library. A garbage collection can still land on it and be heard, which is
- * true of every JVM audio path; the honest mitigation is the ring depth, not a
- * claim that it cannot happen.
+ * true of every JVM audio path, and the honest mitigation is the ring depth
+ * rather than a claim that it cannot happen.
  */
 internal class PipeWireSink(
     private val loop: PipeWireLoop,

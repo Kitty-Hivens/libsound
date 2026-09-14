@@ -63,7 +63,7 @@ closed there:
 | `minreq` | Left at server default | A quarter of the target, never below a frame. |
 | What reaches PipeWire | A 200 ms request | What the server granted is read back and logged at open. Measured: 200 ms granted 150, 40 granted 30, 10 granted 16, which was the graph quantum. |
 | Writer thread priority | Ordinary JVM thread | RealtimeKit, opt-in, with `RLIMIT_RTTIME` set first and the kernel's answer asserted through `/proc`. |
-| Underruns | Not counted | Counted by the PulseAudio and CoreAudio backends, with `UNDERRUN_COUNT` saying which numbers mean anything. |
+| Underruns | Not counted | Counted by the PipeWire, PulseAudio and CoreAudio backends, with `UNDERRUN_COUNT` saying which numbers mean anything. The PipeWire count is both kinds: cycles the ring was short for, and cycles the node did not answer at all, which only the graph can see. |
 
 What is not built is stated where it belongs: Windows capture in 6.2, the
 processing module in 5.5 and 10, and the two MPRIS interfaces of 8.3.
@@ -101,18 +101,20 @@ section 10.
 
 ## 3. Current state
 
-Three modules. `libsound-core` carries the contracts and no dependencies at all.
+Five modules. `libsound-core` carries the contracts and no dependencies at all.
 `libsound-audio` carries the output channel and the mixer. `libsound-session`
-publishes and reads media sessions.
+publishes and reads media sessions. `libsound-dsp` is the processing decorators,
+on `libsound-core` alone. `libsound-dbus` arrives with the two that need a bus
+and is not something to depend on directly.
 
 | Surface | State |
 |---|---|
-| `AudioSink`, `AudioBackend` | Done. Pulse, WASAPI, CoreAudio, JavaSound fallback. |
-| `VolumeMixer` | Done for both directions on Pulse. Playback only on WASAPI. |
+| `AudioSink`, `AudioBackend` | Done. PipeWire, Pulse, WASAPI, CoreAudio, JavaSound fallback. |
+| `VolumeMixer` | Done for both directions on PipeWire and on Pulse. Playback only on WASAPI. |
 | `MediaSession`, `SessionReader` | Root and Player interfaces, including the optional repeat, shuffle and fullscreen properties and the root's two methods. MPRIS both directions, SMTC and MPNowPlayingInfoCenter publish. |
-| Low latency | Done on Pulse, with a real-time writer thread behind an opt-in. Not honoured by the other three, which say so through `LOW_LATENCY`. |
-| Capture | Done on Pulse and JavaSound, including recording one application on its own. Absent on Windows and macOS, for the reasons in 6.2 and 10. |
-| Device and card control | Done on Pulse: device volume and mute, the default, ports, card profiles, virtual and combined sinks, and a sample cache. |
+| Low latency | Done on PipeWire and on Pulse, with a real-time writer thread behind an opt-in. Not honoured by the other three, which say so through `LOW_LATENCY`. |
+| Capture | Done on PipeWire, Pulse and JavaSound, and on the first two it includes recording one application on its own. Absent on Windows and macOS, for the reasons in 6.2 and 10. |
+| Device and card control | Done on PipeWire and on Pulse: device volume and mute, the default, virtual and combined sinks. Ports, card profiles and the sample cache are Pulse only. |
 | Processing | Done. `libsound-dsp`, depending on `libsound-core` alone: a gain, a biquad, a limiter and a tap, each passing the decorator fixture, and the stack of them passing it too. |
 | What a format says | Done. Five encodings, a channel layout naming each channel, and significant bits. What a sink accepts is asked through `accepts` before an open rather than caught after one, and the pair is asserted against every backend. |
 | Channel placement | Done on Pulse, WASAPI and PipeWire, all from oracle tables. Absent on JavaSound, which has nothing to say it with, and on CoreAudio until the oracle prints the channel labels. |
@@ -1383,7 +1385,7 @@ a graph now, rather than an extra a backend could do without.
 
 | Question | Answer |
 |---|---|
-| Does a Kotlin POD builder emit the same bytes as `spa_pod_builder`? | **Answered: yes, on the first run, and it stays answered.** The oracle dumps a 5.1 format, a latency request and a Props object, and the tests compare against all three. The reader is checked the same way, against the same dumps, which is what stops the encoder and the decoder agreeing about something they both have wrong. |
+| Does a Kotlin POD builder emit the same bytes as `spa_pod_builder`? | **Answered: yes, on the first run, and it stays answered.** The oracle dumps a 5.1 format, a latency request, a Props object, a Profiler object and a profile event, and the tests compare against every one of them. The reader is checked the same way, against the same dumps, which is what stops the encoder and the decoder agreeing about something they both have wrong. |
 | What does `pw_stream_get_time_n` report through an underrun? | Unmeasured, and the sink no longer implies otherwise. Every other backend's clock had this trap and each one needed a different correction, so assume it has one until a stream fed half a second and left alone says otherwise. Nothing depends on the answer: the playhead is the count of frames the callback took out of the ring, which is right whichever way this turns out. |
 | Is `PW_STREAM_FLAG_RT_PROCESS` worth taking? | **Answered: no, and not for the reason this line used to give.** The garbage collector was the wrong objection and the measurements retired it: a stop-the-world pause does not block the callback for its own length, because the thread is in native code for almost all of a cycle and a safepoint does not stop it there, and the worst wake the daemon recorded was 135 microseconds against pauses reaching 8 milliseconds. The real answer is that taking the flag buys nothing measurable. Four runs each way at a 2.67 ms quantum with a thread allocating hard beside the stream: 116, 104, 115, 43 missed cycles without it, and 107, 176, 55, 26 with. The spread covers the difference and the set with the flag holds both the best run and the worst. Nothing to weigh, then, against what it costs: without the flag a late callback is this stream's problem, and with it a stall is an xrun for every client on that graph. |
 | How much of `PulseBackend` survives? | **Narrowed to one thing.** The device list is the graph's after all and is native now, and so is a device's volume and recording one application. What is left of the backend is the sample cache, which has nothing behind it in the graph at all. |
@@ -1497,7 +1499,8 @@ what is left and the two sets are equal, and going direct costs nothing again.
 
 **What is built.** Streams in both directions, their volume and mute, moving
 one, each device's volume and mute, choosing the default, virtual devices laid
-out with the channel count they were asked for, a level meter, and the three
+out with the channel count they were asked for, several combined into one that
+plays to all of them, a level meter, and the three
 events a consumer subscribes for, worked out from the one coarse signal the
 graph gives.
 

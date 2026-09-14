@@ -25,7 +25,11 @@ import java.lang.foreign.ValueLayout
  *
  * ## What it decodes, and what it walks past
  *
- * Booleans, ids, ints, longs, floats, arrays of the first three, and structs.
+ * Booleans, ids, ints, longs, floats, arrays of ids, ints or floats, and
+ * structs. An array of booleans or of longs is not decoded, because nothing the
+ * graph sends here is one: a channel map is ids, a per-channel volume is
+ * floats.
+ *
  * Everything else comes back as null, and the position of what follows it is
  * unaffected: every pod declares its own size and the walk steps by that size
  * whatever the type is, so an unknown value is skipped correctly rather than
@@ -61,10 +65,15 @@ internal object SpaPodReader {
      * Every property of an object pod, by key, or empty for anything that is
      * not one.
      *
-     * Values come back as [Boolean], [Int], [Long], [Float], [IntArray] or
-     * [FloatArray]. A type this does not decode is left out rather than
-     * guessed at, so a caller asking for a key it understands is never handed
-     * something it does not.
+     * Values come back as [Boolean], [Int], [Long], [Float], [IntArray],
+     * [FloatArray], or a [List] of those for a struct, whose entries are null
+     * where the field's own type is one this does not decode. A type this does
+     * not decode is left out rather than guessed at, so a caller asking for a
+     * key it understands is never handed something it does not.
+     *
+     * A key the object carries more than once keeps its last value here. The
+     * profiler's object is written that way and [objectEntries] is what reads
+     * it.
      */
     fun objectProperties(pod: MemorySegment): Map<Int, Any> {
         val found = LinkedHashMap<Int, Any>()
