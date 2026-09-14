@@ -115,6 +115,10 @@ internal object SpaPodReader {
         val size = header.get(INT32, SpaAbi.POD_SIZE_OFFSET.toLong())
         val type = header.get(INT32, SpaAbi.POD_TYPE_OFFSET.toLong())
         if (size < 0 || size > MAX_POD_BYTES) return emptyList()
+        // An object needs room for the type and id its body opens with, which
+        // is the floor the other entry point applies. Both answer nothing for a
+        // pod too short to be what it says it is.
+        if (type == SpaAbi.TYPE_OBJECT && size < SpaAbi.POD_OBJECT_BODY_SIZE) return emptyList()
         val declared = POD_HEADER + size
         val end = if (pod.isNative) declared else minOf(declared, pod.byteSize().toInt())
         val whole = view(pod, end) ?: return emptyList()
@@ -126,7 +130,7 @@ internal object SpaPodReader {
             val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
             val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
             val childBody = at + POD_HEADER
-            if (childSize < 0 || childBody + childSize > end) break
+            if (childSize < 0 || childSize > end - childBody) break
             if (childType == SpaAbi.TYPE_OBJECT) found += entriesAt(whole, childBody, childSize, end)
             at = childBody + padded(childSize)
         }
@@ -187,7 +191,10 @@ internal object SpaPodReader {
             // A size the object it sits in cannot hold is where the walk stops.
             // Continuing would read whatever the graph allocated next, and the
             // bytes come from another process.
-            if (size < 0 || body + size > end) break
+            // Subtracted rather than added, because a length near the top of
+            // the range makes the sum wrap negative and pass a check written
+            // the other way round. The bytes come from another process.
+            if (size < 0 || size > end - body) break
             valueOf(whole, body, size, type, 0)?.let { found += key to it }
             at = body + padded(size)
         }
@@ -211,7 +218,7 @@ internal object SpaPodReader {
             val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
             val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
             val childBody = at + POD_HEADER
-            if (childSize < 0 || childBody + childSize > limit) break
+            if (childSize < 0 || childSize > limit - childBody) break
             found += valueOf(whole, childBody, childSize, childType, depth + 1)
             at = childBody + padded(childSize)
         }
