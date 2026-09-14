@@ -194,18 +194,20 @@ internal object SpaPodReader {
         while (at + SpaAbi.POD_PROP_HEADER_SIZE + POD_HEADER <= end) {
             val key = whole.get(INT32, at.toLong())
             val value = at + SpaAbi.POD_PROP_HEADER_SIZE
-            val size = whole.get(INT32, (value + SpaAbi.POD_SIZE_OFFSET).toLong())
-            val type = whole.get(INT32, (value + SpaAbi.POD_TYPE_OFFSET).toLong())
-            val body = value + POD_HEADER
+            // Named apart from this function's own size and body, which describe
+            // the object being walked rather than the property at the cursor.
+            val valueSize = whole.get(INT32, (value + SpaAbi.POD_SIZE_OFFSET).toLong())
+            val valueType = whole.get(INT32, (value + SpaAbi.POD_TYPE_OFFSET).toLong())
+            val valueBody = value + POD_HEADER
             // A size the object it sits in cannot hold is where the walk stops.
             // Continuing would read whatever the graph allocated next, and the
             // bytes come from another process.
             // Subtracted rather than added, because a length near the top of
             // the range makes the sum wrap negative and pass a check written
             // the other way round. The bytes come from another process.
-            if (size < 0 || size > end - body) break
-            valueOf(whole, body, size, type, 0)?.let { found += key to it }
-            at = body + padded(size)
+            if (valueSize < 0 || valueSize > end - valueBody) break
+            valueOf(whole, valueBody, valueSize, valueType, 0)?.let { found += key to it }
+            at = valueBody + padded(valueSize)
         }
         return found
     }

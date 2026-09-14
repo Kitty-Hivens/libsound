@@ -38,8 +38,6 @@ internal class PulseMeter private constructor(
     private val onFailure: (String) -> Unit,
 ) {
 
-    private val log = LoggerFactory.getLogger("libsound.Mixer")
-
     private val closed = AtomicBoolean(false)
 
     private val lib = pulse.lib

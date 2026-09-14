@@ -433,7 +433,7 @@ internal class PulseBackend private constructor(
 
     fun onServerInfo(unusedContext: MemorySegment, info: MemorySegment, unusedUserData: MemorySegment) {
         runCatching {
-            val head = if (info.address() == 0L) null else info.reinterpret(SERVER_INFO_HEAD)
+            val head = if (info.address() == 0L) null else info.reinterpret(PulseAbi.SERVER_INFO_HEAD)
             defaultSinkName = head?.get(ValueLayout.ADDRESS, PulseAbi.SERVER_INFO_DEFAULT_SINK_NAME)?.readCString()
             defaultSourceName = head?.get(ValueLayout.ADDRESS, PulseAbi.SERVER_INFO_DEFAULT_SOURCE_NAME)?.readCString()
             serverInfoComplete = true
@@ -802,8 +802,6 @@ internal class PulseBackend private constructor(
 
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.Pulse")
-
-        private const val SERVER_INFO_HEAD = 64L
 
         private const val INTROSPECT_TIMEOUT_NANOS = 2_000_000_000L
 

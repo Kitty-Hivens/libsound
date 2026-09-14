@@ -2,7 +2,6 @@ package dev.hivens.libsound.audio.javasound
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
-import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.AudioSource
