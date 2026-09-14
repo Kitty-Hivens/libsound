@@ -176,13 +176,20 @@ class PipeWireBackendTest {
                 sink.open(AudioFormat(48_000, 2))
                 val frame = ByteArray(4_800 * 4)
                 repeat(5) { sink.write(frame, 0, frame.size) }
-                // Null is what a wrong node id, an unbound profiler or a
-                // misread block would leave here for good. Zero is the graph
-                // saying it counted nothing, which is the healthy answer.
+                // The wait is the assertion. Null is what a wrong node id, an
+                // unbound profiler or a misread block would leave here for
+                // good, so an answer arriving at all is the path working. Zero
+                // is the graph saying it counted nothing, which is the healthy
+                // answer and the one to expect on an idle suite.
                 val counted = eventually("the graph to speak for this suite's own node") {
                     graph.missedCycles(APP_NAME)
                 }
-                (counted >= 0L) shouldBe true
+                // And a name no node carries stays null, which is what tells a
+                // block that was found apart from a lookup answering for
+                // anything it is handed.
+                withClue("a node this graph does not have was counted anyway") {
+                    graph.missedCycles("$APP_NAME absent") shouldBe null
+                }
                 // And the sink's own number includes it, which is the half a
                 // consumer actually reads.
                 (sink.underrunCount() >= counted) shouldBe true
