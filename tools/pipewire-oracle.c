@@ -599,7 +599,7 @@ int main(void) {
      * array is a child size and a child type before the elements, which is what
      * makes a six element array of ids thirty two bytes rather than twenty
      * four. Writing one already depends on this and gets it checked by the
-     * reference dumps above; reading one depends on it in the other direction. */
+     * reference dumps above. Reading one depends on it in the other direction. */
     SECTION("POD array and struct bodies, which reading one needs");
     P(sizeof(struct spa_pod_array));
     P(offsetof(struct spa_pod_array, body));

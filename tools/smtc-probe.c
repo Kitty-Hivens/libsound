@@ -14,7 +14,7 @@
  *
  * This answers the API half: does GetForWindow succeed against a window we made,
  * and can the controls then be configured. It cannot answer whether Windows
- * actually *shows* those controls for an invisible window; that needs a person
+ * actually *shows* those controls for an invisible window. That needs a person
  * looking at a screen, and the exit code here says which of the two questions is
  * still open.
  *
@@ -26,7 +26,7 @@
  * It builds and runs against a current mingw, and under wine it answers yes --
  * which is worth little, because wine's WinRT is stubbed in places and a stub
  * says S_OK to everything. Wine's WASAPI is a different matter and does real
- * work; this is specifically the young part of it.
+ * work, and this is specifically the young part of it.
  *
  * On a real Windows it compiles clean against the Windows SDK and then fails to
  * link: in C mode the SDK emits no symbol for a WinRT interface's IID, where
