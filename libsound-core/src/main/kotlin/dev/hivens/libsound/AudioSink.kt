@@ -278,7 +278,7 @@ public interface AudioSink : AutoCloseable {
      *
      * A floor rather than a promise, and only under one writer. The device
      * drains on its own, so the true number can grow between the answer and the
-     * write and never shrink; a sink written to from two threads has no
+     * write and never shrink. A sink written to from two threads has no
      * meaningful answer here at all.
      */
     public fun writableFrames(): Long
