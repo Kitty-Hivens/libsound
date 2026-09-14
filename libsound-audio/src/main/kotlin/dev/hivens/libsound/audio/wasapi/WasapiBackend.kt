@@ -502,7 +502,14 @@ internal class WasapiBackend private constructor(
                     out.get(ValueLayout.ADDRESS, 0)
                 }
                 check(enumerator.address() != 0L) { "MMDeviceEnumerator came back null" }
-                WasapiBackend(com, enumerator).apply { installNotificationClient() }
+                runCatching { WasapiBackend(com, enumerator).apply { installNotificationClient() } }
+                    .getOrElse { failure ->
+                        // The enumerator belongs to nobody once construction
+                        // fails, and closing the arena frees our own memory
+                        // rather than the shell's reference to its object.
+                        com.release(enumerator)
+                        throw failure
+                    }
             }.getOrElse {
                 log.debug("WASAPI unavailable: {}", it.message)
                 com.close()
