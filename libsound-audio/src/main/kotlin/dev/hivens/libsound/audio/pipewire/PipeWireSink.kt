@@ -244,7 +244,7 @@ internal class PipeWireSink(
         nodeId = SpaAbi.ID_ANY
         fed = false
 
-        val fresh = Arena.ofConfined().use { setup ->
+        Arena.ofConfined().use { setup ->
             val props = properties(setup, format)
             val params = setup.allocate(ValueLayout.ADDRESS, 1)
             val pod = SpaPod.audioFormat(format, SpaAbi.PARAM_ENUM_FORMAT)
@@ -274,11 +274,17 @@ internal class PipeWireSink(
                     lib.handle("pw_stream_destroy").invokeExact(created) as Unit
                     throw AudioException("pw_stream_connect = $rc")
                 }
-                created
+                // Published here rather than after the lock is given up, which
+                // is what this field's own rule says and what the state-changed
+                // callback relies on. Assigned outside, two things went wrong:
+                // a state change dispatched in the gap read a null stream and
+                // lost the node id for good, and a close arriving in the gap
+                // found nothing to disconnect, freed the arena holding the
+                // upcall stubs, and left a live stream calling into it.
+                stream = created
             }
         }
 
-        stream = fresh
         // Everything past here can fail, and a sink that failed to open is a
         // sink that is not open: the stream goes and the format stays null, so
         // isOpen answers false and write refuses rather than parking on a ring
