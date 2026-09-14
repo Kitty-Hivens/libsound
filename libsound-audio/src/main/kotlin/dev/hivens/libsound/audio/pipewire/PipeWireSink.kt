@@ -83,6 +83,9 @@ internal class PipeWireSink(
     @Volatile
     private var nodeId = SpaAbi.ID_ANY
 
+    /** The largest count reported so far in this open, which is what makes it monotonic. */
+    private val highWater = AtomicLong(0)
+
     /**
      * The base set, plus the one entry decided per thread at runtime.
      *
@@ -235,6 +238,7 @@ internal class PipeWireSink(
         scratch = ByteArray(MAX_FRAMES_PER_PERIOD * frameBytes)
         framesRendered.set(0)
         underruns.set(0)
+        highWater.set(0)
         // A reopen replaces the stream, so the node this was counting for is
         // gone and the next state change names the new one.
         nodeId = SpaAbi.ID_ANY
@@ -450,7 +454,13 @@ internal class PipeWireSink(
      * a node lasts exactly as long as the stream that made it, and an open
      * makes a new one.
      */
-    override fun underrunCount(): Long = underruns.get() + missedCycles()
+    override fun underrunCount(): Long =
+        // Clamped upward, because the contract promises monotonic within one
+        // open and the graph's half can fall: the profiler can leave the graph,
+        // and the node this counts for can be removed while this sink is still
+        // open. A count that went backwards would read to a consumer as a
+        // latency profile becoming safe.
+        highWater.updateAndGet { seen -> maxOf(seen, underruns.get() + missedCycles()) }
 
     /** What the graph says this stream's node missed, or zero where it cannot say. */
     private fun missedCycles(): Long {
@@ -496,6 +506,10 @@ internal class PipeWireSink(
         ring?.close()
         disconnectStream()
         openFormat = null
+        // The id goes with the stream that had it. Left standing, a read after
+        // close would eventually name whatever node took that id next, and the
+        // graph recycles them.
+        nodeId = SpaAbi.ID_ANY
         renderFailure?.let { log.warn("the process callback failed at least once: {}", it) }
         // Only here. The stream is destroyed, so no callback can be in flight
         // and nothing native still holds a pointer into this arena.
