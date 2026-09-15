@@ -182,6 +182,13 @@ public interface AudioBackend : AutoCloseable {
     /**
      * Create a sink. The returned sink is not open yet -- [AudioSink.open]
      * chooses the format, and may be called again later at another rate.
+     *
+     * @throws AudioException once [close] has run. A backend releases every sink
+     *   made from it, so one made afterwards would belong to nothing and would
+     *   reach a connection that has already been torn down. Refused rather than
+     *   handed back dead, for the reason this library refuses anywhere else: a
+     *   sink that accepts every call and plays nothing is worse than one that
+     *   says so.
      */
     public fun createSink(config: SinkConfig): AudioSink
 
@@ -202,6 +209,7 @@ public interface AudioBackend : AutoCloseable {
      * @throws AudioException where [Capability.CAPTURE] is absent. A consumer
      *   asks the capability first, the same way it asks before drawing a device
      *   menu, and there is no useful object to hand back to one that did not.
+     *   Also once [close] has run, for the reason [createSink] gives.
      */
     public fun createSource(config: SourceConfig): AudioSource
 
