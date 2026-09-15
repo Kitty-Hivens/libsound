@@ -12,6 +12,7 @@ import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.audio.OpenChannels
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -23,7 +24,6 @@ import java.lang.invoke.MethodType
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The CoreAudio backend: what macOS can do, and openly not what it cannot.
@@ -64,9 +64,8 @@ internal class CoreAudioBackend private constructor(
     override var capabilities: Capabilities = BASE_CAPABILITIES
         private set
 
-    private val closed = AtomicBoolean(false)
+    private val channels = OpenChannels()
 
-    private val sinks = CopyOnWriteArrayList<CoreAudioSink>()
     private val deviceListeners = CopyOnWriteArrayList<() -> Unit>()
 
     /**
@@ -81,14 +80,11 @@ internal class CoreAudioBackend private constructor(
 
     private lateinit var listenerStub: MemorySegment
 
-    override fun createSink(config: SinkConfig): AudioSink {
-        val sink = CoreAudioSink(lib, config, SINK_CAPABILITIES, ::objectIdForUid)
-        sinks.add(sink)
-        return sink
-    }
+    override fun createSink(config: SinkConfig): AudioSink =
+        channels.register(CoreAudioSink(lib, config, SINK_CAPABILITIES, ::objectIdForUid))
 
     override fun devices(): List<AudioDevice> {
-        if (closed.get()) return emptyList()
+        if (channels.isClosed) return emptyList()
         val default = defaultOutputId()
         return deviceIds().mapNotNull { id ->
             // An input-only device is not an output device. Both sides of a
@@ -132,9 +128,8 @@ internal class CoreAudioBackend private constructor(
     }
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        sinks.forEach { runCatching { it.close() } }
-        sinks.clear()
+        if (!channels.claim()) return
+        channels.closeAll()
         deviceListeners.clear()
         runCatching { removeListeners() }
         // Drained, not killed: a handler re-reading the device list is calling

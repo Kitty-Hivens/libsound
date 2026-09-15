@@ -12,6 +12,7 @@ import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.audio.OpenChannels
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -22,7 +23,6 @@ import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The Windows backend: `IMMDeviceEnumerator` for the device list, and a
@@ -60,8 +60,7 @@ internal class WasapiBackend private constructor(
     override var capabilities: Capabilities = BASE_CAPABILITIES
         private set
 
-    private val closed = AtomicBoolean(false)
-    private val sinks = CopyOnWriteArrayList<WasapiSink>()
+    private val channels = OpenChannels()
     private val deviceListeners = CopyOnWriteArrayList<() -> Unit>()
 
     /**
@@ -79,15 +78,11 @@ internal class WasapiBackend private constructor(
     /** The synthesised notification object, alive as long as it is registered. */
     private var notificationClient = MemorySegment.NULL
 
-    override fun createSink(config: SinkConfig): AudioSink {
-        check(!closed.get()) { "backend is closed" }
-        val sink = WasapiSink(com, enumerator, config, SINK_CAPABILITIES)
-        sinks.add(sink)
-        return sink
-    }
+    override fun createSink(config: SinkConfig): AudioSink =
+        channels.register(WasapiSink(com, enumerator, config, SINK_CAPABILITIES))
 
     override fun devices(): List<AudioDevice> {
-        if (closed.get()) return emptyList()
+        if (channels.isClosed) return emptyList()
         com.ensureComOnThisThread()
         val defaultId = defaultDeviceId()
         return Arena.ofConfined().use { call ->
@@ -151,9 +146,8 @@ internal class WasapiBackend private constructor(
     }
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        sinks.forEach { runCatching { it.close() } }
-        sinks.clear()
+        if (!channels.claim()) return
+        channels.closeAll()
         deviceListeners.clear()
         eventDispatch.shutdownNow()
         runCatching { unregisterNotifications() }
