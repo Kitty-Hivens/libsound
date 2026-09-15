@@ -29,6 +29,13 @@ import kotlin.system.exitProcess
  */
 private const val SECONDS = 90L
 
+/**
+ * How long the run stays up after the session has been closed.
+ *
+ * Long enough to press a few keys and short enough that nobody waits it out.
+ */
+private const val AFTER_CLOSE_SECONDS = 20L
+
 private val commands = CopyOnWriteArrayList<SessionCommand>()
 
 fun main() {
@@ -67,9 +74,57 @@ fun main() {
     println("Commands that arrived: ${commands.size}")
     commands.forEach { println("  $it") }
     println()
+    afterClose()
+    println()
     questions()
     exitProcess(0)
 }
+
+/**
+ * The window that exists only after a close, and that no runner can look at.
+ *
+ * The session is gone and the process that published it is still running, which
+ * is the one arrangement a suite cannot set up: a runner has no keyboard to
+ * press a media key on, and a session closed at the end of a test takes the
+ * process with it a moment later.
+ *
+ * What the desktop is holding at this point is whatever the session handed it.
+ * On macOS that is a block whose invoke pointer lived in an arena the close has
+ * just released, so a key press here was a jump into freed memory. Every
+ * platform has its own version of the same question, which is whether anything
+ * still answers for a player that has gone.
+ */
+private fun afterClose() {
+    println("The session is closed now, and this process is still running.")
+    println("Press the media keys again, several times.")
+    println()
+    println("Nothing should happen. No command should print below, no player")
+    println("should be left on screen, and this process should still be here")
+    println("afterwards. A command arriving is a defect, and so is the run")
+    println("disappearing on its own.")
+    println()
+    println("Waiting $AFTER_CLOSE_SECONDS seconds, or press Enter to stop early.")
+
+    val before = commands.size
+    val started = System.nanoTime()
+    val stop = Thread {
+        runCatching { readlnOrNull() }
+    }.apply { isDaemon = true; start() }
+
+    while (stop.isAlive && (System.nanoTime() - started) < AFTER_CLOSE_SECONDS * 1_000_000_000L) {
+        Thread.sleep(POLL_MILLIS)
+    }
+
+    val arrived = commands.size - before
+    if (arrived == 0) {
+        println("  nothing arrived, which is the answer this one wants")
+    } else {
+        println("  FAIL  $arrived command(s) reached a session that had been closed")
+    }
+}
+
+/** Short enough that Enter ends the wait promptly, long enough to cost nothing. */
+private const val POLL_MILLIS = 200L
 
 private fun play(session: MediaSession) {
     session.onCommand {
@@ -142,6 +197,8 @@ private fun questions() {
     println("5. Was there a shuffle control, and did pressing it print a SetShuffle?")
     println("6. On Windows only: did the lock screen show it, with the album and the")
     println("   artist, and did the volume flyout show it too?")
+    println("7. After the close, did the player disappear from the widget, did the")
+    println("   media keys do nothing, and was this process still running at the end?")
     println()
     println("Send the whole output either way. A run where nothing appeared is more")
     println("useful than one where everything did, and the output is what fixes it.")
