@@ -6,18 +6,22 @@ import java.lang.foreign.ValueLayout
 /**
  * Constants and layouts for libdbus, printed by `tools/dbus-oracle.c`.
  *
- * ## Canonical copy
+ * ## What is shared is the reasoning, not the file
  *
- * This file is meant to be identical in every repository of the family that
- * speaks D-Bus -- libtray, libnotify, libvault and this one. The family rule is
- * that nobody ships a general D-Bus layer, because the four use three different
- * shapes of the protocol and a shared artefact would become the union of all of
- * them. But the *marshalling* is the same everywhere, and the same defect has
- * now been fixed three times in three places, so the file is cut along that
- * seam: this half is copied verbatim and fixed once, while the symbol set each
- * repository actually loads stays local to it.
+ * The family rule is that nobody ships a general D-Bus layer: libtray,
+ * libnotify, libvault and this one speak three different shapes of the
+ * protocol, and one artefact for all four would carry the union of them.
  *
- * A change here is a change everywhere. Do not edit a local copy.
+ * So each of the four keeps its own binding, and what they have in common is
+ * the marshalling, which is where the same defect has been found more than
+ * once. The numbers and the reasoning below are worth reading across from one
+ * repository to another. The code is not a copy of anything and nothing keeps
+ * the four in step, so a fix made here reaches this repository and no other,
+ * whatever an earlier version of this paragraph claimed.
+ *
+ * Published as an artifact all the same, because a consumer's classpath has to
+ * hold what the two modules above it call, and promising nothing about it: see
+ * [InternalDBusApi].
  *
  * ## Why the two sizes below are not guesses
  *
@@ -39,8 +43,9 @@ object DBusAbi {
     // -- the two structs a caller allocates -----------------------------------
 
     /**
-     * 72 bytes, aligned to 8. Declared as a struct of longs rather than a byte
-     * sequence so the alignment survives into the allocation.
+     * 72 bytes, aligned to 8. A sequence of longs rather than one of bytes,
+     * because a sequence takes its alignment from its element, and that is the
+     * alignment that survives into the allocation.
      */
     val MESSAGE_ITER_LAYOUT: MemoryLayout = MemoryLayout.sequenceLayout(9, ValueLayout.JAVA_LONG)
 
