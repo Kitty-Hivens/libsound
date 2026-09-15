@@ -50,6 +50,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `AudioSink.underrunCount` on CoreAudio counted the renders between `open` and
   the first write, which is the defect the native backend's entry below
   describes and the same burst at every open and every track change.
+- The macOS session left its command handlers on `MPRemoteCommandCenter` and
+  then released the arena they point into. That centre is a process-wide
+  singleton which outlives a session, so what it held after a close was a block
+  whose invoke pointer named freed memory, and the next media key press would
+  have jumped into it. The handlers are taken off first now, through a
+  `respondsToSelector` guard so that a command centre which does not recognise
+  the call keeps them rather than aborting the process.
 - A backend that had been closed still added the channel it was asked for to a
   list the teardown had already walked, in the two backends that checked their
   own flag before adding. The check and the add are two steps, and a close
