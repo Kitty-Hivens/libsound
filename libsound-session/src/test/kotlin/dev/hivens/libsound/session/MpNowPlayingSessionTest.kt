@@ -112,6 +112,22 @@ class MpNowPlayingSessionTest {
     }
 
     @Test
+    fun `opening and closing repeatedly does not throw`() {
+        // Each open attaches handlers to a command centre that outlives every
+        // one of these, and each close takes them off again before releasing the
+        // arena those handlers point into. A cycle is where that would show:
+        // removing a target the framework does not recognise would abort the
+        // process rather than fail the call, and the guard in front of it is
+        // what this exercises.
+        repeat(3) {
+            val extra = checkNotNull(MpNowPlayingSession.openOrNull(config))
+            extra.publish(playing())
+            extra.close()
+            extra.isOpen shouldBe false
+        }
+    }
+
+    @Test
     fun `close clears the session and is idempotent`() {
         val open = checkNotNull(session)
         open.publish(playing())
