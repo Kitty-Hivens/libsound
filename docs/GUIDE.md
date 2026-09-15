@@ -17,10 +17,10 @@ Take what you use and nothing else. The contracts compile without any backend,
 which is what an adapter wants:
 
 ```
-dev.hivens:libsound-core:0.1.0       the contracts, no dependencies at all
-dev.hivens:libsound-audio:0.1.0      playback, capture and the mixer
-dev.hivens:libsound-session:0.1.0    media sessions, both directions
-dev.hivens:libsound-dsp:0.1.0        gain, filter, limiter, tap
+dev.hivens:libsound-core:0.2.0       the contracts, no dependencies at all
+dev.hivens:libsound-audio:0.2.0      playback, capture and the mixer
+dev.hivens:libsound-session:0.2.0    media sessions, both directions
+dev.hivens:libsound-dsp:0.2.0        gain, filter, limiter, tap
 ```
 
 Feeding this from a decoder is a narrower question, and it has a section of its
