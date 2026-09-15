@@ -2,7 +2,6 @@ package dev.hivens.libsound.audio.pipewire
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
-import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.AudioSource
@@ -13,9 +12,8 @@ import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.StreamDirection
+import dev.hivens.libsound.audio.OpenChannels
 import org.slf4j.LoggerFactory
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The graph itself, with no compatibility layer in front of it.
@@ -58,21 +56,15 @@ internal class PipeWireBackend private constructor(
         SOURCE_CAPABILITIES.supported + REGISTRY_CAPABILITIES,
     )
 
-    private val closed = AtomicBoolean(false)
+    private val channels = OpenChannels()
 
     /** A source's, which is the backend's own minus what only a backend can do. */
     private val sourceCapabilities: Capabilities = Capabilities(
         SOURCE_CAPABILITIES.supported + Capability.PER_STREAM_CAPTURE,
     )
 
-    private val sinks = CopyOnWriteArrayList<PipeWireSink>()
-    private val sources = CopyOnWriteArrayList<PipeWireSource>()
-
-    override fun createSink(config: SinkConfig): AudioSink {
-        val sink = PipeWireSink(loop, config, SINK_CAPABILITIES, registry)
-        register(sinks, sink)
-        return sink
-    }
+    override fun createSink(config: SinkConfig): AudioSink =
+        channels.register(PipeWireSink(loop, config, SINK_CAPABILITIES, registry))
 
     /**
      * Every audio sink on the graph, as the registry has been told about them.
@@ -82,7 +74,7 @@ internal class PipeWireBackend private constructor(
      * heard rather than a call and a wait.
      */
     override fun devices(): List<AudioDevice> =
-        if (closed.get()) emptyList() else registry.devices(StreamDirection.PLAYBACK)
+        if (channels.isClosed) emptyList() else registry.devices(StreamDirection.PLAYBACK)
 
     /**
      * What the session manager currently calls the default output, or null.
@@ -93,7 +85,7 @@ internal class PipeWireBackend private constructor(
      * it at all.
      */
     override fun defaultDevice(): AudioDevice? =
-        if (closed.get()) null else registry.defaultDevice(StreamDirection.PLAYBACK)
+        if (channels.isClosed) null else registry.defaultDevice(StreamDirection.PLAYBACK)
 
     /**
      * The same stream with the direction reversed, which is how `pw_stream`
@@ -103,14 +95,11 @@ internal class PipeWireBackend private constructor(
      * recorder here can ask for a 64-bit float and for a layout the
      * compatibility layer has no words for.
      */
-    override fun createSource(config: SourceConfig): AudioSource {
-        val source = PipeWireSource(loop, config, sourceCapabilities, registry)
-        register(sources, source)
-        return source
-    }
+    override fun createSource(config: SourceConfig): AudioSource =
+        channels.register(PipeWireSource(loop, config, sourceCapabilities, registry))
 
     override fun captureDevices(): List<AudioDevice> =
-        if (closed.get()) emptyList() else registry.devices(StreamDirection.CAPTURE)
+        if (channels.isClosed) emptyList() else registry.devices(StreamDirection.CAPTURE)
 
     /**
      * The default input, read out of the same metadata object.
@@ -120,7 +109,7 @@ internal class PipeWireBackend private constructor(
      * in this list, because a monitor is not a node of its own here.
      */
     override fun defaultCaptureDevice(): AudioDevice? =
-        if (closed.get()) null else registry.defaultDevice(StreamDirection.CAPTURE)
+        if (channels.isClosed) null else registry.defaultDevice(StreamDirection.CAPTURE)
 
     /** A server-side sample cache is a PulseAudio idea with no equivalent here. */
     override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? = null
@@ -137,39 +126,9 @@ internal class PipeWireBackend private constructor(
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit =
         registry.onChanged(handler)
 
-    /**
-     * Take the new channel onto the list, or refuse it because the backend has
-     * gone.
-     *
-     * Checking `closed` and then adding leaves a window: close can run whole
-     * between the two, empty the list, stop the loop and release the arena the
-     * library was looked up through. The channel handed back would then call
-     * into a library that is no longer mapped. Both happen under one lock here,
-     * and close takes the same one, so a channel is either on the list close
-     * will walk or was never made.
-     */
-    private fun <T : AutoCloseable> register(into: MutableList<T>, channel: T) {
-        val accepted = synchronized(lifecycle) {
-            if (closed.get()) false else into.add(channel)
-        }
-        if (!accepted) {
-            runCatching { channel.close() }
-            throw AudioException("backend is closed")
-        }
-    }
-
-    /** Guards the window between deciding this backend is open and acting on it. */
-    private val lifecycle = Any()
-
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        // Let any create that is already past its own check finish and land on
-        // the list, so what follows walks a list nothing is still adding to.
-        synchronized(lifecycle) { }
-        sinks.forEach { runCatching { it.close() } }
-        sinks.clear()
-        sources.forEach { runCatching { it.close() } }
-        sources.clear()
+        if (!channels.claim()) return
+        channels.closeAll()
         runCatching { registry.close() }
         // Every stream is destroyed before the loop is stopped, and the loop is
         // stopped before the arena holding the upcall stubs is freed.

@@ -38,8 +38,6 @@ internal class PulseMeter private constructor(
     private val onFailure: (String) -> Unit,
 ) {
 
-    private val log = LoggerFactory.getLogger("libsound.Mixer")
-
     private val closed = AtomicBoolean(false)
 
     private val lib = pulse.lib
@@ -181,7 +179,18 @@ internal class PulseMeter private constructor(
                         fresh
                     }
                 }
-                PulseMeter(pulse, stream, onPeak, onFailure).apply { installStub() }
+                runCatching { PulseMeter(pulse, stream, onPeak, onFailure).apply { installStub() } }
+                    .getOrElse { failure ->
+                        // The stream is connected and nothing holds it now, so
+                        // it goes back. Left alone it stays on the server as a
+                        // recording of somebody's audio that nobody reads and
+                        // nothing will ever tear down.
+                        pulse.locked {
+                            lib.handle("pa_stream_disconnect").invokeExact(stream) as Int
+                            lib.handle("pa_stream_unref").invokeExact(stream) as Unit
+                        }
+                        throw failure
+                    }
             }.getOrElse {
                 log.debug("no meter for sink input {}: {}", sinkInputIndex, it.message)
                 null

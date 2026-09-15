@@ -80,6 +80,16 @@ internal class PipeWireSource(
 
     private val closed = AtomicBoolean(false)
 
+    /**
+     * The stream, read and written only under the loop lock.
+     *
+     * The same rule [PipeWireSink] carries and for the same reason: a local
+     * holding this is an address rather than a Java object, so a destroy that
+     * lands between the read and the call is a read of freed memory inside
+     * libpipewire. [disconnectStream] claims and destroys under one
+     * `loop.locked`, and everything that dereferences it reads the field inside
+     * the same one.
+     */
     @Volatile
     private var stream: MemorySegment = MemorySegment.NULL
 
@@ -142,7 +152,7 @@ internal class PipeWireSource(
         framesCaptured.set(0)
         overruns.set(0)
 
-        val fresh = Arena.ofConfined().use { setup ->
+        Arena.ofConfined().use { setup ->
             val props = properties(setup, format)
             val params = setup.allocate(ValueLayout.ADDRESS, 1)
             val pod = SpaPod.audioFormat(format, SpaAbi.PARAM_ENUM_FORMAT)
@@ -172,11 +182,16 @@ internal class PipeWireSource(
                     lib.handle("pw_stream_destroy").invokeExact(created) as Unit
                     throw AudioException("pw_stream_connect = $rc")
                 }
-                created
+                // Published under the lock rather than after it is given up,
+                // which is what this field's own rule says and what the
+                // playback side already does. Assigned outside, a close
+                // arriving in the gap reads a null stream, disconnects nothing,
+                // and frees the arena holding the upcall stubs while a live
+                // stream is still calling into them.
+                stream = created
             }
         }
 
-        stream = fresh
         runCatching {
             awaitReady()
             openFormat = format

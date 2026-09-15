@@ -179,48 +179,74 @@ internal class WasapiSink(
         positionBase = 0
 
         Arena.ofConfined().use { call ->
-            val fresh = activateDevice(call)
-            val audioClient = activateClient(call, fresh)
-            initialiseClient(call, audioClient, format)
+            // Every interface taken on the way to a published sink, so that a
+            // failure anywhere below gives all of it back. COM has no scope and
+            // no finaliser worth relying on, and this path fails as a matter of
+            // course: the contract suite opens every encoding in turn, the
+            // engine refuses a 64-bit float, and each refusal used to leak a
+            // device and a client.
+            val taken = mutableListOf<MemorySegment>()
+            try {
+                val fresh = activateDevice(call).also(taken::add)
+                val audioClient = activateClient(call, fresh).also(taken::add)
+                initialiseClient(call, audioClient, format)
 
-            val services = ServicePointers(
-                render = service(call, audioClient, WasapiAbi.IID_AUDIO_RENDER_CLIENT, "IAudioRenderClient"),
-                clock = service(call, audioClient, WasapiAbi.IID_AUDIO_CLOCK, "IAudioClock"),
-                // The last two are conveniences, not requirements: a session
-                // without a volume interface still plays, it just cannot be
-                // moved from the mixer. Their absence is reported through the
-                // capability set, never by refusing to open.
-                volume = serviceOrNull(call, audioClient, WasapiAbi.IID_SIMPLE_AUDIO_VOLUME),
-                session = serviceOrNull(call, audioClient, WasapiAbi.IID_AUDIO_SESSION_CONTROL),
-            )
-
-            synchronized(interfaceLock) {
-                device = fresh
-                client = audioClient
-                render = services.render
-                clock = services.clock
-                simpleVolume = services.volume ?: MemorySegment.NULL
-                sessionControl = services.session ?: MemorySegment.NULL
-                openCapabilities = Capabilities(
-                    buildSet {
-                        addAll(baseCapabilities.supported)
-                        if (services.volume == null) remove(Capability.STREAM_VOLUME)
-                        if (services.session == null) remove(Capability.STREAM_IDENTITY)
-                    },
+                val services = ServicePointers(
+                    render = service(call, audioClient, WasapiAbi.IID_AUDIO_RENDER_CLIENT, "IAudioRenderClient")
+                        .also(taken::add),
+                    clock = service(call, audioClient, WasapiAbi.IID_AUDIO_CLOCK, "IAudioClock")
+                        .also(taken::add),
+                    // The last two are conveniences, not requirements: a session
+                    // without a volume interface still plays, it just cannot be
+                    // moved from the mixer. Their absence is reported through the
+                    // capability set, never by refusing to open.
+                    volume = serviceOrNull(call, audioClient, WasapiAbi.IID_SIMPLE_AUDIO_VOLUME)
+                        ?.also(taken::add),
+                    session = serviceOrNull(call, audioClient, WasapiAbi.IID_AUDIO_SESSION_CONTROL)
+                        ?.also(taken::add),
                 )
-                bufferFrames = readBufferSize(call, audioClient)
-                clockFrequency = readClockFrequency(call, services.clock)
-                openFormat = format
 
-                // Inside the same section that published the pointers: naming
-                // the session and starting the device dereference them, and a
-                // close arriving between the publish and the start would have
-                // released them out from under both.
-                nameTheSession(call)
-                applyVolumeLocked()
-                // The contract's first rule: open starts the device.
-                hr(callClient(WasapiAbi.CLIENT_START), "IAudioClient::Start")
-                running = true
+                synchronized(interfaceLock) {
+                    // Read before the fields are published, because both of
+                    // these throw and what they would leave behind is a sink
+                    // holding interfaces it has not taken ownership of yet.
+                    val buffer = readBufferSize(call, audioClient)
+                    val frequency = readClockFrequency(call, services.clock)
+
+                    device = fresh
+                    client = audioClient
+                    render = services.render
+                    clock = services.clock
+                    simpleVolume = services.volume ?: MemorySegment.NULL
+                    sessionControl = services.session ?: MemorySegment.NULL
+                    openCapabilities = Capabilities(
+                        buildSet {
+                            addAll(baseCapabilities.supported)
+                            if (services.volume == null) remove(Capability.STREAM_VOLUME)
+                            if (services.session == null) remove(Capability.STREAM_IDENTITY)
+                        },
+                    )
+                    bufferFrames = buffer
+                    clockFrequency = frequency
+                    openFormat = format
+                    // Handed over. From here releaseInterfaces owns them, and
+                    // the unwind below must not release them a second time.
+                    taken.clear()
+
+                    // Inside the same section that published the pointers: naming
+                    // the session and starting the device dereference them, and a
+                    // close arriving between the publish and the start would have
+                    // released them out from under both.
+                    nameTheSession(call)
+                    applyVolumeLocked()
+                    // The contract's first rule: open starts the device.
+                    hr(callClient(WasapiAbi.CLIENT_START), "IAudioClient::Start")
+                    running = true
+                }
+            } finally {
+                // Reverse order of acquisition, the way releaseInterfaces does
+                // it: the services came out of the client, so they go first.
+                taken.asReversed().forEach { com.release(it) }
             }
         }
         log.debug("stream open: {} buffer={} frames, clock={} Hz", format, bufferFrames, clockFrequency)

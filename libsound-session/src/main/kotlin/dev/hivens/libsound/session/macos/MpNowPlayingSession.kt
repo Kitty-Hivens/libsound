@@ -68,6 +68,16 @@ internal class MpNowPlayingSession private constructor(
     @Volatile
     private var lastPublished: SessionState? = null
 
+    /**
+     * Each command this session attached a handler to, and the token that takes
+     * it off again.
+     *
+     * Kept because the command centre is a process-wide singleton that outlives
+     * the session: what it holds is a block pointing into an arena [close] is
+     * about to release.
+     */
+    private val attached = CopyOnWriteArrayList<Pair<MemorySegment, MemorySegment>>()
+
     // SESSION_PUBLISH and nothing beyond it. Repeat and shuffle live on the
     // remote command centre rather than on the now-playing info this binds, and
     // the platform has no fullscreen or raise for a player at all, so a
@@ -140,8 +150,42 @@ internal class MpNowPlayingSession private constructor(
                 objc.send(centre, MediaPlayerAbi.SEL_SET_NOW_PLAYING_INFO, MemorySegment.NULL)
                 objc.sendLong(centre, MediaPlayerAbi.SEL_SET_PLAYBACK_STATE, MediaPlayerAbi.PLAYBACK_STATE_STOPPED)
             }
+            // Before the arena, which is the whole point of it.
+            detachHandlers()
             objc.close()
         }
+    }
+
+    /**
+     * Take the handlers back off the command centre.
+     *
+     * `MPRemoteCommandCenter` is a singleton that outlives this object, and what
+     * it is holding is a global block whose invoke pointer is an upcall stub in
+     * the arena on the next line. Closing that arena without this leaves the
+     * framework calling into freed memory the next time somebody presses a media
+     * key, which is a crash arriving long after the session it belonged to went
+     * away.
+     *
+     * Asked before it is sent rather than sent blind. `removeTarget:` is
+     * documented and old, and this binding still has no Mac of its own to prove
+     * it against, and an unrecognised selector is the one kind of wrong name
+     * that aborts the process instead of failing the call. A command that does
+     * not answer it keeps its handler, which is exactly what happened before
+     * this existed, and says so once.
+     */
+    private fun detachHandlers() {
+        attached.forEach { (command, target) ->
+            if (!objc.responds(command, MediaPlayerAbi.SEL_REMOVE_TARGET)) {
+                log.debug(
+                    "this command answers no {}; its handler stays attached",
+                    MediaPlayerAbi.SEL_REMOVE_TARGET,
+                )
+                return@forEach
+            }
+            runCatching { objc.sendVoid(command, MediaPlayerAbi.SEL_REMOVE_TARGET, target) }
+                .onFailure { log.debug("{} threw: {}", MediaPlayerAbi.SEL_REMOVE_TARGET, it.message) }
+        }
+        attached.clear()
     }
 
     // -- publishing helpers ----------------------------------------------------
@@ -226,7 +270,11 @@ internal class MpNowPlayingSession private constructor(
                 lookup.findVirtual(MpNowPlayingSession::class.java, method, type).bindTo(this),
                 descriptor, objc.arena,
             )
-            objc.send(command, MediaPlayerAbi.SEL_ADD_TARGET_WITH_HANDLER, objc.globalBlock(stub))
+            // The token the framework hands back is the only way to take the
+            // handler off again, and taking it off is what [detachHandlers]
+            // needs before this session's arena goes.
+            val target = objc.send(command, MediaPlayerAbi.SEL_ADD_TARGET_WITH_HANDLER, objc.globalBlock(stub))
+            if (target.address() != 0L) attached.add(command to target)
         }
 
         attach(MediaPlayerAbi.SEL_PLAY_COMMAND, "onPlay")

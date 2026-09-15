@@ -535,10 +535,6 @@ jobs:
       # refuses to open still plays audio through JavaSound and still answers
       # every check correctly -- so a run that never touched the code this job
       # exists for would be exactly as green as one that did.
-      # The exit code alone would pass on a fallback. A machine where WASAPI
-      # refuses to open still plays through JavaSound and still answers every
-      # check correctly -- so a run that never touched the code this job exists
-      # for would be exactly as green as one that did.
       #
       # The two tolerated failures are named rather than counted. Ubuntu ships
       # wine 9.0, whose IAudioSessionManager2 enumerates no sessions at all

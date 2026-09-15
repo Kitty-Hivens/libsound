@@ -15,6 +15,7 @@ import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
 import dev.hivens.libsound.StreamDirection
 import dev.hivens.libsound.StreamId
+import dev.hivens.libsound.audio.OpenChannels
 import org.slf4j.LoggerFactory
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -26,7 +27,6 @@ import java.lang.invoke.MethodType
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -98,8 +98,7 @@ internal class PulseBackend private constructor(
         Thread(runnable, "libsound-pulse-events").apply { isDaemon = true }
     }
 
-    private val sinks = CopyOnWriteArrayList<PulseSink>()
-    private val sources = CopyOnWriteArrayList<PulseSource>()
+    private val channels = OpenChannels()
 
     /**
      * Samples this process uploaded, removed on close.
@@ -124,8 +123,6 @@ internal class PulseBackend private constructor(
      * Always taken before the mainloop lock, never while holding it.
      */
     private val roundTrip = ReentrantLock()
-
-    private val closed = AtomicBoolean(false)
 
     // Written on the mainloop thread by the upcalls, read by the thread holding
     // roundTrip that issued the call. The completion flags are volatile and are
@@ -193,14 +190,11 @@ internal class PulseBackend private constructor(
     private lateinit var subscribeStub: MemorySegment
     private lateinit var moduleInfoStub: MemorySegment
 
-    override fun createSink(config: SinkConfig): AudioSink {
-        val sink = PulseSink(pulse, config, SINK_CAPABILITIES)
-        sinks.add(sink)
-        return sink
-    }
+    override fun createSink(config: SinkConfig): AudioSink =
+        channels.register(PulseSink(pulse, config, SINK_CAPABILITIES))
 
     override fun devices(): List<AudioDevice> {
-        if (closed.get()) return emptyList()
+        if (channels.isClosed) return emptyList()
         return roundTrip.withLock {
             val default = queryDefaultSinkName()
             pulse.locked {
@@ -220,14 +214,15 @@ internal class PulseBackend private constructor(
     override fun defaultDevice(): AudioDevice? = devices().firstOrNull { it.isDefault }
 
     override fun createSource(config: SourceConfig): AudioSource {
-        if (closed.get()) throw AudioException("backend is closed")
+        // Asked here as well as inside register, because what follows is a round
+        // trip and there is no sense making one against a connection that has
+        // gone. register is what makes the answer binding.
+        if (channels.isClosed) throw AudioException("backend is closed")
         val monitor = config.captureStream?.let { stream ->
             monitorTargetFor(stream)
                 ?: throw AudioException("no playback stream $stream to record")
         }
-        val source = PulseSource(pulse, config, SOURCE_CAPABILITIES, monitor)
-        sources.add(source)
-        return source
+        return channels.register(PulseSource(pulse, config, SOURCE_CAPABILITIES, monitor))
     }
 
     /**
@@ -274,7 +269,7 @@ internal class PulseBackend private constructor(
      * take away the per-application recording this library can actually do.
      */
     override fun captureDevices(): List<AudioDevice> {
-        if (closed.get()) return emptyList()
+        if (channels.isClosed) return emptyList()
         return roundTrip.withLock {
             val default = queryDefaultSourceName()
             pulse.locked {
@@ -302,7 +297,7 @@ internal class PulseBackend private constructor(
      * scheduling, so a click is heard when it is clicked.
      */
     override fun cacheSample(name: String, format: AudioFormat, pcm: ByteArray): SampleId? {
-        if (closed.get()) return null
+        if (channels.isClosed) return null
         if (name.isBlank() || pcm.isEmpty()) return null
         if (pcm.size % format.bytesPerFrame != 0) return null
         val uploaded = roundTrip.withLock { upload(name, format, pcm) }
@@ -312,7 +307,7 @@ internal class PulseBackend private constructor(
     }
 
     override fun playSample(id: SampleId, device: DeviceId?, volume: Float): Boolean {
-        if (closed.get()) return false
+        if (channels.isClosed) return false
         return awaitSuccess { call ->
             val level = lib.handle("pa_sw_volume_from_linear")
                 .invokeExact(volume.coerceIn(0f, 1f).toDouble()) as Int
@@ -330,12 +325,11 @@ internal class PulseBackend private constructor(
     }
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
+        if (!channels.claim()) return
+        // Before the channels go, and before the context does: taking a sample
+        // off the server is a round trip, and it needs the connection up.
         removeOwnedSamples()
-        sinks.forEach { runCatching { it.close() } }
-        sinks.clear()
-        sources.forEach { runCatching { it.close() } }
-        sources.clear()
+        channels.closeAll()
         deviceListeners.clear()
         // Drained, not killed. A handler runs on this thread and its natural
         // first move is to re-read the device list, which parks on the mainloop
@@ -433,7 +427,7 @@ internal class PulseBackend private constructor(
 
     fun onServerInfo(unusedContext: MemorySegment, info: MemorySegment, unusedUserData: MemorySegment) {
         runCatching {
-            val head = if (info.address() == 0L) null else info.reinterpret(SERVER_INFO_HEAD)
+            val head = if (info.address() == 0L) null else info.reinterpret(PulseAbi.SERVER_INFO_HEAD)
             defaultSinkName = head?.get(ValueLayout.ADDRESS, PulseAbi.SERVER_INFO_DEFAULT_SINK_NAME)?.readCString()
             defaultSourceName = head?.get(ValueLayout.ADDRESS, PulseAbi.SERVER_INFO_DEFAULT_SOURCE_NAME)?.readCString()
             serverInfoComplete = true
@@ -803,8 +797,6 @@ internal class PulseBackend private constructor(
     internal companion object {
         private val log = LoggerFactory.getLogger("libsound.Pulse")
 
-        private const val SERVER_INFO_HEAD = 64L
-
         private const val INTROSPECT_TIMEOUT_NANOS = 2_000_000_000L
 
         /** Silent, inaudible, and long enough that no server rounds it away. */
@@ -817,12 +809,6 @@ internal class PulseBackend private constructor(
          */
         private val SAMPLE_PROBE_NAME = "libsound-cache-probe-${ProcessHandle.current().pid()}"
 
-        /**
-         * What a *sink* can do, which is not what the backend can do. A sink
-         * cannot enumerate devices, cannot subscribe to device events, and has
-         * no way to change the device it was created against -- handing it the
-         * backend's set claimed all three.
-         */
         /**
          * What a source can do. The same shape as a sink's set and for the same
          * reason: it can name itself and set its own volume, and it can neither
@@ -840,6 +826,12 @@ internal class PulseBackend private constructor(
             Capability.CHANNEL_PLACEMENT,
         )
 
+        /**
+         * What a *sink* can do, which is not what the backend can do. A sink
+         * cannot enumerate devices, cannot subscribe to device events, and has
+         * no way to change the device it was created against -- handing it the
+         * backend's set claimed all three.
+         */
         private val SINK_CAPABILITIES = Capabilities.of(
             Capability.STREAM_VOLUME,
             Capability.STREAM_IDENTITY,
