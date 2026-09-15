@@ -77,6 +77,24 @@ internal object MediaPlayerAbi {
     const val SEL_PREVIOUS_COMMAND = "previousTrackCommand"
     const val SEL_SET_ENABLED = "setEnabled:"
     const val SEL_ADD_TARGET_WITH_HANDLER = "addTargetWithHandler:"
+
+    /**
+     * What `addTargetWithHandler:` hands back, given back at teardown.
+     *
+     * The command centre is a singleton that outlives a session, and what it
+     * holds is a block pointing at an upcall stub in an arena the session
+     * closes. Without this it goes on holding it.
+     */
+    const val SEL_REMOVE_TARGET = "removeTarget:"
+
+    /**
+     * Asked before [SEL_REMOVE_TARGET] is sent, and the reason is the one case
+     * where a name reached by name is not the pleasant kind of wrong: a selector
+     * the receiver does not recognise raises an Objective-C exception, and an
+     * Objective-C exception crossing a downcall aborts the process rather than
+     * failing the call.
+     */
+    const val SEL_RESPONDS_TO_SELECTOR = "respondsToSelector:"
     const val SEL_DICTIONARY = "dictionary"
     const val SEL_SET_OBJECT_FOR_KEY = "setObject:forKey:"
     const val SEL_NUMBER_WITH_DOUBLE = "numberWithDouble:"

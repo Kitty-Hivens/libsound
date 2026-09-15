@@ -66,6 +66,36 @@ internal class Objc private constructor(
         handle("msgSend_void_obj_obj").invokeExact(receiver, sel(selector), a, b) as Unit
     }
 
+    /**
+     * `[receiver selector: object]` where the method returns nothing.
+     *
+     * Apart from the object-returning [send] because the return type is part of
+     * the ABI: reading a result a method never produced is the same class of
+     * mistake as calling the wrong selector.
+     */
+    fun sendVoid(receiver: MemorySegment, selector: String, arg: MemorySegment) {
+        handle("msgSend_void_obj").invokeExact(receiver, sel(selector), arg) as Unit
+    }
+
+    /**
+     * Whether [receiver] answers [selector] at all.
+     *
+     * Asked before anything this binding is not certain of, because an
+     * unrecognised selector is not a call that fails. `objc_msgSend` raises an
+     * Objective-C exception, and one crossing a downcall has no Java frame to
+     * unwind into, so the process aborts. False for a null receiver, which is
+     * the answer nil would give anyway.
+     */
+    fun responds(receiver: MemorySegment, selector: String): Boolean {
+        if (receiver.address() == 0L) return false
+        val answer = handle("msgSend_bool_sel").invokeExact(
+            receiver,
+            sel(MediaPlayerAbi.SEL_RESPONDS_TO_SELECTOR),
+            sel(selector),
+        ) as Byte
+        return answer.toInt() != 0
+    }
+
     /** `[receiver selector: aLong]`, for the enums and the BOOL setters. */
     fun sendLong(receiver: MemorySegment, selector: String, value: Long) {
         handle("msgSend_void_long").invokeExact(receiver, sel(selector), value) as Unit
@@ -123,6 +153,7 @@ internal class Objc private constructor(
 
     internal companion object {
         private val ADDR = ValueLayout.ADDRESS
+        private val I8 = ValueLayout.JAVA_BYTE
         private val I64 = ValueLayout.JAVA_LONG
         private val F64 = ValueLayout.JAVA_DOUBLE
 
@@ -140,8 +171,12 @@ internal class Objc private constructor(
             Triple("msgSend_obj_obj", "objc_msgSend", FunctionDescriptor.of(ADDR, ADDR, ADDR, ADDR)),
             Triple("msgSend_obj_ptr", "objc_msgSend", FunctionDescriptor.of(ADDR, ADDR, ADDR, ADDR)),
             Triple("msgSend_obj_double", "objc_msgSend", FunctionDescriptor.of(ADDR, ADDR, ADDR, F64)),
+            Triple("msgSend_void_obj", "objc_msgSend", FunctionDescriptor.ofVoid(ADDR, ADDR, ADDR)),
             Triple("msgSend_void_obj_obj", "objc_msgSend", FunctionDescriptor.ofVoid(ADDR, ADDR, ADDR, ADDR)),
             Triple("msgSend_void_long", "objc_msgSend", FunctionDescriptor.ofVoid(ADDR, ADDR, I64)),
+            // BOOL is a signed char on every Mac this runs on, so the answer is
+            // read as a byte and compared rather than mapped to a Java boolean.
+            Triple("msgSend_bool_sel", "objc_msgSend", FunctionDescriptor.of(I8, ADDR, ADDR, ADDR)),
         )
 
         private val FRAMEWORKS = listOf(
