@@ -178,6 +178,27 @@ matters is the state afterwards: `pactl list cards` should show the same active
 profile it showed before. Please report it if it does not, and say which profile
 it was on and which one it ended up on.
 
+## The media session, which needs a desktop
+
+```
+./gradlew sessionSmoke
+```
+
+It publishes a session, changes what it is playing so a widget has something to
+follow, and prints every media key that reaches the process. What a suite can
+prove is that the message is well formed -- the MPRIS suites assert through
+`gdbus` and `playerctl` rather than through our own marshalling, and the macOS
+suite checks that the runtime accepts every message the backend sends. Whether a
+shell drew any of it, and whether a key press arrives, is what this run is for.
+
+The last part of it is the half no runner can reach. The check closes the
+session and stays up, and asks you to press the media keys again. Nothing should
+answer, the player should be gone from the widget, and the run should still be
+there when the wait ends. A suite cannot set that up: one that closes a session
+takes the process with it a moment later, and no runner has a keyboard. On macOS
+it is also the pointed version of the question, because what the command centre
+was holding is a block that lived in memory the close has just released.
+
 ## If it will not start at all
 
 - `error: invalid source release: 22` or similar means the JDK is too old.
