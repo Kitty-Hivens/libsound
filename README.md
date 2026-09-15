@@ -105,6 +105,15 @@ system already has.
 and being a player the desktop knows about. Every example in it is compiled, and
 the build fails if the page and the code drift apart.
 
+**The API reference** is the KDoc, published with every release and browsable a
+module at a time: [core](https://javadoc.io/doc/dev.hivens/libsound-core),
+[audio](https://javadoc.io/doc/dev.hivens/libsound-audio),
+[session](https://javadoc.io/doc/dev.hivens/libsound-session),
+[dsp](https://javadoc.io/doc/dev.hivens/libsound-dsp). Worth reading rather than
+skimming: `AudioSink` carries the rules a consumer's clock rides on, and every
+capability says what its absence means. A public symbol with no documentation
+fails the build, so none of those pages is blank.
+
 Writing a decoder that feeds this? The guide's **Handing PCM over** section is
 the seam from the other side: what to hand over, what comes back, and the three
 questions everybody asks first, of which the first is who resamples.
