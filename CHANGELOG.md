@@ -3,7 +3,7 @@
 All notable changes to libsound will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-09-15
 
 ### Fixed
 - **A stream pointer was read outside the lock that destroys it**, on both Linux
