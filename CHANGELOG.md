@@ -50,6 +50,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `AudioSink.underrunCount` on CoreAudio counted the renders between `open` and
   the first write, which is the defect the native backend's entry below
   describes and the same burst at every open and every track change.
+- A backend that had been closed still added the channel it was asked for to a
+  list the teardown had already walked, in the two backends that checked their
+  own flag before adding. The check and the add are two steps, and a close
+  running between them left a live stream with nothing left to close it.
 - A D-Bus message queued as the connection closed stayed in a queue nobody
   polls. For a send that is a message libdbus never gets back, and for a round
   trip it is also the caller waiting out its whole timeout for an answer no
@@ -262,6 +266,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   device's own path or only what this client has queued.
 
 ### Changed
+- `AudioBackend.createSink` throws `AudioException` once the backend has been
+  closed, on every backend. Three of the five used to hand a sink back instead,
+  two of them onto a connection that had already been torn down, and a fourth
+  refused with an `IllegalStateException` that a consumer catching what the
+  contract promises would not have caught. A consumer that never uses a backend
+  past its own `close` sees no difference.
 - The JavaSound fallback takes `U8` and `S32LE` as well as `S16LE`. It always
   could: the accepted set is now read out of the JVM through
   `AudioSystem.isLineSupported`, on the same walk the open makes, rather than
