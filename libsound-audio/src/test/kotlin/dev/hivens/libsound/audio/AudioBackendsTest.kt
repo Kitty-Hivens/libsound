@@ -1,5 +1,6 @@
 package dev.hivens.libsound.audio
 
+import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.Capability
 import dev.hivens.libsound.MediaRole
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 /**
  * The selection chain, which the review found had no test at all -- despite
@@ -104,6 +106,23 @@ class AudioBackendsTest {
                 backendHas shouldBe sinkHas
             }
         }
+    }
+
+    @Test
+    fun `a closed backend hands out nothing`() {
+        // close() promises to release every sink made from the backend, so one
+        // made afterwards belongs to nothing. Each backend used to answer this
+        // for itself and the five answers had drifted into four: two refused,
+        // one refused with a different exception, and two handed back a channel
+        // onto a connection that had already been torn down.
+        val backend = AudioBackends.open("libsound selection test")
+        checkNotNull(backend)
+        backend.close()
+        assertThrows<AudioException> {
+            backend.createSink(SinkConfig(applicationName = "libsound selection test"))
+        }
+        // And closing again is still the no-op the interface promises.
+        backend.close()
     }
 
     @Test

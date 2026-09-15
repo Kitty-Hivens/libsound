@@ -2,7 +2,6 @@ package dev.hivens.libsound.audio.javasound
 
 import dev.hivens.libsound.AudioBackend
 import dev.hivens.libsound.AudioDevice
-import dev.hivens.libsound.AudioException
 import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.AudioSink
 import dev.hivens.libsound.AudioSource
@@ -11,6 +10,7 @@ import dev.hivens.libsound.DeviceId
 import dev.hivens.libsound.SampleId
 import dev.hivens.libsound.SinkConfig
 import dev.hivens.libsound.SourceConfig
+import dev.hivens.libsound.audio.OpenChannels
 import org.slf4j.LoggerFactory
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
@@ -52,8 +52,7 @@ internal class JavaSoundBackend private constructor(
         JavaSoundSink.CAPABILITIES.supported + JavaSoundSource.CAPABILITIES.supported,
     )
 
-    private val sinks = mutableListOf<JavaSoundSink>()
-    private val sources = mutableListOf<JavaSoundSource>()
+    private val channels = OpenChannels()
 
     override fun createSink(config: SinkConfig): AudioSink {
         // config carries an application name, an icon and a role. None of them
@@ -66,11 +65,11 @@ internal class JavaSoundBackend private constructor(
         // it was meant to avoid. Capability.LOW_LATENCY is absent to say so.
         // An explicit bufferNanos is still taken exactly: a caller naming a
         // number has said it knows what it is asking for.
-        val sink = JavaSoundSink(
-            bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSink.DEFAULT_BUFFER_NANOS,
+        return channels.register(
+            JavaSoundSink(
+                bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSink.DEFAULT_BUFFER_NANOS,
+            ),
         )
-        synchronized(sinks) { sinks.add(sink) }
-        return sink
     }
 
     override fun devices(): List<AudioDevice> = emptyList()
@@ -88,11 +87,11 @@ internal class JavaSoundBackend private constructor(
      * because the floor here is measured rather than chosen.
      */
     override fun createSource(config: SourceConfig): AudioSource {
-        val source = JavaSoundSource(
-            bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSource.DEFAULT_BUFFER_NANOS,
+        return channels.register(
+            JavaSoundSource(
+                bufferNanos = config.bufferNanos ?: bufferNanos ?: JavaSoundSource.DEFAULT_BUFFER_NANOS,
+            ),
         )
-        synchronized(sources) { sources.add(source) }
-        return source
     }
 
     override fun captureDevices(): List<AudioDevice> = emptyList()
@@ -107,10 +106,8 @@ internal class JavaSoundBackend private constructor(
     override fun onDevicesChanged(handler: () -> Unit): () -> Unit = {}
 
     override fun close() {
-        val open = synchronized(sinks) { sinks.toList().also { sinks.clear() } }
-        open.forEach { runCatching { it.close() } }
-        val capturing = synchronized(sources) { sources.toList().also { sources.clear() } }
-        capturing.forEach { runCatching { it.close() } }
+        if (!channels.claim()) return
+        channels.closeAll()
     }
 
     internal companion object {

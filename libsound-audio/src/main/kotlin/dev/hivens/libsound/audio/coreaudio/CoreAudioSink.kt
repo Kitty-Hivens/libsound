@@ -105,6 +105,19 @@ internal class CoreAudioSink(
      */
     private val underruns = AtomicLong(0)
 
+    /**
+     * Whether anybody has started feeding this sink since [open].
+     *
+     * The contract says open starts the device, so the unit pulls from the
+     * moment it returns and every render before the first write comes up short.
+     * Counting those would make the number a consumer watches to decide whether
+     * it asked for too short a buffer report a guaranteed burst at every open
+     * and every track change, which is noise in the one place the count is
+     * supposed to be signal.
+     */
+    @Volatile
+    private var fed = false
+
     /** Read by the render callback, and replaced wholesale on each open. */
     @Volatile
     private var ring: PcmRingBuffer? = null
@@ -200,6 +213,7 @@ internal class CoreAudioSink(
         scratch = ByteArray(MAX_FRAMES_PER_SLICE * frameBytes)
         framesRendered.set(0)
         underruns.set(0)
+        fed = false
 
         // 'ahal' only where a device was named: 'def ' follows the system
         // default and keeps following it when the default moves, which is what
@@ -309,6 +323,9 @@ internal class CoreAudioSink(
             "length ($length) must be a whole number of frames (${format.bytesPerFrame})"
         }
         val current = ring ?: throw AudioException("write on a closed sink")
+        // From here the device running dry is the consumer falling behind
+        // rather than the consumer not having started.
+        fed = true
         if (!current.writeFully(data, offset, length)) {
             throw AudioException("sink closed while writing")
         }
@@ -457,8 +474,9 @@ internal class CoreAudioSink(
             if (real > 0) framesRendered.addAndGet((real / bytesPerFrame).toLong()) else markSilence(actionFlags)
             // A short read is the device asking for audio nobody had ready. One
             // atomic increment, which is what this may cost on a real-time
-            // thread.
-            if (real < wanted) underruns.incrementAndGet()
+            // thread. Not counted before the first write, where a dry ring is
+            // the ordinary state of a sink that has been opened and not yet fed.
+            if (real < wanted && fed) underruns.incrementAndGet()
         } catch (e: Throwable) {
             // A throw crossing an upcall boundary is undefined. Nothing here is
             // worth risking that for, and a period of silence is survivable.
