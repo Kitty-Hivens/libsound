@@ -37,6 +37,7 @@ backend.use {
             applicationName = "Example",
             applicationId = "com.example.player",
             iconName = "audio-x-generic",
+            mediaName = "Bus Stop",
             mediaRole = MediaRole.MUSIC,
         ),
     )
@@ -48,6 +49,11 @@ backend.use {
     }
 }
 ```
+
+`applicationName` is who is playing and `mediaName` is what. A row carrying only
+the first puts the application on both of its lines, which tells a person nothing
+the icon had not already said. Both Linux paths carry `mediaName`, Windows and
+macOS drop it, and `Capability.STREAM_IDENTITY` is where that is written down.
 
 `AudioBackends.open` returns null only when the JVM cannot play audio at all --
 headless, or a container with no device. "No sound server" is not that case: the
@@ -309,6 +315,7 @@ val source = backend.createSource(
         applicationName = "Example",
         applicationId = "com.example.recorder",
         iconName = "audio-input-microphone",
+        mediaName = "Voice memo",
     ),
 )
 source.use {

@@ -491,8 +491,14 @@ internal class PipeWireSource(
             add(SpaAbi.KEY_MEDIA_CATEGORY to "Capture")
             add(SpaAbi.KEY_MEDIA_ROLE to config.mediaRole.wireName.replaceFirstChar { it.uppercase() })
             add(SpaAbi.KEY_APP_NAME to config.applicationName)
+            // The application, for the reason the playback side gives: these
+            // two are the node's identity on the graph rather than a label for
+            // a person, and they have to hold still.
             add(SpaAbi.KEY_NODE_NAME to config.applicationName)
             add(SpaAbi.KEY_NODE_DESCRIPTION to config.applicationName)
+            // What the microphone is open for, which the privacy indicator
+            // draws under the name of whoever opened it.
+            config.mediaName?.let { add(SpaAbi.KEY_MEDIA_NAME to it) }
             config.applicationId?.let { add(SpaAbi.KEY_APP_ID to it) }
             config.iconName?.let { add(SpaAbi.KEY_APP_ICON_NAME to it) }
             // Which process this belongs to, which is how a mixer marks its

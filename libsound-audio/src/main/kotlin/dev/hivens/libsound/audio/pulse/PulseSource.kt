@@ -197,6 +197,12 @@ internal class PulseSource(
             propSet(setup, proplist, PulseAbi.PROP_APPLICATION_NAME, config.applicationName)
             config.applicationId?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ID, it) }
             config.iconName?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ICON_NAME, it) }
+            // The line a privacy indicator draws under the application's name,
+            // set for the reason the playback side sets it: libpulse fills
+            // media.name from the stream name when nothing else does, so
+            // without this the row says the application twice and never says
+            // what the microphone is open for.
+            config.mediaName?.let { propSet(setup, proplist, PulseAbi.PROP_MEDIA_NAME, it) }
             propSet(setup, proplist, PulseAbi.PROP_MEDIA_ROLE, config.mediaRole.wireName)
 
             val streamName = setup.allocateUtf8(config.applicationName)

@@ -26,9 +26,20 @@ public enum class Capability {
     DEVICE_EVENTS,
 
     /**
-     * The stream carries an application name, icon and media role that the
-     * system can see -- what makes it addressable by an EasyEffects rule
-     * instead of appearing as an anonymous client.
+     * The stream carries an identity the system can see: an application name,
+     * an icon, a media role, and what it is currently playing. That is what
+     * makes it addressable by an EasyEffects rule instead of appearing as an
+     * anonymous client.
+     *
+     * A bundle rather than one fact, and a backend carries the parts its
+     * platform has somewhere to put. [SinkConfig.mediaName] is the one that
+     * varies: both Linux paths put it where a mixer draws the second line of a
+     * row, and Windows drops it, because the place its mixer reserves is the
+     * application and what is playing belongs to the media session instead.
+     *
+     * Dropped rather than approximated, which is the rule [MediaRole] already
+     * states for itself. Present here means the stream is legible to the
+     * system, not that every field survived.
      */
     STREAM_IDENTITY,
 

@@ -608,6 +608,16 @@ internal class WasapiSink(
         return if (pointer.address() == 0L) null else pointer
     }
 
+    /**
+     * The application's name and icon on the session, and deliberately not what
+     * it is playing.
+     *
+     * [dev.hivens.libsound.SinkConfig.mediaName] is dropped here rather than
+     * sent. The display name is what sndvol shows, Windows groups that panel by
+     * application, and what is playing belongs to the transport controls
+     * `libsound-session` publishes. A title in this field would say it a second
+     * time, in the place the platform reserved for the other one.
+     */
     private fun nameTheSession(call: Arena) {
         val session = sessionControl
         if (session.address() == 0L) return

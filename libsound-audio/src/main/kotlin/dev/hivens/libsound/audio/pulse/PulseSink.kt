@@ -258,6 +258,14 @@ internal class PulseSink(
             propSet(setup, proplist, PulseAbi.PROP_APPLICATION_NAME, config.applicationName)
             config.applicationId?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ID, it) }
             config.iconName?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ICON_NAME, it) }
+            // Set here rather than left to the stream name below, and that is
+            // the whole of the fix. libpulse copies the stream name into
+            // media.name when the proplist carries none, so both lines of our
+            // row were the application: the second one was the first, filled in
+            // by the library on our behalf. The stream name stays the
+            // application, because it is also the label that turns up in a
+            // server log where a stable word is what somebody wants.
+            config.mediaName?.let { propSet(setup, proplist, PulseAbi.PROP_MEDIA_NAME, it) }
             propSet(setup, proplist, PulseAbi.PROP_MEDIA_ROLE, config.mediaRole.wireName)
 
             val streamName = setup.allocateUtf8(config.applicationName)
