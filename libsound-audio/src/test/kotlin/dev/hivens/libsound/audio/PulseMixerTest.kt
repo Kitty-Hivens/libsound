@@ -11,6 +11,7 @@ import dev.hivens.libsound.StreamEvent
 import dev.hivens.libsound.StreamId
 import dev.hivens.libsound.VolumeMixer
 import dev.hivens.libsound.audio.pulse.PulseBackend
+import io.kotest.assertions.withClue
 import io.kotest.matchers.floats.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterEach
@@ -37,6 +38,10 @@ import kotlin.math.sin
 class PulseMixerTest {
 
     private val appName = "libsound mixer test ${ProcessHandle.current().pid()}"
+
+    /** The second line of the row, which has to differ from the first to prove anything. */
+    private val trackName = "libsound track ${ProcessHandle.current().pid()}"
+
     private val format = AudioFormat(48_000, 2)
 
     private var backend: dev.hivens.libsound.AudioBackend? = null
@@ -48,7 +53,7 @@ class PulseMixerTest {
         backend = PulseBackend.connectOrNull(appName)
         AudioTestGate.require("pulse", backend != null, "no PulseAudio or PipeWire server")
         sink = backend!!.createSink(
-            SinkConfig(applicationName = appName, mediaRole = MediaRole.MUSIC),
+            SinkConfig(applicationName = appName, mediaName = trackName, mediaRole = MediaRole.MUSIC),
         ).also { it.open(format) }
         // A stream only exists on the server once something has been written.
         val silence = ByteArray(format.sampleRate / 4 * format.bytesPerFrame)
@@ -71,6 +76,13 @@ class PulseMixerTest {
     fun `the mixer sees a stream with the identity its owner gave it`() {
         val stream = checkNotNull(ours()) { "our own stream should be listed" }
         stream.mediaRole shouldBe MediaRole.MUSIC
+        // The second line of the row, which used to be the first one again:
+        // libpulse fills media.name from the stream name when the proplist
+        // carries none, so a row said the application twice.
+        withClue("the row's second line should be what the stream is playing") {
+            stream.mediaName shouldBe trackName
+        }
+        stream.applicationName shouldBe appName
         stream.volume shouldBeGreaterThan 0f
         stream.active shouldBe true
         // The device it is playing to, resolved from the sink index to a name a

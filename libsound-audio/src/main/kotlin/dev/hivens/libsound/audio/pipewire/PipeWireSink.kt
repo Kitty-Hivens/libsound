@@ -734,8 +734,15 @@ internal class PipeWireSink(
             add(SpaAbi.KEY_MEDIA_CATEGORY to "Playback")
             add(SpaAbi.KEY_MEDIA_ROLE to config.mediaRole.wireName.replaceFirstChar { it.uppercase() })
             add(SpaAbi.KEY_APP_NAME to config.applicationName)
+            // Both of these stay the application, deliberately. node.name is
+            // the stable identity a target.object names and the graph's own
+            // tooling follows, and node.description is what a graph viewer
+            // labels the node with, where a track title nobody can attribute to
+            // an application is worse than a name that never moves. The second
+            // line of a mixer row is media.name and nothing else.
             add(SpaAbi.KEY_NODE_NAME to config.applicationName)
             add(SpaAbi.KEY_NODE_DESCRIPTION to config.applicationName)
+            config.mediaName?.let { add(SpaAbi.KEY_MEDIA_NAME to it) }
             config.applicationId?.let { add(SpaAbi.KEY_APP_ID to it) }
             config.iconName?.let { add(SpaAbi.KEY_APP_ICON_NAME to it) }
             // Which process this belongs to, which is how a mixer marks its

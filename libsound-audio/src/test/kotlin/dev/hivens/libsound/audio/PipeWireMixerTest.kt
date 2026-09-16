@@ -39,6 +39,9 @@ class PipeWireMixerTest {
 
     private val appName = "libsound pipewire mixer ${ProcessHandle.current().pid()}"
 
+    /** The second line of the row, which has to differ from the first to prove anything. */
+    private val trackName = "libsound pipewire track ${ProcessHandle.current().pid()}"
+
     private var mixer: VolumeMixer? = null
     private var backend: AudioBackend? = null
     private var player: Player? = null
@@ -99,6 +102,12 @@ class PipeWireMixerTest {
         val row = eventually("our own row") { mixer.streams().firstOrNull { it.applicationName == appName } }
         row.isOurs shouldBe true
         row.direction shouldBe StreamDirection.PLAYBACK
+        // The two lines of the row, which have to be two things. Nothing wrote
+        // media.name before this, so the second one was the first again.
+        withClue("the row's second line should be what the stream is playing") {
+            row.mediaName shouldBe trackName
+        }
+        row.applicationName shouldBe appName
         withClue("a row nobody can name is a row whose slider does nothing") {
             row.id.value.isNotBlank() shouldBe true
         }
@@ -583,7 +592,8 @@ class PipeWireMixerTest {
     // -- the machinery --------------------------------------------------------
 
     private fun play(amplitude: Double = 0.0) {
-        val sink = checkNotNull(backend).createSink(SinkConfig(applicationName = appName))
+        val sink = checkNotNull(backend)
+            .createSink(SinkConfig(applicationName = appName, mediaName = trackName))
         val running = AtomicBoolean(true)
         val thread = Thread(
             {

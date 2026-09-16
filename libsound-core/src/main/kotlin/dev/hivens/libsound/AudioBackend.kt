@@ -37,6 +37,30 @@ public data class SinkConfig(
     /** Freedesktop icon name. Backends that want raw bytes resolve it themselves. */
     public val iconName: String? = null,
     /**
+     * What this stream is playing, which is the second line of a mixer row.
+     *
+     * A track title, a station, whatever a person would recognise as distinct
+     * from the application above it. The read side of this library has carried
+     * it since the mixer existed, as [AudioStream.mediaName], and until now
+     * nothing could set it on a stream of our own: both lines of our row came
+     * from [applicationName], so a mixer drew the same word twice.
+     *
+     * Not a copy of [applicationName], and the warning runs in both directions.
+     * The read side says a media name is never a substitute for an application
+     * name. This is the other half: an application name is not a media name
+     * either, and a row saying one thing twice is the anonymous row this whole
+     * group of fields exists to avoid, one level down.
+     *
+     * Null where there is nothing to say, which is the honest answer for a
+     * notification or an interface click.
+     *
+     * Fixed for the life of the stream. A consumer that changes track without
+     * reopening has nothing here to update, which is a gap rather than a
+     * decision. Carried where the platform has somewhere to put it, which is
+     * both Linux paths: see [Capability.STREAM_IDENTITY].
+     */
+    public val mediaName: String? = null,
+    /**
      * What the stream is for, which a session manager may act on: a video role
      * is how everything else gets quietened without touching anybody's volume.
      * [Capability.DUCKS_OTHERS] says whether this desktop acts on it at all.
@@ -102,6 +126,21 @@ public data class SourceConfig(
     public val applicationId: String? = null,
     /** Freedesktop icon name. Backends that want raw bytes resolve it themselves. */
     public val iconName: String? = null,
+    /**
+     * What this stream is recording for, which is the second line of the row a
+     * desktop's privacy indicator draws.
+     *
+     * The mirror of [SinkConfig.mediaName] and the more pointed of the two. A
+     * row saying an application has the microphone open is a warning somebody
+     * can act on only if it also says what for: a call, a recording, a voice
+     * command. Without it the warning names the application and leaves the
+     * person to guess the rest, which is the guess they were warned so they
+     * would not have to make.
+     *
+     * Null where there is nothing to say. Carried on both Linux paths and
+     * dropped elsewhere, like the rest of the identity.
+     */
+    public val mediaName: String? = null,
     /**
      * What the stream is for, which a session manager may act on: a video role
      * is how everything else gets quietened without touching anybody's volume.

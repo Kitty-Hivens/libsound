@@ -3,6 +3,33 @@
 All notable changes to libsound will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- `SinkConfig.mediaName` and `SourceConfig.mediaName`: what the stream is
+  playing, or what the microphone is open for. That is the second line of a
+  mixer row, and of the row a desktop's privacy indicator draws. The reading
+  side has carried it as `AudioStream.mediaName` since the mixer existed and
+  nothing could set it on a stream of our own, so both lines of our own row came
+  from `applicationName` and a mixer drew the same word twice. On the libpulse
+  path it was not even our doing: libpulse fills `media.name` from the stream
+  name when the property list carries none.
+
+  Both Linux paths send it. Windows drops it, because the place its mixer
+  reserves is the application and what is playing belongs to the transport
+  controls that `libsound-session` publishes. The two backends with no stream
+  identity at all drop it with the rest, and `Capability.STREAM_IDENTITY` now
+  describes a bundle whose parts a platform carries where it has somewhere to
+  put them.
+
+  Fixed for the life of the stream. A consumer that changes track without
+  reopening has nothing here to update yet, which is a gap rather than a
+  decision.
+
+  New fields on two data classes, so the generated constructors and `copy`
+  signatures move with them. A caller using named arguments, which is every
+  example in the guide, sees no difference.
+
 ## [0.2.0] - 2026-09-15
 
 ### Fixed
