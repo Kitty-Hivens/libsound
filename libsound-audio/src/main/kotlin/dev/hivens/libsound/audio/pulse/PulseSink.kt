@@ -270,8 +270,10 @@ internal class PulseSink(
             // whole of it. pa_stream_new_with_proplist writes its name argument
             // over PA_PROP_MEDIA_NAME rather than beside it, so a name passed
             // here replaces the property set above and the row says the
-            // application twice again. libpulse asserts that one of the two is
-            // present, which is why this is a choice rather than a removal.
+            // application twice again. One of the two has to be there: asked of
+            // libpulse rather than assumed, a stream given neither comes back
+            // NULL with an invalid argument, which the open above already
+            // reports. So this is a choice between the two and not a removal.
             val streamName = if (config.mediaName == null) {
                 setup.allocateUtf8(config.applicationName)
             } else {
