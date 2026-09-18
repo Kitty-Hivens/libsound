@@ -258,17 +258,25 @@ internal class PulseSink(
             propSet(setup, proplist, PulseAbi.PROP_APPLICATION_NAME, config.applicationName)
             config.applicationId?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ID, it) }
             config.iconName?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ICON_NAME, it) }
-            // Set here rather than left to the stream name below, and that is
-            // the whole of the fix. libpulse copies the stream name into
-            // media.name when the proplist carries none, so both lines of our
-            // row were the application: the second one was the first, filled in
-            // by the library on our behalf. The stream name stays the
-            // application, because it is also the label that turns up in a
-            // server log where a stable word is what somebody wants.
+            // Half of the fix. The other half is the stream name below, which
+            // libpulse writes over this property rather than beside it: setting
+            // it here and then passing a name would leave both lines of the row
+            // saying the application, which is what they said before either
+            // half existed.
             config.mediaName?.let { propSet(setup, proplist, PulseAbi.PROP_MEDIA_NAME, it) }
             propSet(setup, proplist, PulseAbi.PROP_MEDIA_ROLE, config.mediaRole.wireName)
 
-            val streamName = setup.allocateUtf8(config.applicationName)
+            // No stream name where the caller gave a media name, and that is the
+            // whole of it. pa_stream_new_with_proplist writes its name argument
+            // over PA_PROP_MEDIA_NAME rather than beside it, so a name passed
+            // here replaces the property set above and the row says the
+            // application twice again. libpulse asserts that one of the two is
+            // present, which is why this is a choice rather than a removal.
+            val streamName = if (config.mediaName == null) {
+                setup.allocateUtf8(config.applicationName)
+            } else {
+                MemorySegment.NULL
+            }
             val deviceName = config.device?.let { setup.allocateUtf8(it.value) } ?: MemorySegment.NULL
 
             pulse.lock()
