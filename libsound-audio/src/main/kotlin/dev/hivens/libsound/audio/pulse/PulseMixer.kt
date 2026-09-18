@@ -175,14 +175,29 @@ internal class PulseMixer private constructor(
      * satisfied the *next* request's wait, and the caller got a half-collected
      * list that looked complete. The generation goes out as the callback's
      * userdata and comes back with every reply.
+     *
+     * Every round trip in this class carries it, not only the walk it was added
+     * for. The guard was one callback wide for a while and the hazard was six:
+     * a device list and a monitor lookup shared one flag between three
+     * callbacks, and cards, control replies and a module load each had a wait a
+     * stale reply could close. What that costs is never an exception. It is a
+     * device list read as complete while half of it is missing, a meter that
+     * does not open, or a setter reporting the previous call's answer.
      */
     private val generation = AtomicLong(0)
 
     @Volatile
     private var currentGeneration = 0L
 
+    /**
+     * Set by whichever of the three device callbacks ends the walk now waiting.
+     *
+     * One flag rather than three, which is safe for the reason it is safe to
+     * share [rows]: [roundTrip] lets one round trip run at a time, and the
+     * generation is what tells a live reply from a late one.
+     */
     @Volatile
-    private var sinkLookupComplete = false
+    private var deviceLookupComplete = false
 
     /**
      * Devices this process created, by the name they were given.
@@ -275,9 +290,8 @@ internal class PulseMixer private constructor(
     private fun walk(symbol: String, stub: MemorySegment): List<Row>? = pulse.locked {
         rows.clear()
         rowsComplete = false
-        currentGeneration = generation.incrementAndGet()
         val op = lib.handle(symbol)
-            .invokeExact(pulse.context, stub, MemorySegment.ofAddress(currentGeneration)) as MemorySegment
+            .invokeExact(pulse.context, stub, beginRoundTrip()) as MemorySegment
         if (op.address() == 0L) return@locked null
         pulse.releaseOperation(op)
         if (!awaitFlag { rowsComplete }) return@locked null
@@ -310,10 +324,10 @@ internal class PulseMixer private constructor(
             StreamDirection.PLAYBACK -> "pa_context_move_sink_input_by_name"
             StreamDirection.CAPTURE -> "pa_context_move_source_output_by_name"
         }
-        return awaitControl { call ->
+        return awaitControl { call, token ->
             lib.handle(symbol).invokeExact(
                 pulse.context, handle.index, call.allocateUtf8(device.value),
-                successStub, MemorySegment.NULL,
+                successStub, token,
             ) as MemorySegment
         }
     }
@@ -350,9 +364,9 @@ internal class PulseMixer private constructor(
             StreamDirection.PLAYBACK -> "pa_context_set_default_sink"
             StreamDirection.CAPTURE -> "pa_context_set_default_source"
         }
-        return awaitControl { call ->
+        return awaitControl { call, token ->
             lib.handle(symbol).invokeExact(
-                pulse.context, call.allocateUtf8(device.value), successStub, MemorySegment.NULL,
+                pulse.context, call.allocateUtf8(device.value), successStub, token,
             ) as MemorySegment
         }
     }
@@ -364,7 +378,7 @@ internal class PulseMixer private constructor(
                 collectedCards.clear()
                 cardsComplete = false
                 val op = lib.handle("pa_context_get_card_info_list")
-                    .invokeExact(pulse.context, cardStub, MemorySegment.NULL) as MemorySegment
+                    .invokeExact(pulse.context, cardStub, beginRoundTrip()) as MemorySegment
                 if (op.address() == 0L) return@locked emptyList()
                 pulse.releaseOperation(op)
                 if (!awaitFlag { cardsComplete }) return@locked emptyList()
@@ -379,10 +393,10 @@ internal class PulseMixer private constructor(
         // remembered from a previous call, because the user may have changed it
         // themselves since this process last looked.
         rememberCardProfile(card)
-        return awaitControl { call ->
+        return awaitControl { call, token ->
             lib.handle("pa_context_set_card_profile_by_name").invokeExact(
                 pulse.context, call.allocateUtf8(card.value), call.allocateUtf8(profile),
-                successStub, MemorySegment.NULL,
+                successStub, token,
             ) as MemorySegment
         }
     }
@@ -395,10 +409,10 @@ internal class PulseMixer private constructor(
             StreamDirection.PLAYBACK -> "pa_context_set_sink_port_by_name"
             StreamDirection.CAPTURE -> "pa_context_set_source_port_by_name"
         }
-        return awaitControl { call ->
+        return awaitControl { call, token ->
             lib.handle(symbol).invokeExact(
                 pulse.context, call.allocateUtf8(device.value), call.allocateUtf8(port),
-                successStub, MemorySegment.NULL,
+                successStub, token,
             ) as MemorySegment
         }
     }
@@ -536,12 +550,12 @@ internal class PulseMixer private constructor(
         return roundTrip.withLock {
             monitorName = null
             pulse.locked {
-                sinkLookupComplete = false
+                deviceLookupComplete = false
                 val op = lib.handle("pa_context_get_sink_info_by_index")
-                    .invokeExact(pulse.context, sinkIndex, monitorStub, MemorySegment.NULL) as MemorySegment
+                    .invokeExact(pulse.context, sinkIndex, monitorStub, beginRoundTrip()) as MemorySegment
                 if (op.address() == 0L) return@locked
                 pulse.releaseOperation(op)
-                awaitFlag { sinkLookupComplete }
+                awaitFlag { deviceLookupComplete }
             }
             monitorName
         }
@@ -554,10 +568,11 @@ internal class PulseMixer private constructor(
     }
 
     /** Reads only the monitor source name. The device list has its own callback. */
-    fun onMonitorSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+    fun onMonitorSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, userData: MemorySegment) {
         runCatching {
+            if (!ours(userData)) return@runCatching
             if (eol != 0) {
-                sinkLookupComplete = true
+                deviceLookupComplete = true
                 pulse.signal()
                 return@runCatching
             }
@@ -597,10 +612,10 @@ internal class PulseMixer private constructor(
         if (profiles.isEmpty()) return
         profiles.forEach { (card, profile) ->
             runCatching {
-                awaitControl { call ->
+                awaitControl { call, token ->
                     lib.handle("pa_context_set_card_profile_by_name").invokeExact(
                         pulse.context, call.allocateUtf8(card), call.allocateUtf8(profile),
-                        successStub, MemorySegment.NULL,
+                        successStub, token,
                     ) as MemorySegment
                 }
             }.onFailure { log.warn("could not put card {} back on {}: {}", card, profile, it.message) }
@@ -622,10 +637,10 @@ internal class PulseMixer private constructor(
                 StreamDirection.CAPTURE -> "pa_context_set_source_port_by_name"
             }
             runCatching {
-                awaitControl { call ->
+                awaitControl { call, token ->
                     lib.handle(symbol).invokeExact(
                         pulse.context, call.allocateUtf8(name), call.allocateUtf8(port),
-                        successStub, MemorySegment.NULL,
+                        successStub, token,
                     ) as MemorySegment
                 }
             }.onFailure { log.warn("could not put device {} back on port {}: {}", name, port, it.message) }
@@ -672,7 +687,7 @@ internal class PulseMixer private constructor(
                 loadPending = true
                 val op = lib.handle("pa_context_load_module").invokeExact(
                     pulse.context, call.allocateUtf8(module), call.allocateUtf8(argument),
-                    moduleIndexStub, MemorySegment.NULL,
+                    moduleIndexStub, beginRoundTrip(),
                 ) as MemorySegment
                 if (op.address() == 0L) {
                     loadPending = false
@@ -694,9 +709,9 @@ internal class PulseMixer private constructor(
         DeviceId(name)
     }
 
-    private fun unloadModule(index: Int): Boolean = awaitControl {
+    private fun unloadModule(index: Int): Boolean = awaitControl { _, token ->
         lib.handle("pa_context_unload_module").invokeExact(
-            pulse.context, index, successStub, MemorySegment.NULL,
+            pulse.context, index, successStub, token,
         ) as MemorySegment
     }
 
@@ -771,13 +786,13 @@ internal class PulseMixer private constructor(
             StreamDirection.PLAYBACK -> "pa_context_set_sink_volume_by_name"
             StreamDirection.CAPTURE -> "pa_context_set_source_volume_by_name"
         }
-        return awaitControl { call ->
+        return awaitControl { call, token ->
             val cvolume = call.allocate(PulseAbi.CVOLUME_SIZE, 4)
             val level = lib.handle("pa_sw_volume_from_linear")
                 .invokeExact(volume.coerceIn(0f, 1f).toDouble()) as Int
             lib.handle("pa_cvolume_set").invokeExact(cvolume, channels, level) as MemorySegment
             lib.handle(symbol).invokeExact(
-                pulse.context, call.allocateUtf8(device.value), cvolume, successStub, MemorySegment.NULL,
+                pulse.context, call.allocateUtf8(device.value), cvolume, successStub, token,
             ) as MemorySegment
         }
     }
@@ -787,10 +802,10 @@ internal class PulseMixer private constructor(
             StreamDirection.PLAYBACK -> "pa_context_set_sink_mute_by_name"
             StreamDirection.CAPTURE -> "pa_context_set_source_mute_by_name"
         }
-        return awaitControl { call ->
+        return awaitControl { call, token ->
             lib.handle(symbol).invokeExact(
                 pulse.context, call.allocateUtf8(device.value), if (muted) 1 else 0,
-                successStub, MemorySegment.NULL,
+                successStub, token,
             ) as MemorySegment
         }
     }
@@ -835,13 +850,13 @@ internal class PulseMixer private constructor(
             StreamDirection.PLAYBACK -> "pa_context_set_sink_input_volume"
             StreamDirection.CAPTURE -> "pa_context_set_source_output_volume"
         }
-        return awaitControl { call ->
+        return awaitControl { call, token ->
             val cvolume = call.allocate(PulseAbi.CVOLUME_SIZE, 4)
             val level = lib.handle("pa_sw_volume_from_linear")
                 .invokeExact(volume.coerceIn(0f, 1f).toDouble()) as Int
             lib.handle("pa_cvolume_set").invokeExact(cvolume, channels, level) as MemorySegment
             lib.handle(symbol).invokeExact(
-                pulse.context, handle.index, cvolume, successStub, MemorySegment.NULL,
+                pulse.context, handle.index, cvolume, successStub, token,
             ) as MemorySegment
         }
     }
@@ -851,9 +866,9 @@ internal class PulseMixer private constructor(
             StreamDirection.PLAYBACK -> "pa_context_set_sink_input_mute"
             StreamDirection.CAPTURE -> "pa_context_set_source_output_mute"
         }
-        return awaitControl {
+        return awaitControl { _, token ->
             lib.handle(symbol).invokeExact(
-                pulse.context, handle.index, if (muted) 1 else 0, successStub, MemorySegment.NULL,
+                pulse.context, handle.index, if (muted) 1 else 0, successStub, token,
             ) as MemorySegment
         }
     }
@@ -867,12 +882,12 @@ internal class PulseMixer private constructor(
      * the application closes mid-drag can only be drawn on top of the real
      * answer.
      */
-    private fun awaitControl(issue: (Arena) -> MemorySegment): Boolean = roundTrip.withLock {
+    private fun awaitControl(issue: (Arena, MemorySegment) -> MemorySegment): Boolean = roundTrip.withLock {
         pulse.locked {
             Arena.ofConfined().use { call ->
                 controlSuccess = false
                 controlPending = true
-                val op = runCatching { issue(call) }.getOrElse {
+                val op = runCatching { issue(call, beginRoundTrip()) }.getOrElse {
                     controlPending = false
                     throw it
                 }
@@ -911,7 +926,7 @@ internal class PulseMixer private constructor(
         runCatching {
             // A reply to a request nobody is waiting for any more. Answering it
             // would end the round trip that is waiting now.
-            if (userData.address() != currentGeneration) return@runCatching
+            if (!ours(userData)) return@runCatching
             if (eol != 0) {
                 rowsComplete = true
                 pulse.signal()
@@ -948,7 +963,7 @@ internal class PulseMixer private constructor(
      */
     fun onSourceOutput(unusedContext: MemorySegment, info: MemorySegment, eol: Int, userData: MemorySegment) {
         runCatching {
-            if (userData.address() != currentGeneration) return@runCatching
+            if (!ours(userData)) return@runCatching
             if (eol != 0) {
                 rowsComplete = true
                 pulse.signal()
@@ -982,10 +997,11 @@ internal class PulseMixer private constructor(
         }.onFailure { log.warn("source output callback threw: {}", it.message) }
     }
 
-    fun onSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+    fun onSink(unusedContext: MemorySegment, info: MemorySegment, eol: Int, userData: MemorySegment) {
         runCatching {
+            if (!ours(userData)) return@runCatching
             if (eol != 0) {
-                sinkLookupComplete = true
+                deviceLookupComplete = true
                 pulse.signal()
                 return@runCatching
             }
@@ -1004,10 +1020,11 @@ internal class PulseMixer private constructor(
     }
 
     /** The capture device list, read only for the names a row shows. */
-    fun onSource(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+    fun onSource(unusedContext: MemorySegment, info: MemorySegment, eol: Int, userData: MemorySegment) {
         runCatching {
+            if (!ours(userData)) return@runCatching
             if (eol != 0) {
-                sinkLookupComplete = true
+                deviceLookupComplete = true
                 pulse.signal()
                 return@runCatching
             }
@@ -1022,8 +1039,9 @@ internal class PulseMixer private constructor(
         }.onFailure { log.warn("source callback threw: {}", it.message) }
     }
 
-    fun onCard(unusedContext: MemorySegment, info: MemorySegment, eol: Int, unusedUserData: MemorySegment) {
+    fun onCard(unusedContext: MemorySegment, info: MemorySegment, eol: Int, userData: MemorySegment) {
         runCatching {
+            if (!ours(userData)) return@runCatching
             if (eol != 0) {
                 cardsComplete = true
                 pulse.signal()
@@ -1034,16 +1052,18 @@ internal class PulseMixer private constructor(
     }
 
     /** The module index a load produced, or PA_INVALID_INDEX when it failed. */
-    fun onModuleIndex(unusedContext: MemorySegment, index: Int, unusedUserData: MemorySegment) {
+    fun onModuleIndex(unusedContext: MemorySegment, index: Int, userData: MemorySegment) {
         runCatching {
+            if (!ours(userData)) return@runCatching
             loadedModuleIndex = index
             loadPending = false
             pulse.signal()
         }
     }
 
-    fun onControlSuccess(unusedContext: MemorySegment, success: Int, unusedUserData: MemorySegment) {
+    fun onControlSuccess(unusedContext: MemorySegment, success: Int, userData: MemorySegment) {
         runCatching {
+            if (!ours(userData)) return@runCatching
             controlSuccess = success != 0
             controlPending = false
             pulse.signal()
@@ -1148,6 +1168,27 @@ internal class PulseMixer private constructor(
     private fun roleOf(wireName: String?): MediaRole? =
         wireName?.lowercase()?.let { name -> MediaRole.entries.firstOrNull { it.wireName == name } }
 
+    /**
+     * Stamp the round trip about to be issued, and hand back the token it
+     * travels as. The caller holds [roundTrip] and the mainloop lock.
+     *
+     * Counted from one, so the token is never the null pointer a caller that
+     * forgot to pass it would send.
+     */
+    private fun beginRoundTrip(): MemorySegment {
+        currentGeneration = generation.incrementAndGet()
+        return MemorySegment.ofAddress(currentGeneration)
+    }
+
+    /**
+     * Whether a reply belongs to the round trip now waiting.
+     *
+     * False for a reply to one that was abandoned, which is the whole of the
+     * guard: the server finishes an operation whether or not anybody is still
+     * listening, and answering with it would end somebody else's wait.
+     */
+    private fun ours(userData: MemorySegment): Boolean = userData.address() == currentGeneration
+
     private inline fun awaitFlag(done: () -> Boolean): Boolean {
         val deadline = System.nanoTime() + INTROSPECT_TIMEOUT_NANOS
         while (!done()) {
@@ -1172,12 +1213,12 @@ internal class PulseMixer private constructor(
             StreamDirection.CAPTURE -> sourceStub
         }
         pulse.locked {
-            sinkLookupComplete = false
+            deviceLookupComplete = false
             val op = lib.handle(symbol)
-                .invokeExact(pulse.context, index, stub, MemorySegment.NULL) as MemorySegment
+                .invokeExact(pulse.context, index, stub, beginRoundTrip()) as MemorySegment
             if (op.address() == 0L) return@locked
             pulse.releaseOperation(op)
-            awaitFlag { sinkLookupComplete }
+            awaitFlag { deviceLookupComplete }
         }
     }
 
@@ -1195,12 +1236,12 @@ internal class PulseMixer private constructor(
                 "pa_context_get_source_info_list" to sourceStub,
             ).forEach { (symbol, stub) ->
                 pulse.locked {
-                    sinkLookupComplete = false
+                    deviceLookupComplete = false
                     val op = lib.handle(symbol)
-                        .invokeExact(pulse.context, stub, MemorySegment.NULL) as MemorySegment
+                        .invokeExact(pulse.context, stub, beginRoundTrip()) as MemorySegment
                     if (op.address() == 0L) return@locked
                     pulse.releaseOperation(op)
-                    awaitFlag { sinkLookupComplete }
+                    awaitFlag { deviceLookupComplete }
                 }
             }
         }
