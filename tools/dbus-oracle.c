@@ -21,8 +21,10 @@
  */
 
 #include <dbus/dbus.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/eventfd.h>
 
 #define SECTION(name) printf("\n== %s ==\n", name)
 
@@ -101,6 +103,24 @@ int main(void) {
     SECTION("timeouts");
     P(DBUS_TIMEOUT_USE_DEFAULT);
     P(DBUS_TIMEOUT_INFINITE);
+
+    /* What the loop waits on. dbus_connection_read_write blocks on the socket
+     * and nothing can break it early, so a caller that queues work waits out
+     * the whole interval. Waiting on the bus descriptor and one of our own is
+     * what removes that, and these are the numbers that takes. */
+    SECTION("the loop's own wait");
+    P(sizeof(struct pollfd));
+    P(offsetof(struct pollfd, fd));
+    P(offsetof(struct pollfd, events));
+    P(offsetof(struct pollfd, revents));
+    P(sizeof(((struct pollfd *)0)->events));
+    P(POLLIN);
+    P(POLLERR);
+    P(POLLHUP);
+    P(POLLNVAL);
+    P(EFD_CLOEXEC);
+    P(EFD_NONBLOCK);
+    P(sizeof(eventfd_t));
 
     return 0;
 }
