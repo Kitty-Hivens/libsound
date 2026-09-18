@@ -199,6 +199,30 @@ takes the process with it a moment later, and no runner has a keyboard. On macOS
 it is also the pointed version of the question, because what the command centre
 was holding is a block that lived in memory the close has just released.
 
+## How long the session takes to answer
+
+```
+./gradlew :libsound-session:classes
+tools/mpris-latency/run.sh
+```
+
+A suite says the message was well formed. It says nothing about when it left,
+and that is the half a person feels: a session that answers in a hundred
+milliseconds and one that answers in one are both correct, and only one of them
+is a player somebody wants on their desktop.
+
+The stand starts a bus of its own, publishes into it, watches the signals arrive
+through `dbus-monitor` and prints what each path cost. Nothing reaches the
+machine's own bus, so it is safe to run while you are using the desktop.
+
+Worth running before and after anything in `libsound-dbus` or
+`libsound-session`. The numbers to compare against, on the loop that waits on
+the bus rather than on a clock: about a millisecond from `publish` to the signal
+reaching another client, about a millisecond for one command, and tens of
+milliseconds for `players()` with three players on the bus. Tens of milliseconds
+for a single publish means the wait fell back to its timed form, and that is the
+finding.
+
 ## If it will not start at all
 
 - `error: invalid source release: 22` or similar means the JDK is too old.
