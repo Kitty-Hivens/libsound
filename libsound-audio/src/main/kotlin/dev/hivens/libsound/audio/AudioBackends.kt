@@ -32,10 +32,19 @@ import org.slf4j.LoggerFactory
  * positions a decoder sends and no 64-bit float at all, so four of the forty
  * layouts FFmpeg names came back as the machine being unable to play the file.
  *
- * The second rung stays, and stays supported, for two machines. One runs real
- * PulseAudio, where the native path has no graph to reach. The other runs
- * PipeWire without `pipewire-pulse`, which is the machine that would otherwise
- * fall all the way to JavaSound.
+ * The second rung stays, and stays supported, for the machine running real
+ * PulseAudio, where the native path has no graph to reach. A machine running
+ * PipeWire without `pipewire-pulse` is the other way round and used to be listed
+ * here as though it were the same case: there is no PulseAudio socket for
+ * libpulse to connect to, so the rung that keeps that machine off JavaSound is
+ * the native one.
+ *
+ * The rung below is not only a fallback, and on an ordinary desktop it is not
+ * one at all. `VolumeMixers` puts libpulse first rather than second, because
+ * cards, profiles and ports exist on that mixer and not on the native one, so a
+ * machine with `pipewire-pulse` plays through the graph and reads its mixer
+ * through the shim. See that object for the ordering and why it is the opposite
+ * of this one.
  *
  * The two report the same capabilities on the same graph but one, which is
  * [Capability.SAMPLE_CACHE]: uploading a sound the server answers to by name is
