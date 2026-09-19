@@ -48,6 +48,9 @@ internal class JavaSoundSource(
     @Volatile
     private var closed = false
 
+    // Written by whoever calls setVolume and read by volume() and
+    // applyVolume, which need not be the same thread.
+    @Volatile
     private var volumeValue = 1f
 
     override val capabilities: Capabilities = CAPABILITIES
