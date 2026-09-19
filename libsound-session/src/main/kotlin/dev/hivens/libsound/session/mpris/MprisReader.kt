@@ -649,7 +649,18 @@ internal class MprisReader private constructor(
             bus.start()
             // Everything a player says about itself, plus the bus telling us
             // when one arrives or leaves.
-            bus.addMatch("type='signal',interface='${Mpris.PROPERTIES_INTERFACE}',member='PropertiesChanged'")
+            // Narrowed by path, which is what keeps this connection from being
+            // woken by every property change on the bus. The specification
+            // fixes one object path for every player, so nothing is lost, and
+            // what is saved is a wakeup and an arena for each of logind,
+            // NetworkManager, UPower and whatever else is talking. The
+            // interface is deliberately not matched on: a signal names the
+            // interface whose properties moved in its first argument, and this
+            // reader wants two of them.
+            bus.addMatch(
+                "type='signal',interface='${Mpris.PROPERTIES_INTERFACE}'," +
+                    "member='PropertiesChanged',path='${Mpris.OBJECT_PATH}'",
+            )
             bus.addMatch("type='signal',interface='${Mpris.PLAYER_INTERFACE}',member='Seeked'")
             bus.addMatch(
                 "type='signal',sender='$DBUS_SERVICE',interface='$DBUS_SERVICE',member='NameOwnerChanged'",
