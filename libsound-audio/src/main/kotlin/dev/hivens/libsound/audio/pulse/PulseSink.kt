@@ -258,9 +258,27 @@ internal class PulseSink(
             propSet(setup, proplist, PulseAbi.PROP_APPLICATION_NAME, config.applicationName)
             config.applicationId?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ID, it) }
             config.iconName?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ICON_NAME, it) }
+            // Half of the fix. The other half is the stream name below, which
+            // libpulse writes over this property rather than beside it: setting
+            // it here and then passing a name would leave both lines of the row
+            // saying the application, which is what they said before either
+            // half existed.
+            config.mediaName?.let { propSet(setup, proplist, PulseAbi.PROP_MEDIA_NAME, it) }
             propSet(setup, proplist, PulseAbi.PROP_MEDIA_ROLE, config.mediaRole.wireName)
 
-            val streamName = setup.allocateUtf8(config.applicationName)
+            // No stream name where the caller gave a media name, and that is the
+            // whole of it. pa_stream_new_with_proplist writes its name argument
+            // over PA_PROP_MEDIA_NAME rather than beside it, so a name passed
+            // here replaces the property set above and the row says the
+            // application twice again. One of the two has to be there: asked of
+            // libpulse rather than assumed, a stream given neither comes back
+            // NULL with an invalid argument, which the open above already
+            // reports. So this is a choice between the two and not a removal.
+            val streamName = if (config.mediaName == null) {
+                setup.allocateUtf8(config.applicationName)
+            } else {
+                MemorySegment.NULL
+            }
             val deviceName = config.device?.let { setup.allocateUtf8(it.value) } ?: MemorySegment.NULL
 
             pulse.lock()
