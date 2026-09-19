@@ -11,9 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   mixer row, and of the row a desktop's privacy indicator draws. The reading
   side has carried it as `AudioStream.mediaName` since the mixer existed and
   nothing could set it on a stream of our own, so both lines of our own row came
-  from `applicationName` and a mixer drew the same word twice. On the libpulse
-  path it was not even our doing: libpulse fills `media.name` from the stream
-  name when the property list carries none.
+  from `applicationName` and a mixer drew the same word twice.
+
+  Carrying it on the libpulse path took both halves of one fix. Setting the
+  property is not enough, because `pa_stream_new_with_proplist` writes its name
+  argument over `media.name` rather than beside it: a stream that carries a
+  media name therefore passes no stream name at all. A stream given neither
+  comes back null with an invalid argument, so the two are a choice and not an
+  option.
 
   Both Linux paths send it. Windows drops it, because the place its mixer
   reserves is the application and what is playing belongs to the transport
