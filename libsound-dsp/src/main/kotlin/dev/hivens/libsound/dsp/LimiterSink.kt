@@ -33,11 +33,27 @@ public class LimiterSink(
 ) : ProcessingSink(inner) {
 
     private val threshold: Float = 10.0.pow(thresholdDb / 20).toFloat()
+
+    /** Worked out at [open] and read by whichever thread writes audio. */
+    @Volatile
     private var releaseCoefficient: Float = 0f
+
+    /** The working value, touched only by the thread inside [process]. */
     private var gain: Float = 1f
 
+    /**
+     * What [reduction] answers, published once per buffer.
+     *
+     * [gain] is read and written for every frame, so making that field volatile
+     * would put a barrier in the inner loop of a filter to serve a number
+     * nobody reads at that rate. A meter drawing this wants the value as of the
+     * last buffer, which is what it gets.
+     */
+    @Volatile
+    private var published: Float = 1f
+
     /** The gain reduction currently applied, 1 while nothing is being held down. */
-    public val reduction: Float get() = gain
+    public val reduction: Float get() = published
 
     init {
         require(thresholdDb <= 0.0) { "thresholdDb is below full scale, so it must not be positive" }
@@ -54,9 +70,14 @@ public class LimiterSink(
 
     override fun reset() {
         gain = 1f
+        published = 1f
     }
 
     override fun process(samples: FloatArray, frames: Int, channels: Int) {
+        // Both fields into locals before the loop. The release is volatile and
+        // the gain is not, and neither wants reading from memory once a frame.
+        var current = gain
+        val release = releaseCoefficient
         for (frame in 0 until frames) {
             val base = frame * channels
             var peak = 0f
@@ -67,13 +88,15 @@ public class LimiterSink(
             // Instantaneous when it has to come down, smoothed on the way back:
             // the first is what makes an overshoot impossible, the second is
             // what keeps one loud frame from ducking the next second of audio.
-            val wanted = if (peak * gain > threshold) threshold / peak else 1f
-            gain = if (wanted < gain) wanted else wanted + (gain - wanted) * releaseCoefficient
-            if (gain != 1f) {
+            val wanted = if (peak * current > threshold) threshold / peak else 1f
+            current = if (wanted < current) wanted else wanted + (current - wanted) * release
+            if (current != 1f) {
                 for (channel in 0 until channels) {
-                    samples[base + channel] *= gain
+                    samples[base + channel] *= current
                 }
             }
         }
+        gain = current
+        published = current
     }
 }

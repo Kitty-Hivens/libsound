@@ -26,10 +26,22 @@ public class BiquadSink(
     private val design: (AudioFormat) -> Biquad,
 ) : ProcessingSink(inner) {
 
+    // Every one of these is written by [open] and read by whichever thread
+    // writes audio, which is not required to be the same one. A volatile write
+    // of the reference is also what publishes the array it points at.
+    @Volatile
     private var coefficients: Biquad? = null
+
+    @Volatile
     private var x1: FloatArray = FloatArray(0)
+
+    @Volatile
     private var x2: FloatArray = FloatArray(0)
+
+    @Volatile
     private var y1: FloatArray = FloatArray(0)
+
+    @Volatile
     private var y2: FloatArray = FloatArray(0)
 
     /** The filter currently running, or null before the first [open]. */
@@ -54,19 +66,25 @@ public class BiquadSink(
 
     override fun process(samples: FloatArray, frames: Int, channels: Int) {
         val filter = coefficients ?: return
-        if (x1.size < channels) return
+        // Read once rather than per sample. Each is a volatile field and the
+        // inner loop touches all four for every channel of every frame.
+        val inputOne = x1
+        val inputTwo = x2
+        val outputOne = y1
+        val outputTwo = y2
+        if (inputOne.size < channels) return
         // Direct form I, which keeps the input and output histories apart and
         // is the shape the coefficients above are written for.
         for (frame in 0 until frames) {
             val base = frame * channels
             for (channel in 0 until channels) {
                 val x0 = samples[base + channel]
-                val y0 = filter.b0 * x0 + filter.b1 * x1[channel] + filter.b2 * x2[channel] -
-                    filter.a1 * y1[channel] - filter.a2 * y2[channel]
-                x2[channel] = x1[channel]
-                x1[channel] = x0
-                y2[channel] = y1[channel]
-                y1[channel] = y0
+                val y0 = filter.b0 * x0 + filter.b1 * inputOne[channel] + filter.b2 * inputTwo[channel] -
+                    filter.a1 * outputOne[channel] - filter.a2 * outputTwo[channel]
+                inputTwo[channel] = inputOne[channel]
+                inputOne[channel] = x0
+                outputTwo[channel] = outputOne[channel]
+                outputOne[channel] = y0
                 samples[base + channel] = y0
             }
         }
