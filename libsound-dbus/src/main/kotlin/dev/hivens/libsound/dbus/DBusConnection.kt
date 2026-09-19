@@ -22,9 +22,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the poll out, so a property query took about a second to answer and opening a
  * menu took two.
  *
- * So polling and sending share this thread, and the queue is drained between
- * poll iterations. The poll interval becomes the worst-case latency for
- * something the caller pushes, which is why it is short.
+ * So polling and sending share this thread, and the queues are drained around
+ * the wait.
+ *
+ * ## The wait is on the bus, not on a clock
+ *
+ * `dbus_connection_read_write` blocks for the whole interval it is given and
+ * nothing can break it early, so for as long as the loop waited that way, the
+ * interval was the latency of everything a caller queued: measured at 3 to 99 ms
+ * for a published signal, and at one interval per round trip for a read of
+ * another player, which is a second for three of them.
+ *
+ * [LoopWakeup] is what removes that. The loop waits on the connection's own
+ * descriptor beside one of ours, [submit] writes to ours, and the interval that
+ * remains is a heartbeat. Where the wait cannot be built -- a transport with no
+ * descriptor, a libc without `eventfd` -- the timed `read_write` stays, slower
+ * and correct.
  *
  * ## Every message crosses the socket on this thread
  *
@@ -77,12 +90,28 @@ class DBusConnection private constructor(
 
     private val ioThread = Thread(::run, "libsound-dbus-$threadLabel").apply { isDaemon = true }
 
+    /**
+     * What ends the loop's wait, or null where one could not be built.
+     *
+     * Null is the old behaviour rather than a failure: the loop falls back to a
+     * timed `read_write` and everything still works, at the latency that cost.
+     */
+    private val wakeup: LoopWakeup? = LoopWakeup.openOrNull(symbols, connection)
+
     val isOpen: Boolean get() = open.get()
 
-    /** Queue [into], or answer false because the connection is closing. */
+    /**
+     * Queue [into], or answer false because the connection is closing.
+     *
+     * The wake is inside the monitor rather than after it, which is what makes
+     * [close] able to reason about it: close flips the flag under the same
+     * monitor, so no wake can be in flight once it has, and the descriptor is
+     * safe to give back when the thread has stopped.
+     */
     private fun <T> submit(into: LinkedBlockingQueue<T>, item: T): Boolean = synchronized(submission) {
         if (!open.get()) return false
         into.put(item)
+        wakeup?.wake()
         true
     }
 
@@ -302,6 +331,9 @@ class DBusConnection private constructor(
         // refused. Outside it, a message could land after the drain and stay
         // there, unsent and unreffed, with its caller waiting out the timeout.
         if (!synchronized(submission) { open.compareAndSet(true, false) }) return
+        // The flag alone is read between waits, so without this the thread sits
+        // out whatever is left of the heartbeat before it notices.
+        wakeup?.wake()
         ioThread.join(JOIN_TIMEOUT_MS)
 
         // Anything the loop enqueued after its last drain, unreffed rather than
@@ -336,12 +368,16 @@ class DBusConnection private constructor(
             .onFailure { log.warn("dbus_connection_close threw on shutdown: {}", it.message) }
         runCatching { symbols.handle("dbus_connection_unref").invokeExact(connection) as Unit }
             .onFailure { log.warn("dbus_connection_unref threw on shutdown: {}", it.message) }
+        // After the thread is known to have stopped, like everything else below
+        // the guard above: the descriptor is what that thread waits on.
+        wakeup?.close()
         symbols.close()
     }
 
     // -- the one thread ------------------------------------------------------
 
     private fun run() {
+        val waiting = wakeup
         val readWrite = symbols.handle("dbus_connection_read_write")
         val popMessage = symbols.handle("dbus_connection_pop_message")
         val sendMessage = symbols.handle("dbus_connection_send")
@@ -361,7 +397,14 @@ class DBusConnection private constructor(
                 // goes out within one poll rather than waiting on the next.
                 drainOutgoing(sendMessage, flush, unref)
 
-                val live = readWrite.invokeExact(connection, POLL_INTERVAL_MS) as Int
+                // Where the wait belongs to us the iteration is non-blocking:
+                // it parses whatever has arrived and writes whatever is queued,
+                // and the waiting happens below, where queueing can end it.
+                // Without one this is the wait, and the interval is the price.
+                val live = readWrite.invokeExact(
+                    connection,
+                    if (waiting == null) POLL_INTERVAL_MS else 0,
+                ) as Int
                 if (live == 0) {
                     // FALSE means the connection disconnected. With
                     // exit_on_disconnect off it no longer _exit()s us, but
@@ -380,6 +423,14 @@ class DBusConnection private constructor(
                     } finally {
                         runCatching { unref.invokeExact(message) as Unit }
                     }
+                }
+                // Nothing left on this pass, so wait for the bus or for somebody
+                // to queue something. The check is not what closes the race: a
+                // caller that queued between the drain above and here has
+                // already written to the descriptor, so the wait returns at
+                // once. It saves the syscall in the ordinary case.
+                if (waiting != null && open.get() && tasks.isEmpty() && outgoing.isEmpty()) {
+                    waiting.await(HEARTBEAT_MS)
                 }
             } catch (t: Throwable) {
                 log.warn("D-Bus loop iteration threw: {}", t.message)
@@ -430,11 +481,20 @@ class DBusConnection private constructor(
         private val log = LoggerFactory.getLogger("libsound.DBus")
 
         /**
-         * Worst-case latency for an outgoing message, because the drain happens
-         * between polls. 100 ms is what libtray settled on after measuring the
-         * two-thread design it replaced.
+         * The fallback wait, for a connection [LoopWakeup] could not be built
+         * for. There it is still the worst-case latency of anything a caller
+         * queues, which is what 100 ms was chosen against.
          */
         private const val POLL_INTERVAL_MS = 100
+
+        /**
+         * How long the loop sleeps when it has a descriptor to wake it.
+         *
+         * A heartbeat rather than a latency: the bus wakes it, a queued message
+         * wakes it, and [close] wakes it, so nothing normally waits this out. It
+         * is long because every reason to come round sooner already has one.
+         */
+        private const val HEARTBEAT_MS = 1_000
 
         private const val DEAD_BUS_SLEEP_MS = 1_000L
         private const val ERROR_BACKOFF_MS = 200L
