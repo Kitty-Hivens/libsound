@@ -85,6 +85,7 @@ public object VolumeMixers {
      */
     public fun open(applicationName: String, needs: Set<Capability>): VolumeMixer? {
         val osName = System.getProperty("os.name", "").lowercase()
+        forced()?.let { return open(it, applicationName, needs) }
         val mixer = chain(osName, applicationName).firstNotNullOfOrNull { rung ->
             val candidate = rung() ?: return@firstNotNullOfOrNull null
             val missing = needs.filterNot { it in candidate.capabilities }
@@ -103,6 +104,60 @@ public object VolumeMixers {
         }
         return mixer
     }
+
+    /**
+     * Which mixer a run named, or null for the ordinary selection above.
+     *
+     * `-Dlibsound.mixer=pipewire` and its siblings, and the reason is the one
+     * [AudioBackends] gives for its own pin plus one this side has that the
+     * other does not. The native rung's capabilities are a subset of the
+     * libpulse rung's, and the libpulse rung opens on every machine carrying
+     * `pipewire-pulse`, so the selection above can never reach the native mixer
+     * on an ordinary desktop. Without a way to say so, that mixer cannot be
+     * compared against the one beside it, cannot be exercised outside its own
+     * suite, and cannot be chosen by a consumer who knows the trade and wants
+     * it anyway.
+     */
+    private fun forced(): String? =
+        System.getProperty(MIXER_PROPERTY)?.lowercase()?.takeIf { it.isNotBlank() }
+
+    /**
+     * The named rung, and nothing else.
+     *
+     * No fallback, for the reason the backend's pin gives: a run that named a
+     * mixer and quietly got another one measured something else and did not say
+     * so. The pin also wins over [needs], with the disagreement logged, because
+     * losing to a capability request is the one thing a pin exists to prevent.
+     *
+     * @throws IllegalArgumentException where the property names no mixer, which
+     *   is a mistake worth failing on rather than ignoring.
+     */
+    private fun open(named: String, applicationName: String, needs: Set<Capability>): VolumeMixer? {
+        val mixer = when (named) {
+            "pulse" -> PulseMixer.openOrNull(applicationName)
+            "pipewire" -> PipeWireMixer.openOrNull(applicationName)
+            "wasapi" -> WasapiMixer.openOrNull()
+            else -> throw IllegalArgumentException(
+                "$MIXER_PROPERTY=$named names no mixer. One of: pulse, pipewire, wasapi.",
+            )
+        }
+        if (mixer == null) {
+            log.warn("{}={} was asked for and is not available here", MIXER_PROPERTY, named)
+            return null
+        }
+        val missing = needs.filterNot { it in mixer.capabilities }
+        if (missing.isNotEmpty()) {
+            log.warn(
+                "{}={} was asked for and does not offer {}; the pin wins",
+                MIXER_PROPERTY, named, missing.joinToString(", ") { it.name },
+            )
+        }
+        log.info("mixer: {} (asked for by {})", mixer.capabilities, MIXER_PROPERTY)
+        return mixer
+    }
+
+    /** What a run names to pin one mixer, for the reasons in [forced]. */
+    private const val MIXER_PROPERTY = "libsound.mixer"
 
     /**
      * What this platform offers, widest first.
