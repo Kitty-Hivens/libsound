@@ -197,9 +197,22 @@ internal class PulseSource(
             propSet(setup, proplist, PulseAbi.PROP_APPLICATION_NAME, config.applicationName)
             config.applicationId?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ID, it) }
             config.iconName?.let { propSet(setup, proplist, PulseAbi.PROP_APPLICATION_ICON_NAME, it) }
+            // The line a privacy indicator draws under the application's name.
+            // Half of the fix, like the playback side: the stream name below is
+            // written over this property rather than beside it, so a name
+            // passed there would leave the row saying the application twice and
+            // never saying what the microphone is open for.
+            config.mediaName?.let { propSet(setup, proplist, PulseAbi.PROP_MEDIA_NAME, it) }
             propSet(setup, proplist, PulseAbi.PROP_MEDIA_ROLE, config.mediaRole.wireName)
 
-            val streamName = setup.allocateUtf8(config.applicationName)
+            // None where the caller gave a media name, for the reason the
+            // playback side gives: the name argument is written over
+            // PA_PROP_MEDIA_NAME rather than beside it.
+            val streamName = if (config.mediaName == null) {
+                setup.allocateUtf8(config.applicationName)
+            } else {
+                MemorySegment.NULL
+            }
             // A monitor target decides the device: the audio wanted is on the
             // sink the target stream is playing to, so a device asked for
             // alongside it would be a contradiction rather than a preference.

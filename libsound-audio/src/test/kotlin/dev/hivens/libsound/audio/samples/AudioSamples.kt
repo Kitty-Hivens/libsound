@@ -55,6 +55,7 @@ internal object AudioSamples {
                     applicationName = "Example",
                     applicationId = "com.example.player",
                     iconName = "audio-x-generic",
+                    mediaName = "Bus Stop",
                     mediaRole = MediaRole.MUSIC,
                 ),
             )
@@ -203,6 +204,7 @@ internal object AudioSamples {
                 applicationName = "Example",
                 applicationId = "com.example.recorder",
                 iconName = "audio-input-microphone",
+                mediaName = "Voice memo",
             ),
         )
         source.use {
