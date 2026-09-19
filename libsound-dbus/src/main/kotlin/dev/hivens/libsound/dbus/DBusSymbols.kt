@@ -63,6 +63,9 @@ class DBusSymbols private constructor(
             // process when the session bus drops.
             Triple("dbus_connection_set_exit_on_disconnect", null, listOf(ADDR, I32)),
             Triple("dbus_connection_read_write", I32, listOf(ADDR, I32)),
+            // The descriptor underneath, so the loop can wait on the bus itself
+            // rather than on a clock. See LoopWakeup for what that is worth.
+            Triple("dbus_connection_get_unix_fd", I32, listOf(ADDR, ADDR)),
             Triple("dbus_connection_pop_message", ADDR, listOf(ADDR)),
             Triple("dbus_connection_send", I32, listOf(ADDR, ADDR, ADDR)),
             Triple("dbus_connection_send_with_reply_and_block", ADDR, listOf(ADDR, ADDR, I32, ADDR)),
