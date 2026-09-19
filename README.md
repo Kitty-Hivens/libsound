@@ -75,8 +75,10 @@ On the same graph the two report the same capabilities but one: the sample cache
 which is a feature of the PulseAudio protocol rather than of the graph.
 
 The native path is what `AudioBackends.open` returns on Linux, with libpulse
-below it for the machine running real PulseAudio and the one running PipeWire
-without `pipewire-pulse`. A consumer that needs the sample cache asks for it and
+below it for the machine running real PulseAudio, where there is no graph to
+reach. A machine running PipeWire without `pipewire-pulse` is the other way
+round: there is no PulseAudio socket for libpulse to connect to, and the native
+path is what keeps that machine off JavaSound. A consumer that needs the sample cache asks for it and
 gets the rung that has it, rather than losing it to a promotion:
 
 ```kotlin
@@ -261,7 +263,7 @@ something to depend on directly.
 |---|---|
 | Contracts and core | Done. Types, sink and session contracts, ring buffer, pull pump, fake backend, contract suite. |
 | Linux audio (PipeWire natively) | Done and exercised, and what `AudioBackends.open` returns on Linux. Streams in both directions on a `pw_stream`, a POD encoder and decoder checked against `spa_pod_builder`'s own bytes, a device list from the registry with each device's own volume, the default read out of the metadata object the session manager writes it into, and one application's output recordable on its own. Both contract suites pass against a live graph. |
-| Linux audio (libpulse) | Done and exercised, and the rung below. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. It reaches PulseAudio itself, and PipeWire on a machine that has no `pipewire-pulse`. |
+| Linux audio (libpulse) | Done and exercised, and the rung below. Named stream with a media role, per-stream volume, device enumeration and events, honest playhead. It reaches PulseAudio itself, and PipeWire through `pipewire-pulse`, which is also what the mixer talks to on an ordinary desktop. |
 | Linux mixer (PipeWire natively) | Done and exercised. Every stream in both directions with its volume, mute and device, moving one, each device's own volume and mute, the default, virtual devices laid out with the channel count they were asked for, several devices combined into one that plays to all of them, a level meter that records the row it is pointed at, and appear/change/depart events. Every setter waits for the graph's answer rather than for the request to go out. Cards, profiles and ports are absent: they are reachable on the graph and there is nowhere safe to exercise them, since the isolated server a suite runs against has no card by construction. |
 | Linux mixer (libpulse) | Done and exercised. Every stream on the machine, its volume, mute and device, with events, per-stream level meters -- and everything it changes put back. |
 | JavaSound fallback | Done and exercised, with its capability set stating exactly what it loses. |
