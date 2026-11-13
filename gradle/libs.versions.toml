@@ -22,7 +22,7 @@ kotest = "6.2.6"
 
 # Maven Central publishing (signing + Central Portal upload).
 mavenPublish = "0.37.0"
-dokka = "2.2.0"
+dokka = "2.3.0"
 
 [libraries]
 slf4j-api    = { group = "org.slf4j", name = "slf4j-api",    version.ref = "slf4j" }
