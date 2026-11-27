@@ -483,11 +483,25 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
       - uses: gradle/actions/setup-gradle@v6
 
+      # Wine from WineHQ rather than from the runner's distribution. The packaged
+      # one is whatever the image ships, so the version this row asserts against
+      # moved every time ubuntu-latest did: 9.0 enumerated no audio sessions at
+      # all, and 10.0 hands back three sessions of one process under one
+      # instance identifier, which Windows promises never happens. The stable
+      # branch changes only when WineHQ cuts a stable release, and that is a
+      # change somebody can see coming.
       - name: Wine, and a sound server for its WASAPI to sit on
         run: |
           sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/winehq-archive.key
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          sudo curl -fsSL -o "/etc/apt/sources.list.d/winehq-$codename.sources" \
+            "https://dl.winehq.org/wine-builds/ubuntu/dists/$codename/winehq-$codename.sources"
           sudo apt-get update
-          sudo apt-get install -y wine64 xvfb pulseaudio pulseaudio-utils
+          sudo apt-get install -y --install-recommends winehq-stable
+          sudo apt-get install -y xvfb pulseaudio pulseaudio-utils
           wine --version
           export XDG_RUNTIME_DIR=/tmp/libsound-runtime
           mkdir -p "$XDG_RUNTIME_DIR"
@@ -526,20 +540,20 @@ jobs:
           xvfb-run -a wine "$java_exe" --enable-native-access=ALL-UNNAMED \
             -cp "$classpath" dev.hivens.libsound.audio.smoke.SmokeCheckKt \
             < /dev/null 2>&1 | tee /tmp/smoke.log || true
-          # The verdict is the next step's, not this one's. The check exits
-          # non-zero when anything failed, including the wine gap this job
-          # knowingly tolerates -- and a wine that never started leaves a log
-          # with no backend line, which the next step catches anyway.
+          # The verdict is the next step's, not this one's, because the exit
+          # code alone cannot tell a WASAPI run from one that fell back to
+          # JavaSound. A wine that never started leaves a log with no backend
+          # line, which the next step catches as well.
 
       # The exit code alone would pass on a fallback. A machine where WASAPI
       # refuses to open still plays audio through JavaSound and still answers
       # every check correctly -- so a run that never touched the code this job
       # exists for would be exactly as green as one that did.
       #
-      # The two tolerated failures are named rather than counted. Ubuntu ships
-      # wine 9.0, whose IAudioSessionManager2 enumerates no sessions at all
-      # even with one of ours rendering; the same check passes on wine 11.14.
-      # So those two are a gap in the tool, and every other failure is ours.
+      # No failure is tolerated any more. Two mixer checks used to be, by name,
+      # because the packaged wine enumerated no sessions, so the session walk
+      # was the one part of the Windows mixer this row never saw run. Wine 11
+      # enumerates them, and from here a failure in that walk is ours.
       - name: It was WASAPI that ran, and not the fallback
         run: |
           echo "wine: $(wine --version)"
@@ -550,19 +564,15 @@ jobs:
 
           # tr -d '\r' because the check ran on a Windows JVM, which ends its
           # lines with CRLF. Without it every label carries a trailing carriage
-          # return and the exact-line match below can never succeed.
+          # return and the match below sees labels that never print.
           tr -d '\r' < /tmp/smoke.log | grep "^FAIL  " | sed 's/^FAIL  //' > /tmp/failed || true
-          unexpected=$(grep -vxF \
-            -e "the mixer lists at least one stream" \
-            -e "the mixer sees the stream this process just opened" \
-            /tmp/failed || true)
-          if [ -n "$unexpected" ]; then
-            echo "FAIL: checks failed that wine is expected to pass:"
-            echo "$unexpected"
+          if [ -s /tmp/failed ]; then
+            echo "FAIL: checks failed under wine:"
+            cat /tmp/failed
             exit 1
           fi
-          echo "WASAPI output path executed; session enumeration is unverified here"
-          echo "(wine 9.0 gap, not a claim about Windows -- see docs/TESTING.md)"
+          echo "WASAPI output path and session enumeration executed"
+          echo "(under wine, not a claim about hardware: see docs/TESTING.md)"
 
       # The sink contract, on the same Windows JVM, and the reason this step is
       # new rather than old: the suite is a JUnit class Gradle launches, Gradle
