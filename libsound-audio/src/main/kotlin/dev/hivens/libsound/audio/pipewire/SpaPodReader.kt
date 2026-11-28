@@ -146,6 +146,103 @@ internal object SpaPodReader {
         return found
     }
 
+    /** Takes the two numbers a profiler follower block is read for. */
+    fun interface FollowerSink {
+        /** [missedCycles] is the graph's 32-bit unsigned count, handed over as the bits it was written as. */
+        fun follower(node: Int, missedCycles: Int)
+    }
+
+    /**
+     * Every follower block of a profile event, as the node it describes and the
+     * cycles it missed, in the order the graph wrote them. Answers how many were
+     * handed to [sink].
+     *
+     * The same walk [structuredEntries] makes over the same two shapes, a struct
+     * of objects or one object, aimed at the one key and the two fields a block
+     * is read for. Nothing is built on the way: no entry, no list of fields and
+     * no boxed number. That is the whole reason it exists beside the general
+     * one. The graph sends this event once per cycle, which is hundreds of
+     * times a second at a short quantum, on the thread a sink's process
+     * callback shares a heap with, and the general walk turned every node in
+     * every cycle into a list of boxed fields of which two were read.
+     */
+    fun followers(pod: MemorySegment, sink: FollowerSink): Int {
+        if (pod.isNative && pod.address() == 0L) return 0
+        val header = view(pod, POD_HEADER) ?: return 0
+        val size = header.get(INT32, SpaAbi.POD_SIZE_OFFSET.toLong())
+        val type = header.get(INT32, SpaAbi.POD_TYPE_OFFSET.toLong())
+        if (size < 0 || size > MAX_POD_BYTES) return 0
+        if (type == SpaAbi.TYPE_OBJECT && size < SpaAbi.POD_OBJECT_BODY_SIZE) return 0
+        val declared = POD_HEADER + size
+        val end = if (pod.isNative) declared else minOf(declared, pod.byteSize().toInt())
+        val whole = view(pod, end) ?: return 0
+        if (type == SpaAbi.TYPE_OBJECT) return followersIn(whole, POD_HEADER, size, end, sink)
+        if (type != SpaAbi.TYPE_STRUCT) return 0
+        var handed = 0
+        var at = POD_HEADER
+        while (at + POD_HEADER <= end) {
+            val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
+            val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
+            val childBody = at + POD_HEADER
+            if (childSize < 0 || childSize > end - childBody) break
+            if (childType == SpaAbi.TYPE_OBJECT) handed += followersIn(whole, childBody, childSize, end, sink)
+            at = childBody + padded(childSize)
+        }
+        return handed
+    }
+
+    /** The follower blocks of one object, with the bounds [entriesAt] holds a property to. */
+    private fun followersIn(whole: MemorySegment, body: Int, size: Int, limit: Int, sink: FollowerSink): Int {
+        val end = minOf(body + size, limit)
+        var handed = 0
+        var at = body + SpaAbi.POD_OBJECT_BODY_SIZE
+        while (at + SpaAbi.POD_PROP_HEADER_SIZE + POD_HEADER <= end) {
+            val key = whole.get(INT32, at.toLong())
+            val value = at + SpaAbi.POD_PROP_HEADER_SIZE
+            val valueSize = whole.get(INT32, (value + SpaAbi.POD_SIZE_OFFSET).toLong())
+            val valueType = whole.get(INT32, (value + SpaAbi.POD_TYPE_OFFSET).toLong())
+            val valueBody = value + POD_HEADER
+            if (valueSize < 0 || valueSize > end - valueBody) break
+            if (key == SpaAbi.PROFILER_FOLLOWER_BLOCK && valueType == SpaAbi.TYPE_STRUCT &&
+                blockOf(whole, valueBody, valueSize, sink)
+            ) {
+                handed++
+            }
+            at = valueBody + padded(valueSize)
+        }
+        return handed
+    }
+
+    /**
+     * The first and the ninth field of one block, handed over if both are
+     * plain numbers. The fields between are walked past by their own declared
+     * sizes, which is what keeps the ninth where it belongs.
+     */
+    private fun blockOf(whole: MemorySegment, body: Int, size: Int, sink: FollowerSink): Boolean {
+        val limit = body + size
+        var at = body
+        var index = 0
+        var node = 0
+        while (at + POD_HEADER <= limit && index <= SpaAbi.PROFILER_BLOCK_XRUNS) {
+            val childSize = whole.get(INT32, (at + SpaAbi.POD_SIZE_OFFSET).toLong())
+            val childType = whole.get(INT32, (at + SpaAbi.POD_TYPE_OFFSET).toLong())
+            val childBody = at + POD_HEADER
+            if (childSize < 0 || childSize > limit - childBody) return false
+            val number = (childType == SpaAbi.TYPE_INT || childType == SpaAbi.TYPE_ID) && childSize >= Int.SIZE_BYTES
+            when (index) {
+                SpaAbi.PROFILER_BLOCK_ID -> if (number) node = whole.get(INT32, childBody.toLong()) else return false
+                SpaAbi.PROFILER_BLOCK_XRUNS -> {
+                    if (!number) return false
+                    sink.follower(node, whole.get(INT32, childBody.toLong()))
+                    return true
+                }
+            }
+            at = childBody + padded(childSize)
+            index++
+        }
+        return false
+    }
+
     /** A view of at least [bytes] bytes, or null where there are not that many. */
     private fun view(pod: MemorySegment, bytes: Int): MemorySegment? = when {
         pod.isNative -> pod.reinterpret(bytes.toLong())
@@ -294,6 +391,10 @@ internal object SpaPodReader {
     /** The same, over bytes already copied out of the graph. */
     fun structuredEntries(bytes: ByteArray): List<Pair<Int, Any>> =
         structuredEntries(MemorySegment.ofArray(bytes))
+
+    /** The same, over bytes already copied out of the graph. */
+    fun followers(bytes: ByteArray, sink: FollowerSink): Int =
+        followers(MemorySegment.ofArray(bytes), sink)
 
     /** More channels than any layout names, by a wide margin. */
     private const val MAX_ARRAY_ELEMENTS = 4_096

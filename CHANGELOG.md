@@ -35,6 +35,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   signatures move with them. A caller using named arguments, which is every
   example in the guide, sees no difference.
 
+### Changed
+- The native backend takes in the graph's account of each cycle without
+  building anything per node. The profiler sends one event per graph cycle,
+  hundreds a second at a short quantum, and each was put through the general
+  decoder, which turned every node in it into a list of boxed fields to read two
+  numbers out of: 9400 bytes of garbage per event on a graph of 64 nodes, on the
+  heap a sink's process callback shares. A walk aimed at the follower blocks now
+  reads the node and its missed count in place, and the count goes into a
+  counter the node already has rather than a new boxed value. Measured at 0
+  bytes per event, and a test holds it under a byte per node.
+
 ## [0.2.0] - 2026-09-15
 
 ### Fixed
