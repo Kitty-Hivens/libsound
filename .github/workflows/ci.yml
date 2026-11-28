@@ -599,3 +599,54 @@ jobs:
             /tmp/smoke.log
             /tmp/contract.log
           retention-days: 7
+
+  # Timings, and never a gate.
+  #
+  # A timing is a property of the runner, and a hosted runner changes CPU model
+  # from one run to the next and shares its host. So what fails a build is a
+  # count, asserted in the ordinary suite where it means the same on any
+  # machine: allocations per graph cycle, round trips per event. This row times
+  # the same paths, old and new interleaved inside one JVM so the host's noise
+  # lands on both, and leaves the numbers on the run's summary and as an
+  # artifact for a commit to quote.
+  #
+  # No sound server and no bus: every stand here drives the code with bytes
+  # copied out of the oracles, so nothing it measures waits on anything else.
+  bench:
+    name: Benchmarks (timed, not a gate)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Time what the counted tests guard
+        env:
+          LIBSOUND_BENCH: '1'
+        run: ./gradlew :libsound-audio:test --tests '*Bench' --rerun --stacktrace
+
+      - name: Put the numbers on the run's summary
+        if: always()
+        run: |
+          for report in */build/bench/*.txt; do
+            [ -e "$report" ] || continue
+            {
+              echo "### $report"
+              echo '```'
+              cat "$report"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat "$report"
+          done
+
+      - name: Upload the numbers
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: '*/build/bench/*.txt'
+          retention-days: 30
