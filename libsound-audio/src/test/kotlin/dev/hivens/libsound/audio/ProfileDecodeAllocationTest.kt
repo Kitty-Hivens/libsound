@@ -1,5 +1,6 @@
 package dev.hivens.libsound.audio
 
+import dev.hivens.libsound.audio.pipewire.MissedCycles
 import dev.hivens.libsound.audio.pipewire.SpaPodReader
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
@@ -33,7 +34,12 @@ class ProfileDecodeAllocationTest {
         val counting = checkNotNull(threads).also { it.isThreadAllocatedMemoryEnabled = true }
 
         val event = MemorySegment.ofArray(ProfilerFixtures.eventWith(FOLLOWERS))
-        val sink = Tally()
+        // The whole of what a cycle does: the walk, and each count written into
+        // the counters the registry keeps. Counting the walk alone missed the
+        // half that allocated, because a boxed id per lookup is free on a JVM
+        // that removes the box and sixteen bytes a node on one that does not.
+        val missed = MissedCycles()
+        val sink = SpaPodReader.FollowerSink(missed::record)
 
         // Warmed first, so what is counted is the compiled walk a running graph
         // would be served by rather than the interpreter's first pass over it.
@@ -42,20 +48,9 @@ class ProfileDecodeAllocationTest {
         repeat(MEASURED) { SpaPodReader.followers(event, sink) }
         val perEvent = (counting.currentThreadAllocatedBytes - before) / MEASURED
 
-        sink.blocks shouldBe (WARMUP + MEASURED).toLong() * FOLLOWERS
+        missed.get(ProfilerFixtures.FIRST_NODE + FOLLOWERS - 1) shouldBe (FOLLOWERS - 1).toLong()
         withClue("$perEvent bytes per event of $FOLLOWERS nodes") {
             (perEvent < PER_EVENT_CEILING) shouldBe true
-        }
-    }
-
-    /** A sink that keeps two numbers and allocates nothing, so what is counted is the walk. */
-    private class Tally : SpaPodReader.FollowerSink {
-        var blocks = 0L
-        var lastMissed = 0
-
-        override fun follower(node: Int, missedCycles: Int) {
-            blocks++
-            lastMissed = missedCycles
         }
     }
 

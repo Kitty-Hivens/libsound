@@ -20,7 +20,6 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -232,21 +231,13 @@ internal class PipeWireRegistry private constructor(
      * daemon publishes it instead, once per cycle, and this is the same number
      * `pw-top` shows in its error column.
      *
-     * A counter per node rather than a value, so a cycle that reports a node
-     * already known writes into the one it has instead of boxing a new number
-     * into the map, which at hundreds of cycles a second is a stream of garbage
-     * on the heap a sink's process callback shares.
+     * Written every cycle, so the counters are found without boxing anything:
+     * see [MissedCycles] for what a map keyed by a boxed id cost.
      */
-    private val missed = ConcurrentHashMap<Int, AtomicLong>()
+    private val missed = MissedCycles()
 
     /** Built once, so a profile event hands its numbers to the same object every cycle. */
-    private val recordFollower = SpaPodReader.FollowerSink { node, count ->
-        // The graph counts this as a 32-bit unsigned, and a count that has
-        // wrapped past two billion cycles is still a count.
-        val value = count.toLong() and UNSIGNED_INT
-        val held = missed[node]
-        if (held != null) held.set(value) else missed.putIfAbsent(node, AtomicLong(value))?.set(value)
-    }
+    private val recordFollower = SpaPodReader.FollowerSink(missed::record)
 
     /** The metadata global this is bound to, or -1 while nothing is. */
     @Volatile
@@ -436,11 +427,11 @@ internal class PipeWireRegistry private constructor(
      * currently knows, and the entry is dropped again when a node appears under
      * an id, not only when one leaves.
      */
-    fun missedCycles(node: Int): Long? = if (nodes.containsKey(node)) missed[node]?.get() else null
+    fun missedCycles(node: Int): Long? = if (nodes.containsKey(node)) missed.get(node) else null
 
     /** The same, for a node named the way the graph lists it. */
     fun missedCycles(name: String): Long? =
-        nodes.entries.firstOrNull { it.value.name == name }?.let { missed[it.key]?.get() }
+        nodes.entries.firstOrNull { it.value.name == name }?.let { missed.get(it.key) }
 
     /** Whether the graph reports cycles at all, which needs the profiler module. */
     fun hasProfiler(): Boolean = profiler.address() != 0L
@@ -1785,9 +1776,6 @@ internal class PipeWireRegistry private constructor(
 
         /** No serial. Real ones are assigned by the graph and positive. */
         private const val NO_SERIAL = 0L
-
-        /** The graph counts cycles as a 32-bit unsigned, and Kotlin has no such type. */
-        private const val UNSIGNED_INT = 0xFFFF_FFFFL
 
         /**
          * How long a connect waits for the graph to answer a sync.

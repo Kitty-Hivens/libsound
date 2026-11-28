@@ -1,5 +1,6 @@
 package dev.hivens.libsound.audio
 
+import dev.hivens.libsound.audio.pipewire.MissedCycles
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pipewire.SpaPodReader
 import org.junit.jupiter.api.Test
@@ -8,7 +9,6 @@ import java.io.File
 import java.lang.foreign.MemorySegment
 import java.lang.management.ManagementFactory
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 import com.sun.management.ThreadMXBean as AllocatingThreadMXBean
 
 /**
@@ -75,7 +75,8 @@ class ProfileDecodeBench {
                 ),
             )
             // Read, so neither path's work can be dropped as unused.
-            check(old.missed.size == new.missed.size) { "the two paths disagree about $followers followers" }
+            val last = ProfilerFixtures.FIRST_NODE + followers - 1
+            check(old.missed[last] == new.missed.get(last)) { "the two paths disagree about $followers followers" }
         }
 
         print(report)
@@ -110,15 +111,11 @@ class ProfileDecodeBench {
         }
     }
 
-    /** What it does now: the follower walk, into a counter per node. */
+    /** What it does now: the follower walk, into the registry's own counters. */
     private class NewPath {
-        val missed = ConcurrentHashMap<Int, AtomicLong>()
+        val missed = MissedCycles()
 
-        private val sink = SpaPodReader.FollowerSink { node, count ->
-            val value = count.toLong() and UNSIGNED_INT
-            val held = missed[node]
-            if (held != null) held.set(value) else missed.putIfAbsent(node, AtomicLong(value))?.set(value)
-        }
+        private val sink = SpaPodReader.FollowerSink(missed::record)
 
         fun take(pod: MemorySegment) {
             SpaPodReader.followers(pod, sink)
