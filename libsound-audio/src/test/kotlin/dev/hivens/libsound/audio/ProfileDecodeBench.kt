@@ -29,6 +29,17 @@ import com.sun.management.ThreadMXBean as AllocatingThreadMXBean
  * Lives beside the tests rather than in `tools/` with the other stands, because
  * the reader is internal to this module and only its own sources can reach it.
  *
+ * What it showed when it was written, on the CI row's JDK 22:
+ *
+ *     followers   old ns   new ns   old bytes   new bytes
+ *     2              486       93         520           0
+ *     16            1935      446        2832           0
+ *     64            4423     1738       11192           0
+ *
+ * Its first run is the reason the last column is zero. The new walk first wrote
+ * into a map keyed by a boxed id and measured 32, 256 and 1024 bytes, which the
+ * JVM the change was made on had hidden by removing the box.
+ *
  *   LIBSOUND_BENCH=1 ./gradlew :libsound-audio:test --tests '*ProfileDecodeBench' --rerun
  *
  * The report lands in `libsound-audio/build/bench/profile-decode.txt`.
