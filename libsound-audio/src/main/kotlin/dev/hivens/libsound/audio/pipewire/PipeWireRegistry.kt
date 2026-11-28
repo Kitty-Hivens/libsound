@@ -230,8 +230,14 @@ internal class PipeWireRegistry private constructor(
      * to whoever implements the node rather than to whoever holds a stream. The
      * daemon publishes it instead, once per cycle, and this is the same number
      * `pw-top` shows in its error column.
+     *
+     * Written every cycle, so the counters are found without boxing anything:
+     * see [MissedCycles] for what a map keyed by a boxed id cost.
      */
-    private val missed = ConcurrentHashMap<Int, Long>()
+    private val missed = MissedCycles()
+
+    /** Built once, so a profile event hands its numbers to the same object every cycle. */
+    private val recordFollower = SpaPodReader.FollowerSink(missed::record)
 
     /** The metadata global this is bound to, or -1 while nothing is. */
     @Volatile
@@ -421,11 +427,11 @@ internal class PipeWireRegistry private constructor(
      * currently knows, and the entry is dropped again when a node appears under
      * an id, not only when one leaves.
      */
-    fun missedCycles(node: Int): Long? = if (nodes.containsKey(node)) missed[node] else null
+    fun missedCycles(node: Int): Long? = if (nodes.containsKey(node)) missed.get(node) else null
 
     /** The same, for a node named the way the graph lists it. */
     fun missedCycles(name: String): Long? =
-        nodes.entries.firstOrNull { it.value.name == name }?.let { missed[it.key] }
+        nodes.entries.firstOrNull { it.value.name == name }?.let { missed.get(it.key) }
 
     /** Whether the graph reports cycles at all, which needs the profiler module. */
     fun hasProfiler(): Boolean = profiler.address() != 0L
@@ -760,24 +766,15 @@ internal class PipeWireRegistry private constructor(
      * nothing else: the rest is timings this library has no use for, and they
      * are walked past by their own declared sizes.
      *
-     * The blocks repeat under one key, which is why the entries are taken in
-     * order rather than as a map.
+     * The blocks repeat under one key, and a struct of objects, one per
+     * driver, is what arrives rather than a single object: measured against a
+     * live graph. [SpaPodReader.followers] walks both shapes for the two
+     * numbers and builds nothing on the way, because this runs once per cycle.
      */
     fun onProfile(unusedData: MemorySegment, pod: MemorySegment) {
         runCatching {
             if (pod.address() == 0L) return
-            // A struct of objects, one per driver, rather than a single
-            // object: measured against a live graph, where every profile event
-            // arrived as a struct whose children carry the blocks.
-            SpaPodReader.structuredEntries(pod).forEach { (key, value) ->
-                if (key != SpaAbi.PROFILER_FOLLOWER_BLOCK) return@forEach
-                val block = value as? List<*> ?: return@forEach
-                val node = block.getOrNull(SpaAbi.PROFILER_BLOCK_ID) as? Int ?: return@forEach
-                val count = block.getOrNull(SpaAbi.PROFILER_BLOCK_XRUNS) as? Int ?: return@forEach
-                // The graph counts this as a 32-bit unsigned, and a count that
-                // has wrapped past two billion cycles is still a count.
-                missed[node] = count.toLong() and UNSIGNED_INT
-            }
+            SpaPodReader.followers(pod, recordFollower)
         }.onFailure { log.debug("profile threw: {}", it.message) }
     }
 
@@ -1779,9 +1776,6 @@ internal class PipeWireRegistry private constructor(
 
         /** No serial. Real ones are assigned by the graph and positive. */
         private const val NO_SERIAL = 0L
-
-        /** The graph counts cycles as a 32-bit unsigned, and Kotlin has no such type. */
-        private const val UNSIGNED_INT = 0xFFFF_FFFFL
 
         /**
          * How long a connect waits for the graph to answer a sync.

@@ -4,6 +4,8 @@ import dev.hivens.libsound.AudioFormat
 import dev.hivens.libsound.ChannelLayout
 import dev.hivens.libsound.ChannelPosition
 import dev.hivens.libsound.PcmEncoding
+import dev.hivens.libsound.audio.ProfilerFixtures.PROFILER_FOLLOWER
+import dev.hivens.libsound.audio.ProfilerFixtures.PROFILE_EVENT
 import dev.hivens.libsound.audio.pipewire.SpaAbi
 import dev.hivens.libsound.audio.pipewire.SpaPod
 import dev.hivens.libsound.audio.pipewire.SpaPodReader
@@ -169,6 +171,54 @@ class SpaPodTest {
     }
 
     @Test
+    fun `the follower walk reads the same two numbers the general one does`() {
+        // The walk a profile event goes through on every cycle, against the
+        // same reference bytes, in both shapes the graph can send. Agreeing
+        // with structuredEntries here is what lets it replace that on the
+        // graph's own thread.
+        for (shape in listOf(PROFILE_EVENT, PROFILER_FOLLOWER)) {
+            val seen = mutableListOf<Pair<Int, Int>>()
+            val handed = SpaPodReader.followers(shape.fromHex()) { node, missed -> seen += node to missed }
+            handed shouldBe 2
+            seen shouldBe listOf(49 to 7, 50 to 0)
+        }
+    }
+
+    @Test
+    fun `the follower walk keeps every block of a large cycle, in order`() {
+        val seen = mutableListOf<Pair<Int, Int>>()
+        SpaPodReader.followers(ProfilerFixtures.eventWith(64)) { node, missed -> seen += node to missed }
+        seen shouldBe (0 until 64).map { (ProfilerFixtures.FIRST_NODE + it) to it }
+    }
+
+    @Test
+    fun `the follower walk stops at a length the event cannot hold`() {
+        // The same bounds the general walk keeps, because the bytes come from
+        // another process: nothing is read past the end, and where the two
+        // walks stop is the same place.
+        //
+        // An object cut inside its last block keeps the blocks before it.
+        val profiler = PROFILER_FOLLOWER.fromHex()
+        val cutObject = profiler.copyOf(profiler.size - SpaAbi.POD_ALIGN * 4)
+        val seen = mutableListOf<Int>()
+        SpaPodReader.followers(cutObject) { node, _ -> seen += node }
+        seen shouldBe listOf(49)
+        SpaPodReader.objectEntries(cutObject).map { (it.second as List<*>)[SpaAbi.PROFILER_BLOCK_ID] } shouldBe
+            listOf(49)
+
+        // A struct cut the same way no longer holds the object it declares, so
+        // the object is not entered at all, by either walk.
+        val event = PROFILE_EVENT.fromHex()
+        val cutEvent = event.copyOf(event.size - SpaAbi.POD_ALIGN * 4)
+        SpaPodReader.followers(cutEvent) { _, _ -> error("a block past the end was read") } shouldBe 0
+        SpaPodReader.structuredEntries(cutEvent) shouldBe emptyList()
+
+        // And a pod that is neither a struct of objects nor a profiler object
+        // hands over nothing.
+        SpaPodReader.followers(SpaPod.props(volume = 1f)) { _, _ -> error("a Props object has no followers") } shouldBe 0
+    }
+
+    @Test
     fun `an object carrying one key many times keeps every one of them`() {
         // The profiler writes a block per node under the same key, and the
         // reference object carries two of them. Both come back, in the order
@@ -283,70 +333,6 @@ class SpaPodTest {
                 "20 00 00 00 0d 00 00 00 04 00 00 00 03 00 00 00 " +
                 "03 00 00 00 04 00 00 00 05 00 00 00 06 00 00 00 " +
                 "0c 00 00 00 0d 00 00 00"
-
-        /**
-         * `tools/pipewire-oracle.c`, a Profiler object built by the library's
-         * own builder. Two follower blocks under the one key, which is how the
-         * object carries a graph: a block per node, ten fields each, of which
-         * this reader takes the first and the ninth. 376 bytes.
-         */
-        const val PROFILER_FOLLOWER =
-            "70 01 00 00 0f 00 00 00 0a 00 04 00 00 00 00 00 " +
-                "01 00 02 00 00 00 00 00 a8 00 00 00 0e 00 00 00 " +
-                "04 00 00 00 04 00 00 00 31 00 00 00 00 00 00 00 " +
-                "0e 00 00 00 08 00 00 00 6c 69 62 73 6f 75 6e 64 " +
-                "5f 74 65 73 74 00 00 00 08 00 00 00 05 00 00 00 " +
-                "01 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
-                "02 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
-                "03 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
-                "04 00 00 00 00 00 00 00 04 00 00 00 04 00 00 00 " +
-                "03 00 00 00 00 00 00 00 08 00 00 00 0b 00 00 00 " +
-                "00 04 00 00 80 bb 00 00 04 00 00 00 04 00 00 00 " +
-                "07 00 00 00 00 00 00 00 04 00 00 00 02 00 00 00 " +
-                "00 00 00 00 00 00 00 00 01 00 02 00 00 00 00 00 " +
-                "a0 00 00 00 0e 00 00 00 04 00 00 00 04 00 00 00 " +
-                "32 00 00 00 00 00 00 00 08 00 00 00 08 00 00 00 " +
-                "61 6e 6f 74 68 65 72 00 08 00 00 00 05 00 00 00 " +
-                "05 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
-                "06 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
-                "07 00 00 00 00 00 00 00 08 00 00 00 05 00 00 00 " +
-                "08 00 00 00 00 00 00 00 04 00 00 00 04 00 00 00 " +
-                "03 00 00 00 00 00 00 00 08 00 00 00 0b 00 00 00 " +
-                "00 04 00 00 80 bb 00 00 04 00 00 00 04 00 00 00 " +
-                "00 00 00 00 00 00 00 00 04 00 00 00 02 00 00 00 " +
-                "00 00 00 00 00 00 00 00"
-
-        /**
-         * The same again in the shape a profile event actually arrives in: a
-         * struct whose children are objects, one per driver, carrying a block
-         * per node. Two blocks here, so a reader that kept only the last would
-         * be caught.
-         */
-        const val PROFILE_EVENT =
-            "78 01 00 00 0e 00 00 00 70 01 00 00 0f 00 00 00 " +
-                "0a 00 04 00 00 00 00 00 01 00 02 00 00 00 00 00 " +
-                "a8 00 00 00 0e 00 00 00 04 00 00 00 04 00 00 00 " +
-                "31 00 00 00 00 00 00 00 0e 00 00 00 08 00 00 00 " +
-                "6c 69 62 73 6f 75 6e 64 5f 74 65 73 74 00 00 00 " +
-                "08 00 00 00 05 00 00 00 01 00 00 00 00 00 00 00 " +
-                "08 00 00 00 05 00 00 00 02 00 00 00 00 00 00 00 " +
-                "08 00 00 00 05 00 00 00 03 00 00 00 00 00 00 00 " +
-                "08 00 00 00 05 00 00 00 04 00 00 00 00 00 00 00 " +
-                "04 00 00 00 04 00 00 00 03 00 00 00 00 00 00 00 " +
-                "08 00 00 00 0b 00 00 00 00 04 00 00 80 bb 00 00 " +
-                "04 00 00 00 04 00 00 00 07 00 00 00 00 00 00 00 " +
-                "04 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00 " +
-                "01 00 02 00 00 00 00 00 a0 00 00 00 0e 00 00 00 " +
-                "04 00 00 00 04 00 00 00 32 00 00 00 00 00 00 00 " +
-                "08 00 00 00 08 00 00 00 61 6e 6f 74 68 65 72 00 " +
-                "08 00 00 00 05 00 00 00 01 00 00 00 00 00 00 00 " +
-                "08 00 00 00 05 00 00 00 02 00 00 00 00 00 00 00 " +
-                "08 00 00 00 05 00 00 00 03 00 00 00 00 00 00 00 " +
-                "08 00 00 00 05 00 00 00 04 00 00 00 00 00 00 00 " +
-                "04 00 00 00 04 00 00 00 03 00 00 00 00 00 00 00 " +
-                "08 00 00 00 0b 00 00 00 00 04 00 00 80 bb 00 00 " +
-                "04 00 00 00 04 00 00 00 00 00 00 00 00 00 00 00 " +
-                "04 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00"
 
         /**
          * `spa_pod_builder_add_object` for a Props carrying a volume, a mute
